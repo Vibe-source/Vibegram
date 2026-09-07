@@ -4473,6 +4473,11 @@ defmodule Vibe.AI.LocalAgentWorker do
     end
   end
 
+  # A worker answers plainly; the quote banner is opt-in via "quoteReply" in metadata.
+  defp quoted_reply(metadata, reply_to_id) do
+    if Map.get(metadata, "quoteReply") == true, do: reply_to_id, else: nil
+  end
+
   defp post_worker_message(worker, chat_id, body, metadata, reply_to_id, requester_user_id) do
     agent_user_id = worker.agent_user_id
 
@@ -4496,7 +4501,7 @@ defmodule Vibe.AI.LocalAgentWorker do
         encrypted_content: AgentMessageCrypto.encrypt_for_storage(plain_text),
         type: "text",
         metadata: metadata,
-        reply_to_id: reply_to_id,
+        reply_to_id: quoted_reply(metadata, reply_to_id),
         timestamp: timestamp
       }
 
