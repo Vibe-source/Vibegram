@@ -55,7 +55,8 @@ RUN apk add --no-cache libstdc++ openssl ncurses-libs python3 py3-pip ffmpeg cur
   && /usr/local/bin/yt-dlp --version \
   && python3 -m yt_dlp --version
 
-RUN apk add --no-cache nodejs npm git \
+# bash and ripgrep are not optional: the CLI's own tools shell out to them.
+RUN apk add --no-cache nodejs npm git bash ripgrep \
   && npm install -g --no-fund --no-audit @anthropic-ai/claude-code \
   && (npm install -g --no-fund --no-audit @openai/codex || echo "codex: no musl build, skipped") \
   && claude --version
