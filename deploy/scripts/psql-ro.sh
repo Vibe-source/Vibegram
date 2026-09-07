@@ -21,8 +21,11 @@ case "$DB" in
   *) echo "psql-ro: database must be vibe_core or vibe_agents" >&2; exit 1 ;;
 esac
 
-pw="$(grep -m1 '^VIBE_READONLY_DB_PASSWORD=' "${REPO_ROOT}/deploy/env/postgres.env" | cut -d= -f2-)"
-[ -n "$pw" ] || { echo "psql-ro: run ensure-readonly-role.sh first" >&2; exit 1; }
+# The box seals env into /run/vibe/env; the repo copy only exists before bootstrap.
+ENV_FILE="${PG_ENV_FILE:-/run/vibe/env/postgres.env}"
+[ -r "$ENV_FILE" ] || ENV_FILE="${REPO_ROOT}/deploy/env/postgres.env"
+pw="$(grep -m1 '^VIBE_READONLY_DB_PASSWORD=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+[ -n "$pw" ] || { echo "psql-ro: no VIBE_READONLY_DB_PASSWORD in $ENV_FILE — run ensure-readonly-role.sh first" >&2; exit 1; }
 
 exec $ENGINE exec -it -e PGPASSWORD="$pw" "$PG" \
   psql --username vibe_readonly --dbname "$DB" "$@"

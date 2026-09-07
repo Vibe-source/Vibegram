@@ -4255,7 +4255,7 @@ defmodule Vibe.AI.LocalAgentWorker do
 
     with {:ok, %{ok: false, text: text}} <- result,
          fallback when is_binary(fallback) <- claude_fallback_model(opts),
-         true <- model_unavailable?(text) do
+         true <- model_unavailable?(text) or usage_limit_text?(text) do
       Logger.warning(
         "[LocalAgentWorker] #{worker.handle} model unreachable — retrying on #{fallback}"
       )

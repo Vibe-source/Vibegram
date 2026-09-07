@@ -75,7 +75,6 @@ defmodule VibeWeb.UserController do
       with {:ok, phone_attrs} <- normalize_phone_update(params) do
         push_token_update = resolve_push_token_update(params)
 
-        # Filter allowed params
         update_attrs =
           %{}
           |> Map.merge(if params["profileImage"], do: %{profile_image: params["profileImage"]}, else: %{})
@@ -141,8 +140,6 @@ defmodule VibeWeb.UserController do
     end
   end
 
-  # push_token/username/phone_number aren't in profile_changeset/2's allow-list,
-  # so they still go through the full User.changeset/2; the rest is schema-limited.
   @identity_keys [:push_token, :phone_number, :username]
 
   defp apply_profile_update(user, attrs) do
@@ -199,9 +196,6 @@ defmodule VibeWeb.UserController do
   end
 
   defp merge_push_token_bundle(acc, value) when is_binary(value) do
-    # Unwrapped first for the same reason as above: the client boxed whatever it
-    # held, so the whole JSON bundle can arrive wrapped too, and it would then
-    # fail the `{` test and be dropped whole.
     trimmed = value |> String.trim() |> unwrap_swift_optional()
 
     cond do
@@ -222,9 +216,6 @@ defmodule VibeWeb.UserController do
   defp merge_push_token_bundle(acc, _), do: acc
 
   defp merge_explicit_push_token(acc, value) when is_binary(value) do
-    # Unwrapped before classifying, not after: a wrapped token fails the hex test
-    # and would be dropped here, which is precisely the population the healing
-    # below exists for.
     trimmed = value |> String.trim() |> unwrap_swift_optional()
 
     cond do
@@ -235,8 +226,6 @@ defmodule VibeWeb.UserController do
         merge_push_token_bundle(acc, trimmed)
 
       apns_device_token?(trimmed) ->
-        # Support a direct native APNs token while never persisting a legacy
-        # provider-specific bare token.
         maybe_put_token(acc, "apns", trimmed)
 
       true ->
@@ -255,11 +244,6 @@ defmodule VibeWeb.UserController do
 
   defp maybe_put_token(acc, _key, _value), do: acc
 
-  # iOS shipped a build that registered its token as the literal text
-  # Optional("…") — a String? boxed into Any and then String(describing:)'d.
-  # Unwrapping on the way in keeps the corrupted form out of the database
-  # entirely, so a device self-corrects the moment it re-registers instead of
-  # carrying a broken token until the user updates the app.
   defp unwrap_swift_optional(value) do
     case Regex.run(~r/^Optional\("(.*)"\)$/s, value) do
       [_, inner] -> String.trim(inner)
@@ -310,18 +294,12 @@ defmodule VibeWeb.UserController do
         end
 
       true ->
-        # Older rows may contain a bare legacy token. They are intentionally
-        # ignored so a native token bundle can safely overwrite the row.
         %{}
     end
   end
 
   defp push_token_to_map(_), do: %{}
 
-  # APNs device tokens are hex, but Apple documents the length as variable and
-  # tells clients not to hardcode 32 bytes, so this bounds rather than pins it.
-  # (The 76-character tokens seen in production were not long tokens — they were
-  # 64 hex characters wrapped in `Optional("…")`, healed above.)
   defp apns_device_token?(token) when is_binary(token) do
     length = String.length(token)
 
@@ -395,10 +373,9 @@ defmodule VibeWeb.UserController do
     json(conn, %{
       userId: user.id,
       username: user.username,
-      # The user's one public link. Server-built so the app never has to guess the share
-      # host (it moves with VIBE_SHARE_BASE_URL — see Vibe.Links).
       shareLink: Vibe.Links.profile_url(user.username),
       isAgent: user.is_agent || false,
+      tier: user.tier || "free",
       agentId: agent_id,
       acceptsIncomingChat:
         if(user.is_agent && agent_id, do: agent_accepts_incoming_chat(agent_id, viewer), else: nil),
