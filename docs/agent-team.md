@@ -64,7 +64,9 @@ the closed gate, any user could DM `@coder` and run Claude Code on our server.
 | -------- | ------ |
 | `VIBE_LOCAL_AGENT_WORKERS=1` | required; enables server-side workers at all |
 | `VIBE_AGENT_WORKER_ALLOWED_USERS` | comma-separated owner ids — the team's allowlist |
-| `VIBE_TEAM_WORKSPACE` | the checkout the team's CLIs run in |
+| `VIBE_TEAM_WORKSPACE` | the checkout the team's CLIs run in, default `/home/agent/workspace` |
+| `VIBE_TEAM_REPO_URL` | optional clone source for that checkout; otherwise `start.sh` seeds it from the deployed tree |
+| `VIBE_TEAM_COMPUTER_TOKEN` | set per run by core, not by hand — the CLI's bearer for the computer MCP |
 | `VIBE_TEAM_CLAUDE_COMMAND` / `_CODEX_` / `_GROK_` | point the CLIs at a wrapper into separate compute |
 | `VIBE_TEAM_TIMEOUT_MS` | per-run budget, default 600000 |
 | `VIBE_TEAM_EXECUTOR` | run the whole team on one CLI when only that one is signed in |

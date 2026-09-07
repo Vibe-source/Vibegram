@@ -1,9 +1,9 @@
 import UIKit
 
-/// Still-frame "computer" sheet: the latest `agent-preview` screenshot, live-updating while
-/// on screen. Also the fallback when no live session can be created (no gateway, 429).
+/// Still-frame "computer" sheet:
 final class VibeAgentComputerPreviewViewController: UIViewController {
   private let chatId: String
+  private let agentUserId: String?
   private let appearance: VibeAgentKitChatAppearance
   private let fallbackNote: String?
   private var changeObserver: NSObjectProtocol?
@@ -52,9 +52,11 @@ final class VibeAgentComputerPreviewViewController: UIViewController {
   }()
 
   init(
-    chatId: String, appearance: VibeAgentKitChatAppearance, fallbackNote: String? = nil
+    chatId: String, appearance: VibeAgentKitChatAppearance, fallbackNote: String? = nil,
+    agentUserId: String? = nil
   ) {
     self.chatId = chatId
+    self.agentUserId = agentUserId
     self.appearance = appearance
     self.fallbackNote = fallbackNote
     super.init(nibName: nil, bundle: nil)
@@ -115,6 +117,9 @@ final class VibeAgentComputerPreviewViewController: UIViewController {
       guard (note.userInfo?["reason"] as? String) == "agentPreview",
         (note.userInfo?["chatId"] as? String) == self.chatId
       else { return }
+      if let pinned = self.agentUserId, !pinned.isEmpty,
+        (note.userInfo?["agentUserId"] as? String) != pinned
+      { return }
       self.refresh()
     }
   }
@@ -123,11 +128,19 @@ final class VibeAgentComputerPreviewViewController: UIViewController {
     dismiss(animated: true)
   }
 
-  // Re-pulls the latest decoded frame + run-liveness from the engine (one-shot, sheet-only).
   private func refresh() {
-    guard let preview = ChatEngine.shared.latestAgentPreview(chatId: chatId) else { return }
+    guard
+      let preview = ChatEngine.shared.latestAgentPreview(chatId: chatId, agentUserId: agentUserId)
+    else {
+      labelView.text = "Computer"
+      noteLabel.text = fallbackNote ?? "Waiting for the first frame…"
+      noteLabel.isHidden = false
+      liveDot.isHidden = true
+      return
+    }
     imageView.image = preview.image
     labelView.text = preview.label
+    noteLabel.isHidden = fallbackNote == nil
     liveDot.isHidden = ChatEngine.shared.activeIsolatedRunId(chatId: chatId) != preview.runId
   }
 }

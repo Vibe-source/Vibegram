@@ -611,6 +611,7 @@ defmodule Vibe.AI.LocalAgentWorker do
         visible,
         %{
           "agentWorker" => true,
+          "agentWorkerStreamId" => Map.get(result, :stream_id),
           "agentWorkerProvider" => worker.handle,
           "agentWorkerCommand" => result.command,
           "agentWorkerExitStatus" => result.exit_status,
@@ -4125,6 +4126,7 @@ defmodule Vibe.AI.LocalAgentWorker do
       "chatId" => chat_id,
       "streamId" => stream_id,
       "userId" => agent_id,
+      "agentUserId" => agent_id,
       "isAgent" => true,
       "status" => "done"
     })
@@ -4231,6 +4233,7 @@ defmodule Vibe.AI.LocalAgentWorker do
 
   defp run_claude(worker, executable, prompt, opts) do
     bridge_options = Keyword.get(opts, :bridge_metadata) || %{}
+    {computer_env, computer_args} = team_computer_cli(worker, opts)
 
     permission_mode =
       System.get_env("VIBE_CLAUDE_PERMISSION_MODE")
@@ -4266,10 +4269,32 @@ defmodule Vibe.AI.LocalAgentWorker do
         maybe_model_args(bridge_options, "VIBE_CLAUDE_MODEL", "--model") ++
         maybe_advisor_args(bridge_options) ++
         maybe_single_arg("VIBE_CLAUDE_MCP_CONFIG", "--mcp-config") ++
+        computer_args ++
         maybe_single_arg("VIBE_CLAUDE_ALLOWED_TOOLS", "--allowedTools") ++
         maybe_single_arg("VIBE_CLAUDE_DISALLOWED_TOOLS", "--disallowedTools") ++ ["--", prompt]
 
-    run_command(worker, executable, args, opts)
+    cli_env = computer_env ++ (Keyword.get(opts, :cli_env) || [])
+    run_command(worker, executable, args, Keyword.put(opts, :cli_env, cli_env))
+  end
+
+  defp team_computer_cli(worker, opts) do
+    chat_id = Keyword.get(opts, :chat_id)
+
+    with true <- server_runtime?(worker),
+         true <- is_binary(chat_id),
+         {:ok, token} <-
+           Vibe.AI.TeamComputer.Auth.mint_run_token(worker[:agent_user_id], chat_id) do
+      {[{~c"VIBE_TEAM_COMPUTER_TOKEN", String.to_charlist(token)}], mcp_config_args()}
+    else
+      _ -> {[], []}
+    end
+  end
+
+  defp mcp_config_args do
+    case normalize_string(System.get_env("VIBE_CLAUDE_MCP_CONFIG")) do
+      nil -> ["--mcp-config", "/app/mcp.json"]
+      _ -> []
+    end
   end
 
   defp run_cli("agy", worker, executable, prompt, opts) do
@@ -4384,7 +4409,27 @@ defmodule Vibe.AI.LocalAgentWorker do
       "[LocalAgentWorker] start provider=#{worker.handle} command=#{Path.basename(executable)} timeout_ms=#{timeout_ms}"
     )
 
+    stream_chat_id = if server_runtime?(worker), do: Keyword.get(opts, :chat_id)
+    stream_id = Ecto.UUID.generate()
+    stream_key = {__MODULE__, :stream, make_ref()}
+    stream_metadata = Keyword.get(opts, :bridge_metadata) || %{}
+    Process.put(stream_key, {[], start - 700})
+
     line_callback = fn line ->
+      if is_binary(stream_chat_id) do
+        {chunks, last_sent} = Process.get(stream_key)
+        chunks = [line <> "\n" | chunks]
+        now = System.monotonic_time(:millisecond)
+
+        if now - last_sent >= 700 do
+          output = chunks |> Enum.reverse() |> IO.iodata_to_binary()
+          bridge_stream_update(worker.handle, stream_chat_id, output, stream_id, stream_metadata)
+          Process.put(stream_key, {chunks, now})
+        else
+          Process.put(stream_key, {chunks, last_sent})
+        end
+      end
+
       line
       |> progress_event_from_line(worker)
       |> case do
@@ -4393,50 +4438,67 @@ defmodule Vibe.AI.LocalAgentWorker do
       end
     end
 
-    case collect_command(executable, args, worker_cwd(worker), timeout_ms, line_callback) do
-      {:ok, status, output} ->
-        duration_ms = System.monotonic_time(:millisecond) - start
-        extracted = extract_result(worker, output)
-        text = extracted.text || fallback_output(output)
-        ok = status == 0
+    try do
+      case collect_command(
+             executable,
+             args,
+             worker_cwd(worker),
+             timeout_ms,
+             line_callback,
+             Keyword.get(opts, :cli_env) || []
+           ) do
+        {:ok, status, output} ->
+          if is_binary(stream_chat_id) do
+            bridge_stream_update(worker.handle, stream_chat_id, output, stream_id, stream_metadata)
+          end
 
-        bridge_options = Keyword.get(opts, :bridge_metadata) || %{}
+          duration_ms = System.monotonic_time(:millisecond) - start
+          extracted = extract_result(worker, output)
+          text = extracted.text || fallback_output(output)
+          ok = status == 0
 
-        if ok && explicit_resume_session_id(bridge_options) do
-          store_session(
-            Keyword.get(opts, :chat_id),
-            worker.handle,
-            session_id_from_output(output)
+          bridge_options = Keyword.get(opts, :bridge_metadata) || %{}
+
+          if ok && explicit_resume_session_id(bridge_options) do
+            store_session(
+              Keyword.get(opts, :chat_id),
+              worker.handle,
+              session_id_from_output(output)
+            )
+          end
+
+          Logger.info(
+            "[LocalAgentWorker] finish provider=#{worker.handle} status=#{status} duration_ms=#{duration_ms} text_len=#{String.length(text)}"
           )
-        end
 
-        Logger.info(
-          "[LocalAgentWorker] finish provider=#{worker.handle} status=#{status} duration_ms=#{duration_ms} text_len=#{String.length(text)}"
-        )
+          {:ok,
+           %{
+             ok: ok,
+             stream_id: if(is_binary(stream_chat_id), do: stream_id),
+             exit_status: status,
+             command: Path.basename(executable),
+             duration_ms: duration_ms,
+             text: if(ok, do: text, else: command_failed_text(worker, status, text)),
+             tool_events: extracted.tool_events,
+             available_tools: extracted.available_tools,
+             raw_event_count: extracted.raw_event_count,
+             progress_nodes: extracted.progress_nodes
+           }}
 
-        {:ok,
-         %{
-           ok: ok,
-           exit_status: status,
-           command: Path.basename(executable),
-           duration_ms: duration_ms,
-           text: if(ok, do: text, else: command_failed_text(worker, status, text)),
-           tool_events: extracted.tool_events,
-           available_tools: extracted.available_tools,
-           raw_event_count: extracted.raw_event_count,
-           progress_nodes: extracted.progress_nodes
-         }}
+        {:error, :timeout, output} ->
+          partial = extract_result(worker, output).text || ""
+          {:error, {:timeout, timeout_ms, partial}}
 
-      {:error, :timeout, output} ->
-        partial = extract_result(worker, output).text || ""
-        {:error, {:timeout, timeout_ms, partial}}
-
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
+    after
+      Process.delete(stream_key)
+      if is_binary(stream_chat_id), do: finish_stream(worker.handle, stream_chat_id, stream_id)
     end
   end
 
-  defp collect_command(executable, args, cwd, timeout_ms, line_callback) do
+  defp collect_command(executable, args, cwd, timeout_ms, line_callback, env) do
     shell = System.find_executable("sh") || "/bin/sh"
     shell_command = "exec </dev/null\nexec " <> shell_join([executable | args])
 
@@ -4446,7 +4508,8 @@ defmodule Vibe.AI.LocalAgentWorker do
         :exit_status,
         :stderr_to_stdout,
         {:args, ["-lc", shell_command]},
-        {:cd, cwd}
+        {:cd, cwd},
+        {:env, env}
       ])
 
     collect_port(port, [], "", line_callback, System.monotonic_time(:millisecond) + timeout_ms)
@@ -4482,7 +4545,11 @@ defmodule Vibe.AI.LocalAgentWorker do
     agent_user_id = worker.agent_user_id
 
     with :ok <- ensure_agent_user_record(worker) do
-      message_id = Ecto.UUID.generate()
+      message_id =
+        case Ecto.UUID.cast(metadata["agentWorkerStreamId"]) do
+          {:ok, stream_id} -> stream_id
+          :error -> Ecto.UUID.generate()
+        end
       timestamp = System.system_time(:millisecond)
       plain_text = normalize_string(body) || ""
 
@@ -4752,10 +4819,11 @@ defmodule Vibe.AI.LocalAgentWorker do
   defp worker_cwd(worker) do
     env = if server_runtime?(worker), do: "VIBE_TEAM_WORKSPACE", else: "VIBE_AGENT_WORKER_CWD"
 
-    case normalize_string(System.get_env(env)) do
-      nil -> default_workspace_dir()
-      path -> if File.dir?(path), do: path, else: default_workspace_dir()
-    end
+    configured = normalize_string(System.get_env(env))
+    team_workspace = if server_runtime?(worker), do: "/home/agent/workspace"
+
+    Enum.find([configured, team_workspace], fn path -> is_binary(path) and File.dir?(path) end) ||
+      default_workspace_dir()
   end
 
   defp default_workspace_dir do

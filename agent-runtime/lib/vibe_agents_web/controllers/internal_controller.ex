@@ -90,7 +90,15 @@ defmodule VibeAgentsWeb.InternalController do
   def computer_input(conn, %{"agent_id" => agent_id} = params),
     do: agent_id |> Sandbox.computer_input(gateway_body(params)) |> passthrough(conn)
 
-  # Straight gateway passthrough: 204 stays 204 and a gateway status (409 …) is never flattened.
+  def browser_navigate(conn, %{"agent_id" => agent_id} = params),
+    do: agent_id |> Sandbox.browser_navigate(gateway_body(params)) |> passthrough(conn)
+
+  def browser_action(conn, %{"agent_id" => agent_id} = params),
+    do: agent_id |> Sandbox.browser_action(gateway_body(params)) |> passthrough(conn)
+
+  def browser_screenshot(conn, %{"agent_id" => agent_id} = params),
+    do: agent_id |> Sandbox.browser_screenshot(int_param(params["maxWidth"], 1024)) |> passthrough(conn)
+
   defp passthrough({:ok, :no_change}, conn), do: send_resp(conn, 204, "")
   defp passthrough({:ok, body}, conn), do: json(conn, body)
   defp passthrough({:error, {:http_error, status, body}}, conn), do: conn |> put_status(status) |> json(error_body(body))

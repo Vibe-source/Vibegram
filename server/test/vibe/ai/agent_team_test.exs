@@ -65,8 +65,8 @@ defmodule Vibe.AI.AgentTeamTest do
     refute W.dispatch_allowed?(monitor, "anyone")
     refute W.dispatch_allowed?(monitor, nil)
 
-    # A bridge worker keeps the old open-by-default gate, so this is not a regression.
-    assert W.dispatch_allowed?(W.resolve_handle("claude"), "anyone")
+    # The roster is role workers only; bridge handles no longer resolve through it.
+    assert is_nil(W.resolve_handle("claude"))
   end
 
   test "an allowlisted owner reaches the team and a stranger does not" do
@@ -96,6 +96,5 @@ defmodule Vibe.AI.AgentTeamTest do
 
     assert W.executor_for(monitor) == "grok"
     assert monitor.agent_user_id == W.resolve_handle("monitor").agent_user_id
-    assert W.executor_for(W.resolve_handle("claude")) == "claude"
   end
 end

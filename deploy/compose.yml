@@ -103,6 +103,7 @@ services:
       - /tmp
     volumes:
       - agent_home:/home/agent
+      - ..:/opt/vibe-src:ro
     security_opt:
       - no-new-privileges:true
     cap_drop:

@@ -142,7 +142,7 @@ cmd_env() {
 
   head_ "applying to core.env"
   # apply-env.sh merges KEY=VALUE from stdin into the sealed file; values never hit argv.
-  on_box "printf '%s\n' 'VIBE_LOCAL_AGENT_WORKERS=1' 'VIBE_AGENT_WORKER_ALLOWED_USERS=${owners}' 'VIBE_TEAM_WORKSPACE=${DEST}' | ${DEST}/deploy/scripts/apply-env.sh core.env"
+  on_box "printf '%s\n' 'VIBE_LOCAL_AGENT_WORKERS=1' 'VIBE_AGENT_WORKER_ALLOWED_USERS=${owners}' 'VIBE_TEAM_WORKSPACE=/home/agent/workspace' | ${DEST}/deploy/scripts/apply-env.sh core.env"
 
   head_ "recreating core"
   resolve_containers

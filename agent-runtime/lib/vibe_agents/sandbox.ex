@@ -18,8 +18,7 @@ defmodule VibeAgents.Sandbox do
     end
   end
 
-  # Two tools in one round both reach for the computer; unserialised, the loser trips the
-  # agent_id unique index and its tool reports a failure the agent never caused.
+  # Two tools in one round both reach for the computer.
   defp locked_create(agent_id, capabilities) do
     lock = {{:vibe_sandbox, agent_id}, self()}
 
@@ -152,6 +151,30 @@ defmodule VibeAgents.Sandbox do
 
   def computer_input(agent_id, body) when is_map(body),
     do: with_sandbox(agent_id, &Client.computer_input(&1, body))
+
+  @doc "Agent-driven browsing. Unlike computer_input these do not need the user to hold control."
+  def browser_navigate(agent_id, body) when is_map(body),
+    do: with_ready_sandbox(agent_id, &Client.browser_navigate(&1, body))
+
+  def browser_action(agent_id, body) when is_map(body),
+    do: with_ready_sandbox(agent_id, &Client.browser_action(&1, body))
+
+  def browser_screenshot(agent_id, max_width) when is_integer(max_width),
+    do: with_ready_sandbox(agent_id, &Client.browser_screenshot(&1, max_width))
+
+  defp with_ready_sandbox(agent_id, fun) do
+    case ensure_computer(agent_id) do
+      {:ok, %AgentComputer{sandbox_id: sandbox_id} = computer} when is_binary(sandbox_id) ->
+        touch(computer)
+        fun.(sandbox_id)
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _ ->
+        {:error, :not_available}
+    end
+  end
 
   defp with_sandbox(agent_id, fun) do
     case sandbox_id_for(agent_id) do

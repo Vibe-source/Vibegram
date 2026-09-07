@@ -73,6 +73,7 @@ ENV HOME=/home/agent
 
 COPY --from=elixir-build --chown=nobody:root /app/_build/prod/rel/vibe ./
 COPY --chmod=755 deploy/core/start.sh /app/start.sh
+COPY deploy/core/mcp.json /app/mcp.json
 
 USER nobody
 

@@ -1,8 +1,7 @@
 defmodule Vibe.AgentGateway do
   @moduledoc """
   Signed client from the chat core to the isolated agent-runtime service
-  (docs/agent-platform-v1.md §3.1-§3.2). Disabled (no-op) until both
-  `VIBE_AGENT_RUNTIME_URL` and `VIBE_INTERNAL_HMAC_KEY` are set.
+  (docs/agent-platform-v1.md §3.1-§3.2).
   """
 
   require Logger
@@ -27,16 +26,13 @@ defmodule Vibe.AgentGateway do
     cond do
       System.get_env("VIBE_AGENT_EXECUTION_MODE") == "embedded" -> "embedded"
       System.get_env("VIBE_AGENT_EXECUTION_MODE") == "isolated" -> "isolated"
-      # Computer and browser tools only exist in the isolated runtime; embedded has no sandbox.
       VibeContracts.ToolBundles.sandbox?(agent.enabled_tools || []) -> "isolated"
       true -> agent.execution_mode || "embedded"
     end
   end
 
   @doc """
-  Builds a `RunRequest` from `%{agent:, chat_id:, requester_user_id:, text:, attachments:,
-  reply_to_id:, source:, parent_run_id:, idempotency_key:}` and starts a run.
-  Returns `{:error, :kill_switch}` / `{:error, :unreachable}` / `{:error, reason}`.
+  Builds a `RunRequest` from `%{agent:.
   """
   def start_run(params) when is_map(params) do
     if kill_switch?() do
@@ -129,8 +125,6 @@ defmodule Vibe.AgentGateway do
   end
 
   @doc "`GET …/computer/frame?since=` — `{:ok, :no_change}` on 204, nothing newer than `since`."
-  # `session` rides along so a polling viewer refreshes its own idle clock; without it
-  # the gateway reaps a viewer that is still watching.
   def computer_frame(agent_id, opts \\ []) do
     since = Keyword.get(opts, :since, 0)
     query = "since=#{since}" <> session_query(Keyword.get(opts, :session))
@@ -174,6 +168,21 @@ defmodule Vibe.AgentGateway do
     request(:post, "/internal/v1/agents/#{agent_id}/computer/input", compact(params))
   end
 
+  @doc "`POST …/browser/navigate` — `{url}`. Creates the sandbox on first use."
+  def browser_navigate(agent_id, params) when is_map(params) do
+    request(:post, "/internal/v1/agents/#{agent_id}/browser/navigate", compact(params))
+  end
+
+  @doc "`POST …/browser/action` — `{kind, ref?, selector?, x?, y?, text?}`."
+  def browser_action(agent_id, params) when is_map(params) do
+    request(:post, "/internal/v1/agents/#{agent_id}/browser/action", compact(params))
+  end
+
+  @doc "`GET …/browser/screenshot?maxWidth=` — `{imageBase64, mime, width, height}`."
+  def browser_screenshot(agent_id, max_width) when is_integer(max_width) do
+    request(:get, "/internal/v1/agents/#{agent_id}/browser/screenshot?maxWidth=#{max_width}", nil)
+  end
+
   @doc "`POST /internal/v1/voice/sessions` — params is `{agentId,userId,chatId,agentProfile}`."
   def voice_session(params), do: request(:post, "/internal/v1/voice/sessions", params)
 
@@ -197,7 +206,6 @@ defmodule Vibe.AgentGateway do
       "persona" => agent.persona,
       "modelProvider" => agent.model_provider,
       "modelId" => agent.model_id,
-      # No per-agent thinking-level column yet; a fixed default until one exists.
       "thinkingLevel" => "medium",
       "enabledTools" => agent.enabled_tools || [],
       "outputModes" => agent.output_modes || [],
@@ -217,8 +225,6 @@ defmodule Vibe.AgentGateway do
     StandaloneAgent.history_for_runtime(chat_id, requester_user_id, agent.agent_user_id)
   end
 
-  # Names aren't resolved (would be an N+1 per participant); the runtime already
-  # has isAgent + userId to cross-reference against context.history.
   defp participants_for(chat_id, agent_user_id) do
     ids = Chat.get_participant_ids(chat_id)
     agents = teammate_agents(ids)
@@ -238,7 +244,6 @@ defmodule Vibe.AgentGateway do
     end)
   end
 
-  # Without this an agent cannot name the teammate it is supposed to hand off to.
   defp teammate_agents(user_ids) do
     import Ecto.Query
 
@@ -259,8 +264,6 @@ defmodule Vibe.AgentGateway do
     |> Map.new()
   end
 
-  # attachment_context_to_attachments/1 (ChatChannel) uses :type "image"|"file"|"voice";
-  # the runtime contract uses :kind "image"|"document"|"audio".
   defp normalize_attachments(attachments) do
     Enum.map(attachments, fn a ->
       type = to_string(a[:type] || a["type"] || "file")
@@ -283,8 +286,6 @@ defmodule Vibe.AgentGateway do
     end)
   end
 
-  # computer_run/browser_open aren't in Vibe.AI.ToolRegistry yet (unowned this run) —
-  # honored here once an agent's enabled_tools actually contains them.
   defp capabilities_for(agent) do
     VibeContracts.ToolBundles.capabilities(agent.enabled_tools || [])
   end
@@ -296,7 +297,6 @@ defmodule Vibe.AgentGateway do
       url = runtime_url() <> path
 
       case http_client().(method, url, headers, json_body) do
-        # 204 = nothing new (computer/frame polling); not an error, not an empty body.
         {:ok, %{status: 204}} ->
           {:ok, :no_change}
 

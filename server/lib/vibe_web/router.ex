@@ -56,6 +56,10 @@ defmodule VibeWeb.Router do
     plug VibeWeb.Plugs.InternalServiceAuth
   end
 
+  pipeline :team_computer_mcp do
+    plug :accepts, ["json"]
+  end
+
   # Auth endpoints with rate limiting
   scope "/api", VibeWeb do
     pipe_through :auth_rate_limited
@@ -375,7 +379,12 @@ defmodule VibeWeb.Router do
     post "/keys/peer", BridgeController, :peer_key
   end
 
-  # Webhooks (no auth required)
+  scope "/internal/team-computer" do
+    pipe_through :team_computer_mcp
+
+    post "/mcp", Vibe.AI.TeamComputer.MCP, :handle
+  end
+
   scope "/api", VibeWeb do
     pipe_through :api
     post "/webhooks/lemonsqueezy", WebhookController, :lemon_squeezy
