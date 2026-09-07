@@ -1,46 +1,16 @@
 defmodule Vibe.Links do
   @moduledoc """
   Canonical Vibe **share links** — the one place that knows what a public link looks like.
-
-  Every shareable surface gets exactly one short https link, Telegram-style:
-
-      https://vibegram.io/<username>   a person or an agent (bare handle)
-      https://vibegram.io/r/<slug>     a public channel
-      https://vibegram.io/j/<token>    a private channel invite
-
-  The base is a single knob (`VIBE_SHARE_BASE_URL`) so buying a shorter domain later
-  is an env-var change, not a code change. Nothing else in the codebase should
-  hand-assemble a share URL — build it here so the app, the agent tools, and the
-  web preview page can never disagree about what the user's link is.
-
-  ## Which host, and why the default is the API host
-
-  Links must resolve on whatever host serves them, and today `vibegram.io` is a static
-  SPA deploy that forwards nothing here — every path on it returns the marketing page.
-  So the default base is the host that actually answers, `api.vibegram.io`, because a
-  working link beats a pretty dead one.
-
-  Getting `https://vibegram.io/<handle>` (the nicer form) needs one of:
-
-    * the apex forwarding `/r/*`, `/j/*`, `/.well-known/apple-app-site-association` and
-      bare handles to this app — the rules ship in `client/vercel.json` and
-      `client/public/_redirects`, so a client redeploy is enough; or
-    * a single Cloudflare redirect rule doing the same.
-
-  Then set `VIBE_SHARE_BASE_URL=https://vibegram.io` and every surface follows. Same
-  story for a future short domain. See `docs/share-links.md`.
   """
 
   alias Vibe.Accounts
   alias Vibe.Agents
   alias Vibe.Chat
 
-  # The host that actually resolves these paths today. Override with
-  # VIBE_SHARE_BASE_URL once a prettier domain forwards here.
+  # The host that actually resolves these paths today.
   @default_share_base "https://api.vibegram.io"
 
-  # Single-segment paths the web app (or infra) owns. A handle can never be one of
-  # these, and `/:handle` must fall through to the SPA for them.
+  # Single-segment paths the web app (or infra) owns.
   @reserved_handles ~w[
     about admin agent agents api app assets blog bridge dashboard docs download
     fonts health help images j l login logout pricing privacy r register robots
@@ -50,16 +20,6 @@ defmodule Vibe.Links do
 
   @doc """
   Base URL every share link hangs off, without a trailing slash.
-
-  Env resolution (explicit and tested):
-
-  1. `VIBE_SHARE_BASE_URL` when set and non-blank — preferred share host
-     (e.g. `https://vibegram.io` once apex forwards here).
-  2. Otherwise `@default_share_base` (`https://api.vibegram.io`) — the host
-     that currently serves these paths.
-
-  This is intentionally separate from `VIBE_PUBLIC_BASE_URL` / `PUBLIC_BASE_URL`
-  (API / OAuth base). Share marketing host and API host can diverge.
   """
   def share_base_url do
     case present(System.get_env("VIBE_SHARE_BASE_URL")) do
@@ -73,11 +33,6 @@ defmodule Vibe.Links do
 
   @doc """
   Public link for a person or an agent handle: `https://<base>/<handle>`.
-
-  Accepts a bare handle, an `@handle`, a `%Vibe.Schemas.User{}`, or an agent
-  payload/struct. Returns `nil` when there is no handle to link to (an agent
-  draft whose shadow user was not created yet, say) so callers never publish
-  a link to nowhere.
   """
   def handle_url(handle) do
     case normalize_handle(handle) do
@@ -91,9 +46,6 @@ defmodule Vibe.Links do
 
   @doc """
   Absolute URL for a room share link.
-
-  Accepts what `Vibe.Chat` produces (`"/r/<slug>"`, `"/j/<token>"`), a bare public
-  slug, or an already-absolute URL (passed through untouched).
   """
   def room_url(nil), do: nil
 
@@ -138,9 +90,6 @@ defmodule Vibe.Links do
 
   @doc """
   Deep link that opens a resolved target straight in the app.
-
-  Handles carry the resolved user id when we have it so the app can open the chat
-  without a second round trip, and still carry the handle as a fallback.
   """
   def deep_link(%{kind: :channel, slug: slug}) when is_binary(slug),
     do: "vibe://room-link?" <> URI.encode_query(%{"slug" => slug})
@@ -169,17 +118,6 @@ defmodule Vibe.Links do
 
   @doc """
   Resolves one path segment to whatever it points at.
-
-  Order matters: people and agents share the `users.username` namespace and win
-  over channel slugs (usernames allow `_`, slugs allow `-`, so real collisions are
-  rare). Returns `{:ok, target}` with a map describing the target, or
-  `{:error, :not_found}` / `{:error, :reserved}`.
-
-  ## Options
-
-    * `:viewer_user_id` — when the viewer owns an unpublished agent, resolve it
-      anyway so the owner's own link works before they publish.
-    * `:include_unpublished` — resolve draft agents regardless of viewer.
   """
   def resolve_handle(handle, opts \\ []) do
     normalized = normalize_handle(handle)
@@ -192,7 +130,7 @@ defmodule Vibe.Links do
   end
 
   defp lookup_handle(handle, opts) do
-    case Accounts.get_user_by_username(handle) do
+    case Accounts.get_any_user_by_username(handle) do
       %{is_agent: true} = user -> agent_target(user, handle, opts)
       %{} = user -> {:ok, user_target(user, handle)}
       _ -> channel_target(handle)
@@ -233,8 +171,6 @@ defmodule Vibe.Links do
   end
 
   defp user_target(user, handle) do
-    # A person's avatar is only surfaced publicly when their own privacy setting
-    # already says "everybody" — the preview page is the open web.
     avatar =
       if to_string(user.privacy_profile_photos || "everybody") == "everybody" do
         present(user.profile_image)
@@ -323,9 +259,6 @@ defmodule Vibe.Links do
 
   @doc """
   Normalizes anything handle-shaped to a bare lowercase handle.
-
-  Accepts `"@name"`, `"name"`, a full share URL, a `%Vibe.Schemas.User{}`, an
-  agent struct, or an `agent_payload/2` map.
   """
   def normalize_handle(nil), do: nil
 

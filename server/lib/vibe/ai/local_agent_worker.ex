@@ -17,7 +17,7 @@ defmodule Vibe.AI.LocalAgentWorker do
   @group_context_messages 12
 
   @agent_user_id Vibe.AI.GroupAgent.agent_user_id()
-  # Distinct agent user identities so @claude / @codex / @grok / @agy are.
+  # Distinct agent user identities so @claude / @codex / @grok are.
   @claude_agent_user_id "11111111-1111-1111-1111-111111111111"
   @codex_agent_user_id "22222222-2222-2222-2222-222222222222"
   @grok_agent_user_id "33333333-3333-3333-3333-333333333333"
@@ -60,7 +60,7 @@ defmodule Vibe.AI.LocalAgentWorker do
   than a couple of minutes, say what you would do and stop there. To hand work to a
   teammate, @mention exactly one of them on the last line.
   """
-  @worker_order ["claude", "codex", "grok", "agy", "boss", "monitor", "coder", "researcher", "marketing", "social", "media"]
+  @worker_order ["claude", "codex", "grok", "boss", "monitor", "coder", "researcher", "marketing", "social", "media"]
   @role_worker_order ["boss", "monitor", "coder", "researcher", "marketing", "social", "media"]
 
   # "@coder" or "@coder [max]" — the bracketed level, when present, is the pinned effort.
@@ -100,6 +100,7 @@ defmodule Vibe.AI.LocalAgentWorker do
       avatar_url: @grok_avatar_data_url,
       tier: "gold"
     },
+    # Research helper, mention-only: absent from the roster, so no broadcast reaches it.
     "agy" => %{
       handle: "agy",
       label: "Agy",
@@ -278,6 +279,13 @@ defmodule Vibe.AI.LocalAgentWorker do
   @doc "All worker definitions keyed by handle."
   def workers, do: @workers
 
+  @doc "A built-in team agent user id. Those users are platform-internal, never public."
+  def team_agent_user_id?(id) when is_binary(id) do
+    Enum.any?(@workers, fn {_handle, worker} -> Map.get(worker, :agent_user_id) == id end)
+  end
+
+  def team_agent_user_id?(_), do: false
+
   @doc "List of all worker definitions."
   def list_workers do
     @worker_order
@@ -320,16 +328,16 @@ defmodule Vibe.AI.LocalAgentWorker do
     end
   end
 
-  # A role worker carries its own model so cost tracks the job, not a global env.
+  # Roster model outranks the app pick, so the boss never drops to a cheap one.
   defp put_worker_model(worker, opts) do
     metadata = Keyword.get(opts, :bridge_metadata) || %{}
 
     metadata =
       if executor_for(worker) == declared_executor(worker) do
         metadata
-        |> put_worker_option("model", Map.get(worker, :model))
-        |> put_worker_option("fallbackModel", Map.get(worker, :fallback_model))
-        |> put_worker_option("reasoningEffort", Map.get(worker, :effort))
+        |> force_worker_option("model", :model, Map.get(worker, :model))
+        |> force_worker_option("fallbackModel", :fallbackModel, Map.get(worker, :fallback_model))
+        |> force_worker_option("reasoningEffort", :reasoningEffort, Map.get(worker, :effort))
       else
         metadata
       end
@@ -352,6 +360,14 @@ defmodule Vibe.AI.LocalAgentWorker do
       Map.put(metadata, key, value)
     else
       _ -> metadata
+    end
+  end
+
+  defp force_worker_option(metadata, key, atom_key, value) do
+    if is_binary(value) and value != "" do
+      metadata |> Map.drop([key, atom_key]) |> Map.put(key, value)
+    else
+      metadata
     end
   end
 

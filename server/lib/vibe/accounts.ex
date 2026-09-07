@@ -13,22 +13,19 @@ defmodule Vibe.Accounts do
     end
   end
 
-  # SECURITY: PBKDF2 iteration count - must match auth_controller.ex
+  # SECURITY:
   @pbkdf2_iterations 600_000
   @legacy_pbkdf2_iterations 1_000
   @phone_min_digits 7
   @phone_max_digits 15
   @reserved_usernames ["vibeagent", "claude", "codex", "grok", "agy"]
 
-  # SECURITY: Session token validity window — must match AuthController.
+  # SECURITY:
   @token_validity_seconds 30 * 24 * 60 * 60
-  # Sliding-expiration cadence. While a token is actively used we push its expiry
-  # back to a full window, but only once the window has slipped by more than this,
-  # so an active session never lapses yet we touch the DB at most ~once/day/user.
+  # Sliding-expiration cadence.
   @token_slide_after_seconds 24 * 60 * 60
 
-  # Repo.get/2 raises on a nil id. Callers reach here from agent tool inputs, where a
-  # missing id must be an ordinary "no user" answer, not an exception that unwinds the turn.
+  # Repo.get/2 raises on a nil id.
   def get_user(nil), do: nil
   def get_user(id), do: Repo.get(User, id)
 
@@ -68,7 +65,6 @@ defmodule Vibe.Accounts do
     :privacy_saved_music
   ]
 
-  # Self always sees. contacts = existing DM and neither side blocked.
   def viewer_can_see?(%User{} = owner, viewer, field) when field in @privacy_gate_fields do
     cond do
       match?(%{id: id} when id == owner.id, viewer) ->
@@ -111,10 +107,6 @@ defmodule Vibe.Accounts do
     Repo.exists?(query)
   end
 
-  # Authenticating a request is the one query that repeats identically on every
-  # call of a session, and the DB is ~350ms away — so it was the floor under every
-  # authenticated endpoint. Serve it from a short-TTL cache; see
-  # `Vibe.Accounts.TokenCache` for the invalidation rules that keep it honest.
   def get_user_by_token(token) when is_binary(token) and byte_size(token) > 0 do
     case TokenCache.fetch(hash_session_token(token)) do
       {:ok, user} -> {:ok, user}
@@ -135,8 +127,6 @@ defmodule Vibe.Accounts do
     end
   end
 
-  # Device sessions resolve first. The legacy column is plaintext and carries no
-  # `revoked_at`, per-device scope or hard expiry, so reaching it first was a downgrade.
   defp load_user_by_token(token) do
     case get_session_by_token(token) do
       {:ok, session} ->
@@ -163,7 +153,6 @@ defmodule Vibe.Accounts do
         {:error, :not_found}
 
       user ->
-        # SECURITY: Check token expiration
         if token_valid?(user) do
           legacy_token_hit(user)
           {:ok, maybe_slide_token_expiry(user)}
@@ -173,17 +162,10 @@ defmodule Vibe.Accounts do
     end
   end
 
-  # Dropping the legacy column is gated on this counter reading zero, so every
-  # resolution off it has to be counted.
   defp legacy_token_hit(%User{id: user_id}) do
     :telemetry.execute([:vibe, :auth, :legacy_token_hit], %{count: 1}, %{user_id: user_id})
   end
 
-  # Push a still-valid token's expiry forward on use, so an actively-used app never
-  # gets logged out. With key-only login that lockout can mean permanent account
-  # loss, so keeping live sessions alive is the safer default. Writes only once the
-  # window has slipped past @token_slide_after_seconds (≈ one DB write/day/active
-  # user); a failed extension is non-fatal — the caller still gets the user.
   defp maybe_slide_token_expiry(%User{token_expires_at: nil} = user), do: user
 
   defp maybe_slide_token_expiry(%User{token_expires_at: expires_at} = user) do
@@ -206,9 +188,7 @@ defmodule Vibe.Accounts do
   end
 
   @doc """
-  Check if token is still valid: not past its sliding expiry (or unset, for
-  legacy rows), and not past the absolute AUTH_TOKEN_MAX_LIFETIME_DAYS
-  lifetime measured from token_issued_at — sliding expiry cannot extend past it.
+  Check if token is still valid: not past its sliding expiry (or unset.
   """
   def token_valid?(%User{} = user) do
     expiry_ok? =
@@ -237,7 +217,19 @@ defmodule Vibe.Accounts do
     days * 24 * 60 * 60
   end
 
+  # Agents are invisible by username: only get_any_user_by_username/1 reaches them.
   def get_user_by_username(username) do
+    lower_username = String.downcase(username)
+
+    Repo.one(
+      from(u in User,
+        where: fragment("LOWER(?)", u.username) == ^lower_username and u.is_agent == false
+      )
+    )
+  end
+
+  @doc "Includes agent users. Only for callers that gate agent visibility themselves."
+  def get_any_user_by_username(username) do
     lower_username = String.downcase(username)
     Repo.one(from(u in User, where: fragment("LOWER(?)", u.username) == ^lower_username))
   end
@@ -345,18 +337,12 @@ defmodule Vibe.Accounts do
     result
   end
 
-  # Any write to the user row (profile edit, token rotation, expiry slide) must
-  # evict the cached auth entry, or the next request would authenticate against a
-  # pre-write copy. Sweeping by user id also drops a rotated-away login_token,
-  # which is keyed by its own value and so cannot be found any other way.
   defp tap_invalidate_token_cache(result, %User{} = previous) do
     TokenCache.invalidate_user(previous.id)
     if previous.login_token, do: TokenCache.invalidate(hash_session_token(previous.login_token))
     result
   end
 
-  # Closes every live socket for this user immediately on revocation.
-  # A broadcast failure (endpoint down) must never fail the revocation itself.
   defp broadcast_disconnect(user_id) do
     VibeWeb.Endpoint.broadcast("user_socket:#{user_id}", "disconnect", %{})
     :ok
@@ -470,7 +456,6 @@ defmodule Vibe.Accounts do
     Repo.exists?(query)
   end
 
-  # -- Device & Session Management -------------------------------------------
 
   alias Vibe.Schemas.AccountDevice
   alias Vibe.Schemas.DeviceSession
@@ -481,9 +466,6 @@ defmodule Vibe.Accounts do
 
   @doc """
   Registers or refreshes the calling device and returns {:ok, account_device}.
-
-  `revive: true` clears a revocation, and only an already-authenticated caller may
-  ask for it: a remote sign-out has to outlive the device signing in again by itself.
   """
   def register_device(user_id, attrs, opts \\ []) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -552,7 +534,6 @@ defmodule Vibe.Accounts do
             device
           end)
 
-        # No conn here (context layer) — controller is out of this brief's scope.
         Vibe.Audit.record(nil, "device.revoke", actor_user_id: user_id, target_id: device_id)
         TokenCache.invalidate_user(user_id)
         if match?({:ok, _}, result), do: broadcast_disconnect(user_id)
@@ -606,9 +587,6 @@ defmodule Vibe.Accounts do
 
   @doc """
   Registers a device and issues its replacement session token.
-
-  Still revives a revoked device: iOS sends the same `/api/login` for a silent
-  recovery as for a typed sign-in, so refusing here would strand the owner too.
   """
   def issue_device_session(user_id, attrs) do
     with {:ok, device} <- register_device(user_id, attrs, revive: true),
@@ -627,9 +605,6 @@ defmodule Vibe.Accounts do
           Repo.rollback(:not_found)
 
         session ->
-          # Lock the device first, matching revoke_device/2's lock order. Refetch and
-          # lock the session afterwards so a concurrent revocation is observed before
-          # this authentication attempt can succeed.
           device =
             Repo.one(
               from(d in AccountDevice,
@@ -707,8 +682,6 @@ defmodule Vibe.Accounts do
           })
           |> Repo.update()
 
-        # A revoked session must stop authenticating immediately, not once the
-        # cached auth entry ages out.
         TokenCache.invalidate_user(user_id)
         Vibe.Audit.record(nil, "session.revoke", actor_user_id: user_id, target_id: session_id)
         if match?({:ok, _}, result), do: broadcast_disconnect(user_id)
@@ -738,8 +711,6 @@ defmodule Vibe.Accounts do
       %DeviceSession{id: session_id} ->
         revoke_session(user.id, session_id)
 
-      # `user` may be the cached struct, which has `login_token` stripped, so the
-      # legacy branch re-reads rather than comparing a field the cache nils out.
       nil ->
         case Repo.get_by(User, id: user.id, login_token: token) do
           %User{} = holder -> revoke_login_token(holder)

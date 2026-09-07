@@ -95,6 +95,10 @@ defmodule VibeWeb.Router do
     post "/auth/logout", AuthController, :logout
     post "/auth/logout-all", AuthController, :logout_all
 
+    get "/admin/me", AdminController, :me
+    get "/admin/team", AdminController, :team
+    get "/admin/admins", AdminController, :admins
+
     get "/user/:id", UserController, :show
     get "/user/name/:username", UserController, :show_by_name
     get "/user/phone/:phone", UserController, :show_by_phone

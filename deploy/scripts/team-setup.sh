@@ -7,17 +7,24 @@
 #   deploy/scripts/team-setup.sh install      # node + claude/codex into ~/.local on the box
 #   deploy/scripts/team-setup.sh login        # run the CLI browser logins ON the box
 #
-# Runs on the Mac and drives the box over SSH; VPS_HOST comes from the agix
-# broker, never argv. Never deploys — it prints the command and stops.
+# Runs on the Mac and drives the box over the `vibe-vps` ssh alias, so the address
+# stays in ~/.ssh/config. Never deploys — it prints the command and stops.
 # See docs/agent-team-ops.md.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEST="${DEST:-/opt/vibe}"
-USER_="${VPS_USER:-vibe}"
-KEY="${VPS_SSH_KEY_FILE:-$HOME/.ssh/vibe_vps}"
-SSH_OPTS="-o IdentitiesOnly=yes -o StrictHostKeyChecking=${VPS_SSH_STRICT:-accept-new} -o ConnectTimeout=20"
-[ -f "$KEY" ] && SSH_OPTS="-i $KEY $SSH_OPTS"
+SSH_HOST="${VPS_SSH_HOST:-vibe-vps}"
+# Rootless podman runs under vibe; the ops admin account owns no containers.
+SSH_USER="${VPS_SSH_USER:-vibe}"
+# One TCP connection for the whole run: a check asks the box nine questions, and
+# nine handshakes in a row trip sshd's rate limit as a connect timeout.
+CTL="/tmp/.vibe-team-$$"
+SSH_OPTS="-l ${SSH_USER} -o ConnectTimeout=25 -o ControlMaster=auto -o ControlPath=${CTL} -o ControlPersist=90"
+if [ -n "${VPS_SSH_KEY_FILE:-}" ]; then
+  SSH_OPTS="-i ${VPS_SSH_KEY_FILE} -o IdentitiesOnly=yes $SSH_OPTS"
+fi
+trap 'ssh -O exit -o ControlPath="${CTL}" "$SSH_HOST" >/dev/null 2>&1 || true' EXIT
 
 green() { printf '\033[32m%s\033[0m\n' "$1"; }
 red()   { printf '\033[31m%s\033[0m\n' "$1"; }
@@ -25,20 +32,39 @@ warn()  { printf '\033[33m%s\033[0m\n' "$1"; }
 dim()   { printf '\033[2m%s\033[0m\n' "$1"; }
 head_() { printf '\n\033[1m── %s ──\033[0m\n' "$1"; }
 
-# Every remote call goes through the broker so the host name never reaches argv.
-# $1 is a shell script run as `vibe` on the box; extra ssh flags ride $SSH_EXTRA.
-on_box() {
-  local script="$1"
-  agix secret run --net --only VPS_HOST -- sh -c \
-    'ssh '"${SSH_EXTRA:-}"' '"$SSH_OPTS"' "'"${USER_}"'@$VPS_HOST" '"$(printf '%q' "$script")"
+# ~/.ssh/config holds the address, so it never reaches argv — same as tunnel-push.sh.
+# $1 is one shell script run as `vibe` on the box; ssh sends it verbatim.
+on_box()     { ssh -n  $SSH_OPTS "$SSH_HOST" "$1"; }
+on_box_tty() { ssh -tt $SSH_OPTS "$SSH_HOST" "$1"; }
+
+# podman-compose's project prefix varies by version, so names come from the box.
+RESOLVED=""; CORE=""; PG=""; RUNNING=""
+resolve_containers() {
+  [ -n "$RESOLVED" ] && return 0
+  RESOLVED=1
+  local names n
+  names="$(on_box 'podman ps --format "{{.Names}}"' 2>/dev/null | tr -d '\r')" || true
+  for n in $names; do
+    RUNNING="${RUNNING}${n} "
+    case "$n" in
+      *core*)     [ -n "$CORE" ] || CORE="$n" ;;
+      *postgres*) [ -n "$PG" ] || PG="$n" ;;
+    esac
+  done
 }
 
 psql_() {
-  on_box "podman exec deploy_postgres_1 psql -U postgres -d vibe_core -tAX -c $(printf '%q' "$1")"
+  resolve_containers
+  [ -n "$PG" ] || { warn "  no postgres container on the box (running: ${RUNNING:-none})" >&2; return 0; }
+  on_box "podman exec $PG psql -U postgres -d vibe_core -tAX -c $(printf '%q' "$1")"
 }
 
-require_agix() {
-  command -v agix >/dev/null || { red "agix is not on PATH — it holds VPS_HOST"; exit 1; }
+require_box() {
+  ssh -n -o BatchMode=yes $SSH_OPTS "$SSH_HOST" true || {
+    red "cannot reach ${SSH_HOST} — the error above is ssh's own"
+    dim "  set VPS_SSH_HOST to your Host alias in ~/.ssh/config, or VPS_SSH_KEY_FILE to a key"
+    exit 1
+  }
 }
 
 # ---------------------------------------------------------------- check
@@ -54,15 +80,26 @@ cmd_check() {
   if [ -n "$deployed" ] && ! git -C "$REPO_ROOT" merge-base --is-ancestor HEAD "${deployed%%-*}" 2>/dev/null; then
     if [ "${deployed%%-*}" != "$local_sha" ]; then
       warn "the box is behind — the role team (@boss @monitor @coder …) only exists in newer code"
-      dim "  deploy by merging to main; see docs/deploy-pipeline.md"
+      dim "  deploy: push-tree.sh then deploy.sh on the box; see docs/agent-team-ops.md"
     fi
   fi
 
+  head_ "containers"
+  resolve_containers
+  echo "running  : ${RUNNING:-none}"
+  echo "core     : ${CORE:-not running}"
+  echo "postgres : ${PG:-not running}"
+  if [ -z "$RUNNING" ]; then
+    warn "  nothing running for this ssh user — the stack may be owned by another user"
+    dim "  remote user, then every container, then images:"
+    on_box 'id -un; podman ps -a --format "{{.Names}} {{.Status}}"; podman images --format "{{.Repository}}:{{.Tag}}"'
+  fi
+
   head_ "team env on core"
-  on_box 'for v in VIBE_LOCAL_AGENT_WORKERS VIBE_AGENT_WORKER_ALLOWED_USERS VIBE_TEAM_WORKSPACE VIBE_TEAM_EXECUTOR VIBE_CLAUDE_COMMAND VIBE_CODEX_COMMAND; do val=$(podman exec deploy_core_1 printenv $v 2>/dev/null); if [ -n "$val" ]; then echo "  $v = set"; else echo "  $v = UNSET"; fi; done'
+  on_box "c=${CORE}; "'for v in VIBE_LOCAL_AGENT_WORKERS VIBE_AGENT_WORKER_ALLOWED_USERS VIBE_TEAM_WORKSPACE VIBE_TEAM_EXECUTOR VIBE_CLAUDE_COMMAND VIBE_CODEX_COMMAND; do val=$(podman exec "$c" printenv $v 2>/dev/null); if [ -n "$val" ]; then echo "  $v = set"; else echo "  $v = UNSET"; fi; done'
 
   head_ "team compute"
-  on_box 'for b in node npm claude codex grok; do printf "  %-7s " $b; command -v $b >/dev/null 2>&1 && command -v $b || echo missing-on-host; done; printf "  %-7s " core; podman exec deploy_core_1 command -v claude >/dev/null 2>&1 && echo "claude present" || echo "no CLI inside deploy_core_1"'
+  on_box "c=${CORE}; "'for b in node npm claude codex grok; do printf "  %-7s " $b; command -v $b >/dev/null 2>&1 && command -v $b || echo missing-on-host; done; printf "  %-7s " core; podman exec "$c" command -v claude >/dev/null 2>&1 && echo "claude present" || echo "no CLI inside ${c:-core}"'
   dim "  core runs read_only with cap_drop ALL and no mounts — it cannot exec a CLI."
   dim "  Server-side workers need the team sidecar; see docs/agent-team-ops.md."
 
@@ -79,8 +116,10 @@ cmd_verify() {
   psql_ 'select rpad(username,12) || coalesce(tier,chr(45)) from users where is_agent order by username'
   local n
   n="$(psql_ 'select count(*) from users where is_agent' | tr -d ' \r')"
-  if [ "${n:-0}" -lt 11 ]; then
-    warn "  ${n:-0} of 11 agent users exist — ensure_agent_users/0 seeds the rest at boot"
+  if [ -z "$n" ]; then
+    warn "  agent-user count unread — the query above never reached postgres"
+  elif [ "$n" -lt 11 ]; then
+    warn "  $n of 11 agent users exist — ensure_agent_users/0 seeds the rest at boot"
     dim "  the 7 role workers arrive with the deploy, not with a DB write"
   fi
 
@@ -103,10 +142,11 @@ cmd_env() {
 
   head_ "applying to core.env"
   # apply-env.sh merges KEY=VALUE from stdin into the sealed file; values never hit argv.
-  SSH_EXTRA="" on_box "printf '%s\n' 'VIBE_LOCAL_AGENT_WORKERS=1' 'VIBE_AGENT_WORKER_ALLOWED_USERS=${owners}' 'VIBE_TEAM_WORKSPACE=${DEST}' | ${DEST}/deploy/scripts/apply-env.sh core.env"
+  on_box "printf '%s\n' 'VIBE_LOCAL_AGENT_WORKERS=1' 'VIBE_AGENT_WORKER_ALLOWED_USERS=${owners}' 'VIBE_TEAM_WORKSPACE=${DEST}' | ${DEST}/deploy/scripts/apply-env.sh core.env"
 
   head_ "recreating core"
-  on_box "cd ${DEST}/deploy && podman rm -f deploy_core_1 >/dev/null 2>&1; podman-compose up -d --no-build >/dev/null 2>&1; podman inspect -f '{{.State.Status}}' deploy_core_1"
+  resolve_containers
+  on_box "cd ${DEST}/deploy && podman rm -f ${CORE:-deploy_core_1} >/dev/null 2>&1; podman-compose up -d --no-build >/dev/null 2>&1; podman inspect -f '{{.State.Status}}' ${CORE:-deploy_core_1}"
   green "core restarted — env_file is only re-read on create, so the recreate is the apply"
 }
 
@@ -145,7 +185,7 @@ cmd_login() {
   head_ "signing the CLIs in ON the box"
   dim "each CLI prints a URL — open it in your own browser and paste the code back here."
   dim "credentials land in the box's ~/.claude and ~/.codex, which is where the team reads them."
-  SSH_EXTRA="-tt" on_box '
+  on_box_tty '
 export PATH="$HOME/.local/node/bin:$HOME/.local/bin:$PATH"
 for cli in claude codex; do
   command -v "$cli" >/dev/null 2>&1 || { echo "$cli is not installed — run team-setup.sh install"; continue; }
@@ -159,11 +199,11 @@ done'
 }
 
 case "${1:-check}" in
-  check)   require_agix; cmd_check ;;
-  verify)  require_agix; cmd_verify ;;
-  env)     require_agix; cmd_env ;;
-  install) require_agix; cmd_install ;;
-  login)   require_agix; cmd_login ;;
+  check)   require_box; cmd_check ;;
+  verify)  require_box; cmd_verify ;;
+  env)     require_box; cmd_env ;;
+  install) require_box; cmd_install ;;
+  login)   require_box; cmd_login ;;
   -h|--help) sed -n '2,12p' "$0" | cut -c3- ;;
   *) red "unknown command: $1 (try: check, verify, env, install, login)"; exit 2 ;;
 esac

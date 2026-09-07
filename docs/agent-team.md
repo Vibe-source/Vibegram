@@ -20,10 +20,14 @@ per role, not global: `--effort` rides the roster, so a haiku watcher stays chea
 the roles that decide and patch get the whole ladder. `@boss` runs at `max` because its
 call sets everything downstream.
 
-Three ways to set the level, strongest last: the roster default; a pick from the app
-(`agentBridgeReasoningEffort`, or `agentBridgeEfforts` keyed by handle for one level per
-role in a single send); and a level written on the mention — `@coder [max]`,
-`@social (low)`. The boss pins levels this way when it delegates.
+A role worker's model, fallback and level come from the roster and outrank an app pick
+(`agentBridgeReasoningEffort`, `agentBridgeEfforts`) — that pick still steers `@claude`,
+`@codex` and `@grok`. Only a level written on the mention beats the roster: `@coder [max]`,
+`@social (low)`. The boss pins levels this way when it delegates, and no basic model can
+ever take the boss seat.
+
+`@agy` is a research helper, reachable only by naming it. It is absent from the roster,
+so no broadcast or handoff reaches it and it is never the boss.
 
 DevOps is `@monitor` + `@coder`: monitor watches and never patches, coder patches and
 reports back. Models differ per role so cost tracks the job.

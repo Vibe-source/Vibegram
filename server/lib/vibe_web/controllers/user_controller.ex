@@ -7,11 +7,21 @@ defmodule VibeWeb.UserController do
   @max_contact_match_numbers 500
 
   def show(conn, %{"id" => id}) do
+    viewer = conn.assigns.current_user
+
     case Accounts.get_user(id) do
-      nil -> conn |> put_status(404) |> json(%{error: "User not found"})
-      user -> render_user(conn, user, conn.assigns.current_user)
+      nil -> not_found(conn)
+      user -> if hidden_team_agent?(user, viewer), do: not_found(conn), else: render_user(conn, user, viewer)
     end
   end
+
+  defp not_found(conn), do: conn |> put_status(404) |> json(%{error: "User not found"})
+
+  # The built-in team is Vibegram staff, not a directory entry: only an admin sees it.
+  defp hidden_team_agent?(%{id: id, is_agent: true}, viewer),
+    do: Vibe.AI.LocalAgentWorker.team_agent_user_id?(id) and not Vibe.Admins.admin?(viewer)
+
+  defp hidden_team_agent?(_user, _viewer), do: false
 
   def show_by_name(conn, %{"username" => username}) do
     case Accounts.get_user_by_username(username) do
