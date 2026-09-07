@@ -19,7 +19,7 @@ defmodule VibeWeb.UserController do
 
   # The built-in team is Vibegram staff, not a directory entry: only an admin sees it.
   defp hidden_team_agent?(%{id: id, is_agent: true}, viewer),
-    do: Vibe.AI.LocalAgentWorker.team_agent_user_id?(id) and not Vibe.Admins.admin?(viewer)
+    do: is_nil(Vibe.Agents.get_agent_by_shadow_user(id)) and not Vibe.Admins.admin?(viewer)
 
   defp hidden_team_agent?(_user, _viewer), do: false
 

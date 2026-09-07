@@ -17,11 +17,7 @@ defmodule Vibe.AI.LocalAgentWorker do
   @group_context_messages 12
 
   @agent_user_id Vibe.AI.GroupAgent.agent_user_id()
-  # Distinct agent user identities so @claude / @codex / @grok are.
-  @claude_agent_user_id "11111111-1111-1111-1111-111111111111"
-  @codex_agent_user_id "22222222-2222-2222-2222-222222222222"
-  @grok_agent_user_id "33333333-3333-3333-3333-333333333333"
-  @agy_agent_user_id "44444444-4444-4444-4444-444444444444"
+  # Fixed ids, so a seeded agent user survives a rename.
   # Role agents: own identity, own model, run their CLI on the server (no bridge).
   @boss_agent_user_id "55555555-5555-5555-5555-555555555555"
   @monitor_agent_user_id "66666666-6666-6666-6666-666666666666"
@@ -30,10 +26,6 @@ defmodule Vibe.AI.LocalAgentWorker do
   @marketing_agent_user_id "99999999-9999-9999-9999-999999999999"
   @social_agent_user_id "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
   @media_agent_user_id "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-  @claude_avatar_data_url "https://media.vibegram.io/chat-media/agent-profiles/claude.png"
-  @codex_avatar_data_url "https://media.vibegram.io/chat-media/agent-profiles/codex.png"
-  @grok_avatar_data_url "https://media.vibegram.io/chat-media/agent-profiles/grok-v2.png"
-  @agy_avatar_data_url "https://media.vibegram.io/chat-media/agent-profiles/agy-v3.png"
   @default_timeout_ms 120_000
   @default_team_timeout_ms 600_000
   @max_prompt_length 8_000
@@ -60,58 +52,13 @@ defmodule Vibe.AI.LocalAgentWorker do
   than a couple of minutes, say what you would do and stop there. To hand work to a
   teammate, @mention exactly one of them on the last line.
   """
-  @worker_order ["claude", "codex", "grok", "boss", "monitor", "coder", "researcher", "marketing", "social", "media"]
+  @worker_order ["boss", "monitor", "coder", "researcher", "marketing", "social", "media"]
   @role_worker_order ["boss", "monitor", "coder", "researcher", "marketing", "social", "media"]
 
   # "@coder" or "@coder [max]" — the bracketed level, when present, is the pinned effort.
-  @mention_pattern ~r/(?:^|\s)@(codex|claude|grok|agy|antigravity|boss|monitor|coder|researcher|marketing|social|media)\b(?:\s*[\[(]\s*(low|medium|high|xhigh|extra[-_ ]?high|max|ultrathink)\s*[\])])?/i
+  @mention_pattern ~r/(?:^|\s)@(boss|monitor|coder|researcher|marketing|social|media)\b(?:\s*[\[(]\s*(low|medium|high|xhigh|extra[-_ ]?high|max|ultrathink)\s*[\])])?/i
 
   @workers %{
-    "codex" => %{
-      handle: "codex",
-      label: "Codex",
-      command_env: "VIBE_CODEX_COMMAND",
-      default_command: "codex",
-      agent_user_id: @codex_agent_user_id,
-      username: "codex",
-      name: "Codex",
-      avatar_url: @codex_avatar_data_url,
-      tier: "gold"
-    },
-    "claude" => %{
-      handle: "claude",
-      label: "Claude",
-      command_env: "VIBE_CLAUDE_COMMAND",
-      default_command: "claude",
-      agent_user_id: @claude_agent_user_id,
-      username: "claude",
-      name: "Claude",
-      avatar_url: @claude_avatar_data_url,
-      tier: "gold"
-    },
-    "grok" => %{
-      handle: "grok",
-      label: "Grok",
-      command_env: "VIBE_GROK_COMMAND",
-      default_command: "grok",
-      agent_user_id: @grok_agent_user_id,
-      username: "grok",
-      name: "Grok",
-      avatar_url: @grok_avatar_data_url,
-      tier: "gold"
-    },
-    # Research helper, mention-only: absent from the roster, so no broadcast reaches it.
-    "agy" => %{
-      handle: "agy",
-      label: "Agy",
-      command_env: "VIBE_AGY_COMMAND",
-      default_command: "agy",
-      agent_user_id: @agy_agent_user_id,
-      username: "agy",
-      name: "Agy",
-      avatar_url: @agy_avatar_data_url,
-      tier: "gold"
-    },
     "boss" => %{
       handle: "boss",
       label: "Boss",

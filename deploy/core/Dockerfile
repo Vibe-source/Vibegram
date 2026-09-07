@@ -55,13 +55,20 @@ RUN apk add --no-cache libstdc++ openssl ncurses-libs python3 py3-pip ffmpeg cur
   && /usr/local/bin/yt-dlp --version \
   && python3 -m yt_dlp --version
 
+RUN apk add --no-cache nodejs npm git \
+  && npm install -g --no-fund --no-audit @anthropic-ai/claude-code \
+  && (npm install -g --no-fund --no-audit @openai/codex || echo "codex: no musl build, skipped") \
+  && claude --version
+
 WORKDIR /app
-RUN chown nobody /app && mkdir -p /tmp/.cache && chown nobody /tmp/.cache
+RUN chown nobody /app && mkdir -p /tmp/.cache && chown nobody /tmp/.cache \
+  && mkdir -p /home/agent && chown nobody /home/agent
 
 ENV MIX_ENV="prod"
 ENV XDG_CACHE_HOME=/tmp/.cache
 ENV PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
 ENV YTDLP_PATH="/usr/local/bin/yt-dlp"
+ENV HOME=/home/agent
 
 COPY --from=elixir-build --chown=nobody:root /app/_build/prod/rel/vibe ./
 COPY --chmod=755 deploy/core/start.sh /app/start.sh
