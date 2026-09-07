@@ -76,7 +76,7 @@ cmd_check() {
 
 cmd_verify() {
   head_ "agent users (tier drives the gold badge)"
-  psql_ 'select rpad(username,12) || tier from users where is_agent order by username'
+  psql_ 'select rpad(username,12) || coalesce(tier,chr(45)) from users where is_agent order by username'
   local n
   n="$(psql_ 'select count(*) from users where is_agent' | tr -d ' \r')"
   if [ "${n:-0}" -lt 11 ]; then
@@ -85,10 +85,11 @@ cmd_verify() {
   fi
 
   head_ "badges"
-  psql_ 'select rpad(u.username,12) || b.badge_type || case when b.active then " active" else " inactive" end from badges b join users u on u.id = b.user_id order by u.username'
+  # No string literals: the SQL crosses two shells, and a quote would not survive.
+  psql_ 'select rpad(u.username,12) || rpad(b.badge_type,10) || b.active::text from badges b join users u on u.id = b.user_id order by u.username'
 
   head_ "owner accounts"
-  psql_ 'select rpad(username,12) || tier from users where not coalesce(is_agent,false) order by inserted_at'
+  psql_ 'select rpad(username,12) || coalesce(tier,chr(45)) from users where not coalesce(is_agent,false) order by inserted_at'
 }
 
 # ---------------------------------------------------------------- env
