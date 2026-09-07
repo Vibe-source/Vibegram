@@ -28,9 +28,9 @@ defmodule Vibe.AI.AgentTeamTest do
     end
   end
 
-  test "every role carries its own thinking level, and the boss falls back off fable" do
+  test "every role carries its own thinking level, and the boss thinks at max" do
     for worker <- W.list_role_workers() do
-      assert worker.effort in ["low", "medium", "high", "xhigh"],
+      assert worker.effort in ["low", "medium", "high", "xhigh", "max"],
              "#{worker.handle} has no thinking level"
     end
 
@@ -38,7 +38,25 @@ defmodule Vibe.AI.AgentTeamTest do
 
     assert boss.model == "fable"
     assert boss.fallback_model == "opus"
-    assert boss.effort == "xhigh"
+    assert boss.effort == "max"
+  end
+
+  test "a mention can pin the thinking level, and a bare mention does not" do
+    [coder] = W.extract_reserved_mentions("@coder [max] ship it")
+    assert coder.handle == "coder"
+    assert coder.effort_directive == "max"
+
+    [social] = W.extract_reserved_mentions("@social (low) post it")
+    assert social.effort_directive == "low"
+
+    bare = W.extract_reserved_mention("@coder ship it")
+    assert bare.handle == "coder"
+    refute Map.has_key?(bare, :effort_directive)
+
+    # Prose in brackets is not a level, so the mention still resolves on its own.
+    [monitor] = W.extract_reserved_mentions("@monitor (DevOps) check the logs")
+    assert monitor.handle == "monitor"
+    refute Map.has_key?(monitor, :effort_directive)
   end
 
   test "role workers fail closed: an empty allowlist means nobody" do

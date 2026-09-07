@@ -6,7 +6,7 @@ in the `agents` table on API keys, metered and quota'd; these are neither.
 
 | handle        | CLI    | model        | thinking | owns |
 | ------------- | ------ | ------------ | -------- | ---- |
-| `@boss`       | claude | fable → opus | xhigh    | delegating, deciding priority |
+| `@boss`       | claude | fable → opus | max      | delegating, deciding priority |
 | `@monitor`    | claude | haiku        | low      | security status, logging, health, incident triage |
 | `@coder`      | claude | opus         | xhigh    | patching, code review, updating, launching, deploying |
 | `@researcher` | codex  | —            | high     | investigation |
@@ -17,7 +17,13 @@ in the `agents` table on API keys, metered and quota'd; these are neither.
 `@boss` runs on Fable — the strongest model on a Max plan. If the plan cannot reach it
 (no Fable, exhausted quota, unknown alias) the run retries once on `opus`. Thinking is
 per role, not global: `--effort` rides the roster, so a haiku watcher stays cheap and
-the two roles that decide and patch get the whole ladder.
+the roles that decide and patch get the whole ladder. `@boss` runs at `max` because its
+call sets everything downstream.
+
+Three ways to set the level, strongest last: the roster default; a pick from the app
+(`agentBridgeReasoningEffort`, or `agentBridgeEfforts` keyed by handle for one level per
+role in a single send); and a level written on the mention — `@coder [max]`,
+`@social (low)`. The boss pins levels this way when it delegates.
 
 DevOps is `@monitor` + `@coder`: monitor watches and never patches, coder patches and
 reports back. Models differ per role so cost tracks the job.

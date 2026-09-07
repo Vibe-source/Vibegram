@@ -15,17 +15,11 @@ defmodule VibeWeb.ChatChannel do
   alias Vibe.AI.Transcribe
   require Logger
 
-  # Sealed agent image blobs (arte1). They ride the inbound message only to reach the
-  # bridge dispatch; they are stripped from the broadcast + persisted row so devices
-  # never ingest a 270KB+ metadata blob. The bridge reads them off the untouched data.
+  # Sealed agent image blobs (arte1).
   @inline_attachment_keys ~w(agentBridgeAttachmentsEnc agent_bridge_attachments_enc attachmentsEnc)
   @impl true
   def join("chat:" <> chat_id, _payload, socket) do
     user_id = socket.assigns.user_id
-    # Verify access and cache room type + role in socket assigns
-    # so we skip DB queries on every message send.
-    # Role and type come from ONE query: join is the connect-storm bottleneck and
-    # it is DB-bound, so what matters is round trips per join (capacity-500k.md §0).
     case Chat.join_context(chat_id, user_id) do
       nil ->
         {:error, %{reason: "unauthorized"}}
@@ -35,10 +29,6 @@ defmodule VibeWeb.ChatChannel do
         socket = assign(socket, :room_type, room_type)
         socket = assign(socket, :user_role, role)
 
-        # Resolve the standalone-agent gate ONCE here instead of on every message.
-        # On the send path it held the sender's "sent" ack hostage for ~1s+.
-        # Cached per chat: staleness was already the contract here, since toggling
-        # an agent's incoming-chat setting only took effect on the next join.
         standalone_agent =
           case room_type do
             "dm" ->
@@ -59,7 +49,6 @@ defmodule VibeWeb.ChatChannel do
             is_nil(standalone_agent) or Agents.incoming_chat_enabled?(standalone_agent)
           )
 
-        # Replay any ask the phone missed while it was offline/reconnecting.
         send(self(), {:replay_pending_ask, chat_id})
         {:ok, socket}
     end
@@ -83,27 +72,20 @@ defmodule VibeWeb.ChatChannel do
     {:noreply, socket}
   end
 
-  # Catch-all: keep parity with Phoenix's default (no-op) now that this channel
-  # exports handle_info/2 — otherwise any other process message would crash it.
+  # Catch-all:
   @impl true
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   @impl true
   def handle_in("message", payload, socket) do
-    # Ack hold-time probe: the reply path is deliberately DB-free, so this
-    # should stay in the microseconds. If the client's wire timing spikes
-    # while this stays flat, the delay is network (client Wi-Fi / proxy /
-    # Cloudflare), not the server.
     ack_started_at = System.monotonic_time(:microsecond)
     "chat:" <> chat_id = socket.topic
     user_id = socket.assigns.user_id
     VibeWeb.ChannelThrottle.check!(user_id, :message)
 
-    # Check send permission using cached socket assigns (no DB hit)
     can_send =
       case socket.assigns.room_type do
         "channel" -> socket.assigns.user_role in ["owner", "admin"]
-        # Already verified as participant on join
         _ -> true
       end
 
@@ -111,8 +93,6 @@ defmodule VibeWeb.ChatChannel do
       {:reply, {:error, %{reason: "not_allowed", message: "You cannot send messages here"}},
        socket}
     else
-      # Cached at join — the send/ack path must stay DB-free so the sender's
-      # "sent" tick is pure network round-trip.
       standalone_agent = socket.assigns[:standalone_agent]
 
       if standalone_agent && !socket.assigns[:standalone_agent_chat_enabled] do
@@ -122,10 +102,6 @@ defmodule VibeWeb.ChatChannel do
          socket}
       else
         data = deobfuscate(payload)
-        # The sealed image blobs ride `data` only to reach the bridge dispatch below
-        # (which reads the untouched `data`). They must NOT ride the chat broadcast or
-        # the persisted row — a 270KB+ metadata blob echoed to every device is slow to
-        # parse and bloats storage. Strip them from everything except the dispatch.
         broadcast_payload = strip_inline_agent_attachments(enforce_sender_identity(data, user_id))
         message_metadata = message_metadata_for_persistence(data, standalone_agent)
 
@@ -137,8 +113,6 @@ defmodule VibeWeb.ChatChannel do
               message: "Forwarding is disabled for this channel"
             }}, socket}
         else
-          # Prefer top-level mediaUrl; fall back to metadata (some clients only set meta).
-          # Never persist file:// / local device paths — those die on reopen.
           resolved_media_url =
             durable_media_url(
               data["mediaUrl"] || data["media_url"] || message_metadata["mediaUrl"]
@@ -160,17 +134,10 @@ defmodule VibeWeb.ChatChannel do
             "[MediaDrop] persist chat=#{chat_id} mid=#{data["id"]} type=#{message_attrs.type} media=#{if(is_binary(resolved_media_url), do: "REMOTE", else: "nil")} meta_thumbs=#{inspect(is_list(message_metadata["attachmentThumbnailsB64"]))} meta_thumb?=#{is_binary(message_metadata["thumbnailBase64"])} stripped_blobs=true"
           )
 
-          # BROADCAST IMMEDIATELY for instant message delivery
           broadcast!(socket, "message", broadcast_payload)
 
-          # Built once and reused for every recipient's user-topic mirror.
           mirrored_message = Vibe.Chat.mirrored_message_payload(broadcast_payload)
 
-          # Mirror a lightweight ping to the sender's OWN other devices. The chat-topic
-          # broadcast above only reaches devices that currently have THIS chat open, so
-          # a message typed on the phone never reached the same user's laptop sitting on
-          # the chat list. This `new_message` on the sender's user topic lets those other
-          # devices refresh in real time (no push — it's the sender's own device).
           VibeWeb.Endpoint.broadcast!("user:#{user_id}", "new_message", %{
             chat_id: chat_id,
             from_id: user_id,
@@ -180,19 +147,11 @@ defmodule VibeWeb.ChatChannel do
             message: mirrored_message
           })
 
-          # Check for @vibe agent mention and dispatch to group agent.
-          # Run async: resolution does several synchronous DB reads (room type,
-          # participant ids ×2, shadow-agent lookup, local-worker + attachment
-          # context) that previously blocked the sender's "sent" ack by ~2s even
-          # for a plain no-agent DM. It's pure fire-and-forget fan-out (spawns
-          # workers / logs) with an unused return value, so defer it past the reply.
           Task.start(fn -> maybe_dispatch_agent(chat_id, data, user_id) end)
 
-          # Persist to database asynchronously (don't block message delivery)
           Task.start(fn ->
             case Chat.add_message(message_attrs, acting_user_id: user_id) do
               {:ok, _msg} ->
-                # Batch-fetch all participants with settings in ONE query (no N+1)
                 participants = Chat.get_all_participant_settings(chat_id)
 
                 Logger.info(
@@ -224,13 +183,6 @@ defmodule VibeWeb.ChatChannel do
                           _ -> nil
                         end
 
-                      # 1:1 E2E DMs no longer send `pushPreview` at all (it leaked the
-                      # first 160 chars of every message to the server in cleartext), so
-                      # `push_body` above is nil on that path. `pushKind` is the
-                      # content-free replacement — sent on every message — that lets
-                      # Notifications.resolve_message_body/2 fall back to a generic but
-                      # still useful label ("Photo", "Voice message", ...) instead of a
-                      # blank notification.
                       push_kind = data["pushKind"] || data["push_kind"]
 
                       _ =
@@ -248,12 +200,10 @@ defmodule VibeWeb.ChatChannel do
                 end)
 
               {:error, changeset} ->
-                # Log persistence failure but don't crash
                 Logger.error("Message persistence failed: #{inspect(changeset)}")
             end
           end)
 
-          # Reply immediately - don't wait for DB
           ack_held_us = System.monotonic_time(:microsecond) - ack_started_at
 
           Logger.info(
@@ -301,7 +251,6 @@ defmodule VibeWeb.ChatChannel do
       is_nil(action) ->
         {:reply, {:error, %{reason: "invalid_action"}}, socket}
 
-      # Whole-team cancel: kill every under-hood worker + lead for this teamRunId.
       action in ["cancel", "stop"] and is_binary(team_run_id) ->
         targets =
           LocalAgentWorker.cancel_bridge_team_run(chat_id, team_run_id, user_id)
@@ -325,7 +274,6 @@ defmodule VibeWeb.ChatChannel do
             AgentBridge.dispatch_control(user_id, control_payload)
           end)
 
-        # Also cancel the lead provider if no task map yet (bridge matches by teamRunId).
         _ =
           if is_binary(provider) do
             AgentBridge.dispatch_control(user_id, %{
@@ -404,10 +352,6 @@ defmodule VibeWeb.ChatChannel do
     end
   end
 
-  # phone → server: open the full contents of a file the agent touched. We relay
-  # it to the user's bridge, which reads it (path-guarded), seals it with the
-  # runtime key, and replies with `file_result` (relayed back as
-  # `agent-bridge-file`). The server never sees the file in the clear.
   def handle_in("agent-bridge-file", payload, socket) when is_map(payload) do
     "chat:" <> chat_id = socket.topic
     user_id = socket.assigns.user_id
@@ -442,10 +386,6 @@ defmodule VibeWeb.ChatChannel do
     end
   end
 
-  # phone → server: fetch the connected bridge's live usage snapshot (Claude
-  # subscription 5h/7-day limits + this chat's last-run tokens) for the inline
-  # Usage panel. The daemon replies with `usage_result`, relayed back as
-  # `agent-bridge-usage`.
   def handle_in("agent-bridge-usage", payload, socket) when is_map(payload) do
     "chat:" <> chat_id = socket.topic
     user_id = socket.assigns.user_id
@@ -473,10 +413,6 @@ defmodule VibeWeb.ChatChannel do
     end
   end
 
-  # phone → server: the user's answer to a bridge-issued `ask_request` (plan
-  # approval or a mid-run question). We relay it to the user's bridge, which
-  # resolves the pending ask. The `answerEnc` blob is sealed with the runtime key
-  # (the server stays blind). `decision` ∈ "approve" | "reject" | "answer".
   def handle_in("agent-bridge-ask-response", payload, socket) when is_map(payload) do
     "chat:" <> chat_id = socket.topic
     user_id = socket.assigns.user_id
@@ -502,8 +438,6 @@ defmodule VibeWeb.ChatChannel do
     end
   end
 
-  # Isolated-runtime asks answer in plaintext (runtime:"isolated") — routed to the
-  # runtime via AgentGateway.decision/3, never the encrypted bridge path below.
   defp handle_isolated_ask_response(request_id, run_id, payload, user_id, socket) do
     resolved_run_id = run_id || AgentDecisions.runtime_decision_run_id(request_id)
 
@@ -537,7 +471,6 @@ defmodule VibeWeb.ChatChannel do
         normalize_bridge_string(payload["computerId"] || payload["agentBridgeComputerId"])
       )
 
-    # The phone answered — drop the buffered ask so it isn't replayed on rejoin.
     AgentBridge.clear_pending_ask(chat_id, request_id)
 
     case AgentBridge.dispatch_ask_response(user_id, response_payload) do
@@ -546,8 +479,6 @@ defmodule VibeWeb.ChatChannel do
     end
   end
 
-  # phone → server: cancel an isolated-runtime run. Only a participant who is
-  # either the run's requester or the agent's owner may cancel it.
   @impl true
   def handle_in("agent-run-control", %{"runId" => run_id, "action" => "cancel"} = payload, socket)
       when is_binary(run_id) and run_id != "" do
@@ -569,8 +500,6 @@ defmodule VibeWeb.ChatChannel do
   def handle_in("agent-run-control", _payload, socket),
     do: {:reply, {:error, %{reason: "invalid_payload"}}, socket}
 
-  # AgentGateway.get_run/1 returns {run, events}; "run" carries chatId/requesterUserId/
-  # ownerUserId as sent in the original RunRequest.
   defp run_cancel_authorized?(run, chat_id, user_id) do
     run_map = run["run"] || run[:run] || run
     run_chat_id = run_map["chatId"] || run_map[:chatId]
@@ -633,7 +562,6 @@ defmodule VibeWeb.ChatChannel do
 
     case Chat.toggle_reaction(chat_id, msg_id, user_id, emoji) do
       {:ok, %{reactions: reactions} = result} ->
-        # Broadcast carries counts only; `isSelected` is per-caller.
         public = Enum.map(reactions, &Map.take(&1, [:emoji, :count]))
 
         mutation_payload = %{
@@ -654,7 +582,6 @@ defmodule VibeWeb.ChatChannel do
     {:throttled, reply} -> {:reply, {:error, reply}, socket}
   end
 
-  # A malformed payload must not take the whole topic down with it.
   @impl true
   def handle_in("react-message", _payload, socket),
     do: {:reply, {:error, %{reason: "invalid_payload"}}, socket}
@@ -806,7 +733,6 @@ defmodule VibeWeb.ChatChannel do
   defp engagement_error(reason) when is_atom(reason), do: to_string(reason)
   defp engagement_error(reason), do: inspect(reason)
 
-  # ── Agent Dispatch ──
 
   @doc false
   def deliver_provider_event(agent, event_type, event_payload) do
@@ -886,9 +812,10 @@ defmodule VibeWeb.ChatChannel do
       if standalone_agent do
         nil
       else
-        LocalAgentWorker.resolve_handle(mentioned_agent_username) ||
-          LocalAgentWorker.resolve_from_message(reply_message) ||
-          local_worker_for_dm(chat_id, user_id)
+        (LocalAgentWorker.resolve_handle(mentioned_agent_username) ||
+           LocalAgentWorker.resolve_from_message(reply_message) ||
+           local_worker_for_dm(chat_id, user_id))
+        |> with_mention_effort(reserved_workers)
       end
 
     standalone_agent =
@@ -918,7 +845,6 @@ defmodule VibeWeb.ChatChannel do
 
     attachment_context = extract_agent_attachment_context(chat_id, data, user_id)
 
-    # A voice note carries no text: transcribe it or the agent is dispatched an empty prompt.
     dispatch_text =
       case normalize_dispatch_text(agent_text, data) do
         nil -> Transcribe.voice_text(attachment_context.audio_urls)
@@ -932,8 +858,6 @@ defmodule VibeWeb.ChatChannel do
         do: LocalAgentWorker.strip_team_trigger(dispatch_text),
         else: dispatch_text
 
-    # The AI workers that are members of this group (empty in a DM). Reused for both
-    # an explicit `@team`/`/team` run and the implicit default-team fan-out below.
     group_agent_workers =
       if room_type != "dm" do
         LocalAgentWorker.team_workers_for_participants(participant_ids)
@@ -943,16 +867,12 @@ defmodule VibeWeb.ChatChannel do
 
     team_workers = if team_trigger?, do: group_agent_workers, else: []
 
-    # Guard against an agent's own posted reply re-triggering a default fan-out.
     sender_is_agent? = not is_nil(LocalAgentWorker.resolve_by_agent_user_id(user_id))
 
     Logger.info(
       "[ChatChannel] dispatch_resolve chat_id=#{chat_id} room_type=#{room_type} reserved=#{length(reserved_workers)} team=#{team_trigger?} team_workers=#{Enum.map_join(team_workers, ",", & &1.handle)} standalone=#{not is_nil(standalone_agent)} local_worker=#{if local_worker, do: local_worker.handle, else: "nil"} dispatch_text?=#{is_binary(dispatch_text)} agent_text?=#{is_binary(agent_text) and String.trim(to_string(agent_text)) != ""} mentioned_username=#{inspect(mentioned_agent_username)} participants=#{inspect(participant_ids)}"
     )
 
-    # Explicit single-agent targeting in a multi-agent group: @mention, reply-to-agent,
-    # or multi-@ reserved list. A plain group message must NOT collapse to one worker
-    # just because a stale mentionedAgentUsername / reply resolved local_worker.
     explicit_group_target? =
       room_type != "dm" and
         (length(reserved_workers) > 0 or
@@ -987,9 +907,6 @@ defmodule VibeWeb.ChatChannel do
           )
         end)
 
-      # Default group behaviour FIRST (before single local_worker / standalone): a plain
-      # group message in a group with 2+ AI members fans out to ALL of them in PARALLEL.
-      # Must win over a wrongly-resolved local_worker so Claude+Codex(+Grok/Agy) all reply.
       room_type != "dm" and not sender_is_agent? and not explicit_group_target? and
         is_nil(standalone_agent) and is_binary(dispatch_text) and
           length(group_agent_workers) > 1 ->
@@ -1007,16 +924,12 @@ defmodule VibeWeb.ChatChannel do
             data,
             "group_default_parallel",
             user_id,
-            # First dispatch takes the rate-limit slot; siblings skip so they start together.
-            # Unique task id per worker so bridge dedupe (keyed provider+chat+taskId) never
-            # collapses parallel agents that share the human message id.
             skip_rate_limit: index > 0,
             note_user_turn: index == 0,
             task_id_suffix: worker.handle
           )
         end)
 
-      # Same default, but a group that only has one AI member — dispatch to it alone.
       room_type != "dm" and not sender_is_agent? and not explicit_group_target? and
         is_nil(standalone_agent) and is_binary(dispatch_text) and
           length(group_agent_workers) == 1 ->
@@ -1092,15 +1005,7 @@ defmodule VibeWeb.ChatChannel do
     all_agents? = LocalAgentWorker.all_agents_request?(dispatch_text)
 
     cond do
-      # SAFETY FIRST, and deliberately mode-independent: a message that is not a
-      # work order never gets write access. "can you see this image?" once made a
-      # worker read AGENTS.md, patch page.tsx/globals.css and run a full build —
-      # so a :chat turn goes to worker(s) whose writes the bridge HARD-STRIPS
-      # (team role `chat` → read_only). They answer; they cannot touch a file.
-      #
-      # "call all agents" / "what do you all think" fans the chat turn out to
-      # EVERY worker — each answers read-only in its own bubble, exactly like the
-      # plain group parallel dispatch. Otherwise one responder answers.
+      # SAFETY FIRST, and deliberately mode-independent: a message that is not a work order
       classification == :chat and all_agents? and length(workers) > 1 ->
         spawn_chat_fanout_dispatches(
           chat_id,
@@ -1123,9 +1028,6 @@ defmodule VibeWeb.ChatChannel do
           bridge_metadata
         )
 
-      # An explicit all-agents WORK order ("all agents fix X together") gets the
-      # real supervisor team even when it sizes as :simple — the user asked for
-      # the team, and parallel unsupervised writers on one repo would conflict.
       all_agents? ->
         spawn_supervisor_team_dispatch(
           chat_id,
@@ -1138,12 +1040,6 @@ defmodule VibeWeb.ChatChannel do
           "supervisor"
         )
 
-      # Usage-first routing (the responder must never be a fake lead that patches
-      # solo): a SIMPLE request goes to exactly ONE visible best-provider worker —
-      # 1 provider turn, same as today's solo baseline, but the user sees a real
-      # worker running live. Only in supervisor mode; the legacy sequential chain
-      # keeps its own behavior. A complex request still spins up the lead
-      # orchestrator + under-hood workers.
       supervisor? and classification == :simple ->
         spawn_solo_visible_dispatch(
           chat_id,
@@ -1169,22 +1065,6 @@ defmodule VibeWeb.ChatChannel do
     end
   end
 
-  # A `:chat` message: the user is talking, not commissioning work. ONE worker
-  # answers it with team role `chat`, which the bridge maps to the `read_only`
-  # work mode — codex gets a `read-only` sandbox, claude has Edit/Write/MultiEdit/
-  # NotebookEdit/Bash disallowed, grok/agy run in plan mode. The reply is safe by
-  # CONSTRUCTION, not because a prompt asked nicely (prompt wording already failed
-  # us: the worker ignored "do not revert user changes" and patched anyway).
-  #
-  # Deliberately NOT registered as a team run (neither DB nor ETS): a registered
-  # run attaches teamWorkersStatus to the stream frames and the answer then
-  # renders inside a team "main cell" instead of the agent's own bubble — the
-  # exact render the user reported as wrong. The team_run_id is still PASSED so
-  # `local_worker_team_metadata` threads teamRole=chat to the bridge (it returns
-  # %{} for a nil run id, which would silently drop the write-strip). An
-  # unregistered id is a safe no-op everywhere: update_team_worker_state → [],
-  # monitor casts drop, iOS ignores empty status lists. No monitor also means no
-  # retry can ever re-spawn this turn with write access.
   defp spawn_chat_reply_dispatch(
          chat_id,
          workers,
@@ -1222,10 +1102,6 @@ defmodule VibeWeb.ChatChannel do
     :ok
   end
 
-  # "call all agents" on a `:chat` turn: EVERY group worker answers, each in its
-  # own bubble (normal per-agent stream rows — same render as the plain group
-  # parallel fan-out), each hard read-only via team role `chat`. Like the single
-  # chat reply, no team run is registered — see spawn_chat_reply_dispatch for why.
   defp spawn_chat_fanout_dispatches(
          chat_id,
          workers,
@@ -1252,8 +1128,6 @@ defmodule VibeWeb.ChatChannel do
         bridge_metadata: bridge_metadata,
         note_user_turn: false,
         note_team_user_turn: index == 0,
-        # First dispatch takes the rate-limit slot; siblings skip so all agents
-        # start together (mirrors group_default_parallel).
         skip_rate_limit: index > 0,
         team_run_id: team_run_id,
         team_workers: [worker],
@@ -1268,10 +1142,6 @@ defmodule VibeWeb.ChatChannel do
     :ok
   end
 
-  # A SIMPLE `@team` request: register a one-worker team run (so worker_states
-  # stay durable and the iOS cell survives backgrounding) and dispatch that single
-  # best-provider worker VISIBLY. Its live frames are the progress the user sees;
-  # it does the whole task itself — there is nothing to orchestrate.
   defp spawn_solo_visible_dispatch(
          chat_id,
          workers,
@@ -1358,8 +1228,6 @@ defmodule VibeWeb.ChatChannel do
           "[ChatChannel] team_run mode=#{mode} chat=#{chat_id} run=#{team_run_id} lead=#{lead.handle} workers=#{Enum.map_join(workers, ",", & &1.handle)}"
         )
 
-        # Lead owns the single user-visible cell. Sibling workers are lead-driven:
-        # the lead emits VIBE_TEAM_SPAWN (bridge → server team_spawn) when it needs help.
         spawn_local_worker_dispatch(
           chat_id,
           lead,
@@ -1413,9 +1281,6 @@ defmodule VibeWeb.ChatChannel do
         _ -> Ecto.UUID.generate()
       end
 
-    # Parallel group fan-out shares one human message id; append the worker handle so
-    # each agent gets a distinct bridge taskId (dedupe key includes provider already,
-    # but unique ids also keep progress/result correlation clean per agent).
     task_id =
       case task_id_suffix do
         suffix when is_binary(suffix) and suffix != "" -> "#{base_task_id}:#{suffix}"
@@ -1423,7 +1288,7 @@ defmodule VibeWeb.ChatChannel do
       end
 
     cond do
-      not LocalAgentWorker.user_allowed?(requester_user_id) ->
+      not LocalAgentWorker.dispatch_allowed?(worker, requester_user_id) ->
         maybe_clear_team_run(chat_id, team_run_id)
 
         Logger.warning(
@@ -1435,24 +1300,13 @@ defmodule VibeWeb.ChatChannel do
       not skip_rate_limit and not LocalAgentWorker.allow_request?(requester_user_id) ->
         maybe_clear_team_run(chat_id, team_run_id)
 
-        # Don't post a list-shifting notice bubble for send-cooldown — the phone
-        # surfaces this via the usage/rate banner. Log only.
         Logger.info(
           "[ChatChannel] local worker cooldown user=#{requester_user_id} worker=#{worker.handle} chat=#{chat_id}"
         )
 
         :ok
 
-      # Preferred path: run on the user's OWN paired computer (their subscription).
-      # AgentBridge durably accepts run_task into its taskId-deduped reconnect queue
-      # when Presence is briefly absent, then flushes it as the bridge rejoins.
-      #
-      # IMPORTANT: build the bridge prompt *inside* the Task, not before start_child.
-      # Group fan-out calls this once per agent; synchronous prompt build (group
-      # memory / collaboration context) previously serialized Claude → Codex → Grok
-      # so their CLIs started one-by-one. Moving it into the Task lets every worker
-      # start building + dispatch at the same time.
-      AgentBridge.paired?(requester_user_id) ->
+      not LocalAgentWorker.server_runtime?(worker) and AgentBridge.paired?(requester_user_id) ->
         reply_to_id = data["id"]
 
         team_meta =
@@ -1556,7 +1410,6 @@ defmodule VibeWeb.ChatChannel do
             :ok
         end
 
-      # Dev fallback: run on the server itself (VIBE_LOCAL_AGENT_WORKERS=1).
       LocalAgentWorker.enabled?() ->
         run = fn ->
           broadcast_agent_activity(
@@ -1613,7 +1466,6 @@ defmodule VibeWeb.ChatChannel do
             :ok
         end
 
-      # No computer connected: tell the user how to connect.
       true ->
         LocalAgentWorker.post_notice(
           worker,
@@ -1631,9 +1483,6 @@ defmodule VibeWeb.ChatChannel do
     do: LocalAgentWorker.clear_bridge_team_run(chat_id, team_run_id)
 
   defp dispatch_bridge_task_with_reconnect_grace(requester_user_id, task_payload) do
-    # Kept as a named boundary for existing call sites. The reconnect grace is
-    # now queue-backed rather than sleep/retry-backed, so dispatch tasks do not
-    # occupy a supervisor slot during a socket flap.
     AgentBridge.dispatch_task(requester_user_id, task_payload)
   end
 
@@ -1784,7 +1633,6 @@ defmodule VibeWeb.ChatChannel do
       {:error, :kill_switch} ->
         post_kill_switch_notice(agent, chat_id, data["id"])
 
-      # The runtime's own kill switch answers 503; surface it exactly like the local one.
       {:error, {:http_error, 503, %{"error" => "kill_switch"}}} ->
         post_kill_switch_notice(agent, chat_id, data["id"])
 
@@ -1914,6 +1762,16 @@ defmodule VibeWeb.ChatChannel do
     LocalAgentWorker.extract_reserved_mentions(text)
   end
 
+  # The mention carries any pinned thinking level; a handle re-resolved from the roster does not.
+  defp with_mention_effort(nil, _reserved), do: nil
+
+  defp with_mention_effort(worker, reserved) do
+    case Enum.find(reserved, &(&1.handle == worker.handle)) do
+      %{effort_directive: level} -> Map.put(worker, :effort_directive, level)
+      _ -> worker
+    end
+  end
+
   defp bridge_task_metadata(data) do
     metadata =
       case data["metadata"] || data["meta"] do
@@ -1955,8 +1813,6 @@ defmodule VibeWeb.ChatChannel do
       metadata["agentBridgeAdvisor"] || metadata["agent_bridge_advisor"] ||
         data["agentBridgeAdvisor"]
     )
-    # Per-provider model map for group fan-outs (one message → Claude AND Codex, each
-    # with its own model choice). Resolved to "model" per worker at dispatch time.
     |> put_provider_models(
       metadata["agentBridgeModels"] || metadata["agent_bridge_models"] ||
         data["agentBridgeModels"]
@@ -1964,6 +1820,10 @@ defmodule VibeWeb.ChatChannel do
     |> put_provider_advisors(
       metadata["agentBridgeAdvisors"] || metadata["agent_bridge_advisors"] ||
         data["agentBridgeAdvisors"]
+    )
+    |> put_provider_efforts(
+      metadata["agentBridgeEfforts"] || metadata["agent_bridge_efforts"] ||
+        data["agentBridgeEfforts"]
     )
     |> put_optional_string(
       "intelligence",
@@ -1979,17 +1839,11 @@ defmodule VibeWeb.ChatChannel do
       metadata["agentBridgeReasoningEffort"] || metadata["agent_bridge_reasoning_effort"] ||
         data["agentBridgeReasoningEffort"]
     )
-    # Explicit resume target chosen on the phone ("continue a session"). When absent,
-    # the bridge starts a fresh session (new task per message) — it no longer
-    # auto-resumes by chatId. The id is provider-appropriate (Claude session_id /
-    # Codex thread_id); the bridge interprets it per provider.
     |> put_optional_string(
       "resumeSessionId",
       metadata["agentBridgeResumeSessionId"] || metadata["agent_bridge_resume_session_id"] ||
         data["agentBridgeResumeSessionId"]
     )
-    # Sealed (arte1) image attachments to hand to the daemon, which decrypts and
-    # writes them for the agent to read. Opaque to the server — relayed verbatim.
     |> put_optional_string_list(
       "attachmentsEnc",
       metadata["agentBridgeAttachmentsEnc"] || metadata["agent_bridge_attachments_enc"] ||
@@ -2034,9 +1888,6 @@ defmodule VibeWeb.ChatChannel do
 
   defp put_optional_string(map, _key, _value), do: map
 
-  # %{"claude" => "opus", "codex" => "gpt-5.5"} — per-provider model choices for a
-  # group fan-out. Kept under an internal "models" key; never forwarded to the bridge
-  # directly (see resolve_provider_model/2).
   defp put_provider_models(map, models) when is_map(models) do
     cleaned =
       models
@@ -2056,8 +1907,6 @@ defmodule VibeWeb.ChatChannel do
 
   defp put_provider_models(map, _models), do: map
 
-  # %{"claude" => "fable"} — per-provider advisor choices for group fan-outs.
-  # Kept under an internal "advisors" key and collapsed before the bridge sees it.
   defp put_provider_advisors(map, advisors) when is_map(advisors) do
     cleaned =
       advisors
@@ -2077,17 +1926,44 @@ defmodule VibeWeb.ChatChannel do
 
   defp put_provider_advisors(map, _advisors), do: map
 
-  # Collapse the per-provider "models" map onto this worker's "model" (the per-provider
-  # choice wins over a generic one) and do the same for advisor choices.
+  defp put_provider_efforts(map, efforts) when is_map(efforts) do
+    cleaned =
+      efforts
+      |> Enum.flat_map(fn {handle, effort} ->
+        with true <- is_binary(handle),
+             effort when is_binary(effort) <- effort,
+             trimmed when trimmed != "" <- String.trim(effort) do
+          [{String.downcase(handle), String.downcase(trimmed)}]
+        else
+          _ -> []
+        end
+      end)
+      |> Map.new()
+
+    if map_size(cleaned) > 0, do: Map.put(map, "efforts", cleaned), else: map
+  end
+
+  defp put_provider_efforts(map, _efforts), do: map
+
   defp resolve_provider_model(bridge_metadata, provider) do
     {models, rest} = Map.pop(bridge_metadata, "models")
     {advisors, rest} = Map.pop(rest, "advisors")
+    {efforts, rest} = Map.pop(rest, "efforts")
     provider_key = String.downcase(to_string(provider))
 
     rest =
       case is_map(models) && models[provider_key] do
         model when is_binary(model) and model != "" -> Map.put(rest, "model", model)
         _ -> rest
+      end
+
+    rest =
+      case is_map(efforts) && efforts[provider_key] do
+        effort when is_binary(effort) and effort != "" ->
+          Map.put(rest, "reasoningEffort", effort)
+
+        _ ->
+          rest
       end
 
     case is_map(advisors) && advisors[provider_key] do
@@ -2118,8 +1994,6 @@ defmodule VibeWeb.ChatChannel do
 
   defp put_optional_string_list(map, _key, _value), do: map
 
-  # In a 1:1 chat with a Claude/Codex shadow user, route plain messages (no
-  # @mention needed) to that bridge worker — the whole DM is "talk to Claude".
   defp local_worker_for_dm(chat_id, user_id) do
     case Chat.get_room_type(chat_id) do
       "dm" ->
@@ -2140,7 +2014,6 @@ defmodule VibeWeb.ChatChannel do
         _ -> %{}
       end
 
-    # Never store local device paths in metadata — they break after reopen.
     base_metadata =
       case durable_media_url(base_metadata["mediaUrl"] || base_metadata["media_url"]) do
         nil ->
@@ -2174,8 +2047,6 @@ defmodule VibeWeb.ChatChannel do
     end
   end
 
-  # Remove the sealed image blobs from a broadcast/persist payload (top-level and
-  # nested metadata). Leaves everything else untouched.
   defp strip_inline_agent_attachments(%{} = payload) do
     payload
     |> Map.drop(@inline_attachment_keys)
@@ -2190,7 +2061,6 @@ defmodule VibeWeb.ChatChannel do
 
   defp strip_inline_agent_attachments(payload), do: payload
 
-  # Persist only durable http(s) media URLs — never local device paths.
   defp durable_media_url(url) when is_binary(url) do
     trimmed = String.trim(url)
 
@@ -2253,7 +2123,6 @@ defmodule VibeWeb.ChatChannel do
     })
   end
 
-  # Reply in kind: a voice note gets a voice answer when the agent has a voice.
   defp reply_output_mode(agent, data, attachments) do
     voice_in? =
       is_nil(normalize_dispatch_text(data["agentText"], data)) and
@@ -2416,6 +2285,5 @@ defmodule VibeWeb.ChatChannel do
     |> Jason.decode!()
   end
 
-  # Fallback if not obfuscated
   defp deobfuscate(map), do: map
 end

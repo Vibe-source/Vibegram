@@ -63,6 +63,9 @@ defmodule Vibe.AI.LocalAgentWorker do
   @worker_order ["claude", "codex", "grok", "agy", "boss", "monitor", "coder", "researcher", "marketing", "social", "media"]
   @role_worker_order ["boss", "monitor", "coder", "researcher", "marketing", "social", "media"]
 
+  # "@coder" or "@coder [max]" — the bracketed level, when present, is the pinned effort.
+  @mention_pattern ~r/(?:^|\s)@(codex|claude|grok|agy|antigravity|boss|monitor|coder|researcher|marketing|social|media)\b(?:\s*[\[(]\s*(low|medium|high|xhigh|extra[-_ ]?high|max|ultrathink)\s*[\])])?/i
+
   @workers %{
     "codex" => %{
       handle: "codex",
@@ -115,7 +118,7 @@ defmodule Vibe.AI.LocalAgentWorker do
       runtime: :server,
       model: "fable",
       fallback_model: "opus",
-      effort: "xhigh",
+      effort: "max",
       command_env: "VIBE_CLAUDE_COMMAND",
       default_command: "claude",
       agent_user_id: @boss_agent_user_id,
@@ -127,7 +130,10 @@ defmodule Vibe.AI.LocalAgentWorker do
       You are the Boss (chief of staff) for the Vibe team. You do not do the work
       yourself: you decide who does, then hand it over by @mentioning exactly one
       teammate in this chat and stating the outcome you expect. Your team is
-      @monitor and @coder (DevOps), @researcher, @marketing, @social, @media.
+      @monitor and @coder for DevOps, then @researcher, @marketing, @social, @media.
+      You set how hard a teammate thinks: write the level in brackets after the
+      handle — @coder [max] for a deep job, @social [low] for a quick one. Levels
+      are low, medium, high, xhigh, max; leave it off to use their default.
       Keep your own replies to a few lines. If a request is already assigned, say
       so and stay quiet.
       """
@@ -318,14 +324,24 @@ defmodule Vibe.AI.LocalAgentWorker do
   defp put_worker_model(worker, opts) do
     metadata = Keyword.get(opts, :bridge_metadata) || %{}
 
-    if executor_for(worker) == declared_executor(worker) do
-      metadata
-      |> put_worker_option("model", Map.get(worker, :model))
-      |> put_worker_option("fallbackModel", Map.get(worker, :fallback_model))
-      |> put_worker_option("reasoningEffort", Map.get(worker, :effort))
-      |> then(&Keyword.put(opts, :bridge_metadata, &1))
-    else
-      opts
+    metadata =
+      if executor_for(worker) == declared_executor(worker) do
+        metadata
+        |> put_worker_option("model", Map.get(worker, :model))
+        |> put_worker_option("fallbackModel", Map.get(worker, :fallback_model))
+        |> put_worker_option("reasoningEffort", Map.get(worker, :effort))
+      else
+        metadata
+      end
+
+    Keyword.put(opts, :bridge_metadata, pin_worker_effort(metadata, worker))
+  end
+
+  # A level named on the mention outranks both the roster default and the app pick.
+  defp pin_worker_effort(metadata, worker) do
+    case normalize_string(Map.get(worker, :effort_directive)) do
+      nil -> metadata
+      level -> Map.put(metadata, "reasoningEffort", level)
     end
   end
 
@@ -381,34 +397,45 @@ defmodule Vibe.AI.LocalAgentWorker do
   def resolve_from_message(_), do: nil
 
   def extract_reserved_mention(text) when is_binary(text) do
-    case Regex.run(~r/(?:^|\s)@(codex|claude|grok|agy|antigravity|boss|monitor|coder|researcher|marketing|social|media)\b/i, text) do
-      [_, handle] ->
-        h = String.downcase(handle)
-        resolve_handle(if(h == "antigravity", do: "agy", else: h))
-
-      _ ->
-        nil
+    case Regex.run(@mention_pattern, text) do
+      [_ | captures] -> mention_worker(captures)
+      _ -> nil
     end
   end
 
   def extract_reserved_mention(_), do: nil
 
   def extract_reserved_mentions(text) when is_binary(text) do
-    ~r/(?:^|\s)@(codex|claude|grok|agy|antigravity|boss|monitor|coder|researcher|marketing|social|media)\b/i
+    @mention_pattern
     |> Regex.scan(text)
     |> Enum.map(fn
-      [_, handle] ->
-        h = String.downcase(handle)
-        resolve_handle(if(h == "antigravity", do: "agy", else: h))
-
-      _ ->
-        nil
+      [_ | captures] -> mention_worker(captures)
+      _ -> nil
     end)
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq_by(& &1.handle)
   end
 
   def extract_reserved_mentions(_), do: []
+
+  defp mention_worker([handle | rest]) do
+    h = String.downcase(handle)
+
+    case resolve_handle(if(h == "antigravity", do: "agy", else: h)) do
+      nil -> nil
+      worker -> pin_mention_effort(worker, List.first(rest))
+    end
+  end
+
+  defp mention_worker(_), do: nil
+
+  # A mention may name the thinking level — "@coder [max]" — and that beats the roster.
+  defp pin_mention_effort(worker, level) do
+    case normalize_string(level) do
+      nil -> worker
+      value -> Map.put(worker, :effort_directive, String.downcase(value))
+    end
+  end
 
   @doc """
   Whether a message is a short greeting / acknowledgement / chit-chat with no actionable task.
@@ -4143,12 +4170,22 @@ defmodule Vibe.AI.LocalAgentWorker do
   defp resolve_provider_model(bridge_metadata, provider) do
     {models, rest} = Map.pop(bridge_metadata, "models")
     {advisors, rest} = Map.pop(rest, "advisors")
+    {efforts, rest} = Map.pop(rest, "efforts")
     provider_key = String.downcase(to_string(provider))
 
     rest =
       case is_map(models) && models[provider_key] do
         model when is_binary(model) and model != "" -> Map.put(rest, "model", model)
         _ -> rest
+      end
+
+    rest =
+      case is_map(efforts) && efforts[provider_key] do
+        effort when is_binary(effort) and effort != "" ->
+          Map.put(rest, "reasoningEffort", effort)
+
+        _ ->
+          rest
       end
 
     case is_map(advisors) && advisors[provider_key] do
@@ -4861,12 +4898,13 @@ defmodule Vibe.AI.LocalAgentWorker do
 
     case {provider, value} do
       {_, nil} -> nil
-      {:claude, value} when value in ["low", "medium", "high", "xhigh"] -> value
-      {:claude, value} when value in ["extra_high", "max"] -> "xhigh"
+      {:claude, value} when value in ["low", "medium", "high", "xhigh", "max"] -> value
+      {:claude, "extra_high"} -> "xhigh"
+      {:claude, "ultrathink"} -> "max"
       {:codex, value} when value in ["low", "medium", "high"] -> value
-      {:codex, value} when value in ["xhigh", "extra_high", "max"] -> "high"
+      {:codex, value} when value in ["xhigh", "extra_high", "max", "ultrathink"] -> "high"
       {:grok, value} when value in ["low", "medium", "high"] -> value
-      {:grok, value} when value in ["xhigh", "extra_high", "max"] -> "high"
+      {:grok, value} when value in ["xhigh", "extra_high", "max", "ultrathink"] -> "high"
       _ -> nil
     end
   end
