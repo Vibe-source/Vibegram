@@ -45,13 +45,16 @@ cmd_status() {
 }
 
 cmd_token() {
-  local token
+  # setup-token wraps the value in a banner and colour codes; keep the token itself.
+  local raw token
   [ -t 0 ] && die "read the token on stdin: claude setup-token | $0 token"
-  IFS= read -r token || true
-  case "$token" in
-    '' ) die "empty token on stdin" ;;
-    *[![:print:]]* ) die "token contains control characters" ;;
+  raw="$(tr -d "\r" | tr "\n" " ")"
+  case "$raw" in
+    *sk-ant-*) ;;
+    *) die "no sk-ant- token on stdin" ;;
   esac
+  token="sk-ant-${raw##*sk-ant-}"
+  token="${token%%[![:alnum:]_-]*}"
 
   printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\nANTHROPIC_API_KEY=\n' "$token" |
     ssh $SSH_OPTS "$SSH_HOST" "/opt/vibe/deploy/scripts/apply-env.sh core.env"
