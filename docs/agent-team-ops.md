@@ -48,6 +48,8 @@ no reply.
 write a workspace, and relaxing any of those to fix it would be trading the
 container's whole security posture for a shell.
 
+Env, by location, and why CI stays: [agent-compute.md](agent-compute.md).
+
 So server-side execution belongs in a **separate team container** that mounts a
 workspace and the credential directories, with `core` dispatching to it. Until
 that exists, `team-setup.sh install` puts node and the CLIs in the host's
