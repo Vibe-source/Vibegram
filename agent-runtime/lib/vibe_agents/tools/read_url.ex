@@ -119,7 +119,7 @@ defmodule VibeAgents.Tools.ReadUrl do
 
   defp direct_fetch(url, hops) do
     headers = [
-      {"user-agent", "Mozilla/5.0 (compatible; VibeAgent/1.0; +https://vibegram.app) research-reader"},
+      {"user-agent", "Mozilla/5.0 (compatible; VibeAgent/1.0; +https://vibegram.io) research-reader"},
       {"accept", "text/html,application/xhtml+xml,text/plain;q=0.9"}
     ]
 

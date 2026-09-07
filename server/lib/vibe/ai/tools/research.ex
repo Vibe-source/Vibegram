@@ -1,34 +1,6 @@
 defmodule Vibe.AI.Tools.Research do
   @moduledoc """
   Web research primitives: `search/1` (find sources) and `read/1` (read one).
-
-  ## Why this replaced the Gemini-grounding search
-
-  The previous `search_google` asked Gemini 2.5 Flash to *write* a JSON array of results.
-  Measured 2026-08-05 against the production key, that path was structurally unusable for
-  an agentic loop:
-
-  * **10–21 s per call.** A model cannot afford four rounds of research at that price, so
-    it fires one batch and answers. Tavily `basic` returns in ~1–2 s.
-  * **The URLs were not real.** Every link came back as an opaque
-    `vertexaisearch.cloud.google.com/grounding-api-redirect/…` blob — impossible to cite,
-    impossible to fetch, impossible to deduplicate by domain.
-  * **~1 call in 3 failed.** `finishReason: "RECITATION"` produced no candidate content at
-    all, which the parser reported as "Unexpected response format".
-  * **A parse miss degraded into a lie.** When the model's JSON did not parse, the result
-    was ONE fake entry titled "Search Results" whose snippet was the raw ```json blob and
-    whose `url` was `nil`.
-
-  Gemini stays as a fallback for when `TAVILY_API_KEY` is absent, so a missing key
-  degrades instead of breaking.
-
-  ## Result shape carries the next step
-
-  Every result includes a `next_step` line. This is deliberate and it is the part that
-  makes the loop model-independent: a system prompt is advice the model may skip, but a
-  tool result is evidence it has just asked for and always reads. Telling it *in the
-  result* that snippets are not sources is what turns one search into a real research
-  round on Haiku, Luna and Sonnet alike.
   """
 
   require Logger
@@ -42,13 +14,12 @@ defmodule Vibe.AI.Tools.Research do
   @extract_timeout 45_000
   @direct_fetch_timeout 20_000
 
-  # One page of context, not a book. 12k chars ≈ 3k tokens: enough for the agent to quote
-  # and compare several pages in one turn without evicting the conversation.
+  # One page of context, not a book.
   @page_char_limit 12_000
   @snippet_char_limit 1_200
   @max_read_urls 3
 
-  # ── search ────────────────────────────────────────────────────────────────────────
+  # ── search.
 
   @doc """
   Search the web. Returns real URLs, per-result relevance scores and publication dates.
@@ -122,8 +93,6 @@ defmodule Vibe.AI.Tools.Research do
     }
   end
 
-  # The guidance is derived from what actually came back, never boilerplate — a model that
-  # is told "read the top sources" after a zero-result search learns to ignore the field.
   defp search_next_step([], _domains) do
     "No results. Do NOT answer from memory as if you had searched. Retry once with a " <>
       "shorter or differently-phrased query (drop quotes, drop the year, use the words a " <>
@@ -175,7 +144,6 @@ defmodule Vibe.AI.Tools.Research do
 
   defp normalize_result(result), do: %{"snippet" => to_string(result)}
 
-  # ── read ──────────────────────────────────────────────────────────────────────────
 
   @doc """
   Fetch one or more URLs and return their readable text.
@@ -223,9 +191,6 @@ defmodule Vibe.AI.Tools.Research do
       |> Enum.reject(&(is_nil(&1) or &1 == ""))
       |> Enum.uniq()
 
-    # A dropped URL must be REPORTED, not silently discarded. Asking for 4 pages and being
-    # told "Read 3 pages" with no failures let the model believe it had read a source it
-    # never opened — the exact failure mode the read tool exists to prevent.
     {kept, dropped} = Enum.split(requested, @max_read_urls)
 
     {kept,
@@ -292,10 +257,6 @@ defmodule Vibe.AI.Tools.Research do
     end
   end
 
-  # Finch does not follow redirects, and a great many real pages are one 301 away from their
-  # content (bare host → www, http → https, /news → /news/). Follow them, but re-validate
-  # every hop through SafeURL: an open redirect pointing at 169.254.169.254 is the textbook
-  # way around a front-door SSRF check.
   @max_redirects 3
 
   defp direct_fetch(url, hops \\ 0)
@@ -307,7 +268,7 @@ defmodule Vibe.AI.Tools.Research do
   defp direct_fetch(url, hops) do
     headers = [
       {"user-agent",
-       "Mozilla/5.0 (compatible; VibeAgent/1.0; +https://vibegram.app) research-reader"},
+       "Mozilla/5.0 (compatible; VibeAgent/1.0; +https://vibegram.io) research-reader"},
       {"accept", "text/html,application/xhtml+xml,text/plain;q=0.9"}
     ]
 
@@ -370,10 +331,6 @@ defmodule Vibe.AI.Tools.Research do
     |> reject_nil()
   end
 
-  # The page budget is finite, and site chrome spends it. A PMC article came back leading
-  # with a skip-link, a flag image and "An official website of the United States government"
-  # before a single word of the study. Strip the furniture so the 12k characters the model
-  # actually gets are 12k characters of the page.
   defp declutter(markdown) do
     markdown
     |> String.replace(~r/!\[[^\]]*\]\([^)]*\)/, "")
@@ -432,7 +389,6 @@ defmodule Vibe.AI.Tools.Research do
       failed_note <> truncation_note
   end
 
-  # ── legacy Gemini fallback ────────────────────────────────────────────────────────
 
   defp legacy_search(query) do
     case Vibe.AI.Tools.Search.gemini(query) do
@@ -441,7 +397,6 @@ defmodule Vibe.AI.Tools.Research do
     end
   end
 
-  # ── http ──────────────────────────────────────────────────────────────────────────
 
   defp post(url, body, timeout) do
     headers = [
@@ -480,7 +435,6 @@ defmodule Vibe.AI.Tools.Research do
     end
   end
 
-  # ── argument coercion ─────────────────────────────────────────────────────────────
 
   defp search_depth(input) do
     case string_arg(input, ["search_depth", "searchDepth", "depth"]) do
@@ -546,7 +500,6 @@ defmodule Vibe.AI.Tools.Research do
     ArgumentError -> nil
   end
 
-  # ── text ──────────────────────────────────────────────────────────────────────────
 
   defp domain(url) when is_binary(url) do
     case URI.parse(url) do
