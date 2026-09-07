@@ -12,11 +12,6 @@ defmodule VibeWeb.AgentsController do
 
   @doc """
   Public A2A-compatible agent card for a published agent.
-
-  Lookup matches `invoke/2` (`Agents.get_invoke_target/1`). Only
-  `status == "published"` returns 200; missing, draft, disabled, and
-  archived agents all return the same 404 so existence is not leaked.
-  No auth required — integrator mounts this on the public rate-limited scope.
   """
   def card(conn, %{"identifier" => identifier}) do
     case Agents.get_invoke_target(identifier) do
@@ -141,26 +136,69 @@ defmodule VibeWeb.AgentsController do
   end
 
   def index(conn, _params) do
-    owner_id = conn.assigns.current_user.id
-    quota = Agents.quota_for_user(owner_id)
+    viewer = conn.assigns.current_user
+    quota = Agents.quota_for_user(viewer.id)
 
     items =
-      owner_id
+      viewer.id
       |> Agents.list_agents()
       |> Enum.map(&Agents.agent_payload/1)
 
-    json(conn, %{items: items, quota: quota})
+    json(conn, %{items: team_items(viewer) ++ items, quota: quota})
+  end
+
+  # The built-in team has no `agents` row on purpose, so an admin gets it synthesised.
+  defp team_items(viewer) do
+    if Vibe.Admins.can?(viewer, "agents.read") do
+      Vibe.AI.LocalAgentWorker.workers()
+      |> Map.values()
+      |> Enum.sort_by(&Map.get(&1, :handle))
+      |> Enum.map(&team_item/1)
+    else
+      []
+    end
+  end
+
+  defp team_item(worker) do
+    %{
+      id: worker[:agent_user_id],
+      userId: worker[:agent_user_id],
+      username: worker[:username],
+      publicLink: nil,
+      displayName: worker[:name] || worker[:label],
+      status: "published",
+      builtin: true,
+      modelProvider: worker[:executor] || worker[:handle],
+      modelId: worker[:model],
+      systemPrompt: nil,
+      promptVariables: [],
+      persona: worker[:label],
+      avatarUrl: worker[:avatar_url],
+      welcomeMessage: nil,
+      enabledTools: [],
+      outputModes: [],
+      autonomyMode: "approval_required",
+      executionMode: to_string(worker[:runtime] || :bridge),
+      defaultDestinationChatId: nil,
+      eventTypesEnabled: [],
+      costBudgetDaily: nil,
+      costBudgetMonthly: nil,
+      approvalRules: %{},
+      runbookIds: [],
+      voiceProvider: nil,
+      voiceProfile: nil,
+      callbackUrl: nil,
+      secretHint: nil,
+      previousSecretExpiresAt: nil,
+      publishedAt: nil,
+      lastInvokedAt: nil,
+      attachedChats: [],
+      integrations: []
+    }
   end
 
   @doc """
   Returns the catalog of tools an agent can be granted.
-
-  `toggleable_tools/0`, not `tools/0`: the full catalog also includes
-  always-on runtime/meta tools (agent_management, ask_user, the always-on
-  analytics pair) that the native Vibe AI assistant uses to manage agents —
-  they're never optional for a standalone agent, so showing them as
-  togglable items in its own Tools picker just clutters it with entries
-  that look like the built-in assistant's own capabilities leaking in.
   """
   def tool_registry(conn, _params) do
     json(conn, %{items: Vibe.AI.ToolRegistry.toggleable_tools()})
@@ -172,9 +210,7 @@ defmodule VibeWeb.AgentsController do
   end
 
   @doc """
-  Live availability check for an agent handle/username. Pass `username` and,
-  when editing an existing agent, `agent_id` so the agent's own current handle
-  reads as available.
+  Live availability check for an agent handle/username.
   """
   def username_available(conn, params) do
     owner_id = conn.assigns.current_user.id
@@ -266,8 +302,6 @@ defmodule VibeWeb.AgentsController do
     end
   end
 
-  # publish_agent/2 refuses on a few known preconditions. Return a message the
-  # client can show verbatim plus a stable code, not `inspect/1` on the atom.
   defp publish_error_message(:missing_system_prompt),
     do: "Add a system prompt before publishing this agent."
 
@@ -286,7 +320,6 @@ defmodule VibeWeb.AgentsController do
   def rotate_secret(conn, %{"id" => id} = params) do
     owner_id = conn.assigns.current_user.id
 
-    # نبودِ این پارامتر یعنی ابطالِ فوری — حالتِ «کلیدم لو رفته».
     grace_hours = params["graceHours"] || params["grace_hours"]
 
     with %{} = agent <- Agents.get_agent(id, owner_id),
@@ -502,11 +535,6 @@ defmodule VibeWeb.AgentsController do
     end
   end
 
-  # vibe.content.v1 (docs/provider-content-contract.md): when the body carries a
-  # parts envelope, validate it and degrade to the message/attachments shape the
-  # invoke pipeline already understands. The envelope's text lanes are
-  # authoritative over a bare "message" param (dual-publish). Requests without a
-  # content envelope pass through untouched.
   defp merge_provider_content(%{"content" => %{"contract" => _} = content} = params) do
     case ProviderContent.parse(content) do
       {:ok, normalized} ->
@@ -674,10 +702,6 @@ defmodule VibeWeb.AgentsController do
 
   @doc """
   Claim a sender-declared decision action by opaque token.
-
-  Body: `%{"token" => "..."}`. Authorization is chat participation on the
-  decision's chat (not agent ownership). Concurrent single-mode claims return
-  `already_decided` for the loser, not a 5xx.
   """
   def respond_decision_action(conn, params) when is_map(params) do
     user_id = conn.assigns.current_user.id
@@ -768,8 +792,6 @@ defmodule VibeWeb.AgentsController do
 
           conn |> put_status(:forbidden) |> json(%{error: "Agent not attached to target chat"})
 
-        # همان ردهٔ chat_not_attached است — ردِ مجوز، نه ورودیِ نامعتبر. بدون این
-        # بند، اتم خام داخل بدنهٔ ۴۲۲ چاپ می‌شد.
         {:error, :event_trigger_not_enabled} ->
           Logger.warning(
             "[AgentsController] ingest_event trigger not enabled identifier=#{identifier}"
