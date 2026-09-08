@@ -1,0 +1,18 @@
+{
+  "id": 36,
+  "status": "open",
+  "priority": 2,
+  "kind": "warning",
+  "body": "MLS commit fan-out is THE refactor conflict. VibeSecureSession::open accepts ONLY ProcessedMessageContent::ApplicationMessage; Commit/Proposal hit the '_ =>' arm and return VibeSecureError::Open. add_members produces a Commit/Welcome pair and merges the commit LOCALLY, but no FFI method feeds a Commit into an existing member (secure.rs exposes create/join_from_welcome/add_members/seal/open only). So a 2-member DM works and any group that adds a 3rd member breaks PERMANENTLY for already-present members: the commit envelope fails to open AND their epoch never advances, so every later application message fails too. session.rs module doc calls this out as needing an ordered delivery service (docs/secure-core-architecture.md s4). That server piece does not exist.",
+  "selector": "core/vibe_secure/src/session.rs::VibeSecureSession::open",
+  "path": "core/vibe_secure/src/session.rs",
+  "fqn": "VibeSecureSession::open",
+  "line": 344,
+  "anchor_hash": "010fb3d479081174e9867b8d0d4d7932ff1b9481246a04b64a9faf25a3ba0d18",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787750992,
+  "updated_at": 1787750992
+}

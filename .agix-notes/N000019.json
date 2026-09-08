@@ -1,0 +1,18 @@
+{
+  "id": 19,
+  "status": "open",
+  "priority": 1,
+  "kind": "finding",
+  "body": "Video-note false error: history-drain PendingAudit treats in-flight sending rows (no draft while upload runs on global queue) as stranded and writes status=error. Engine sendMessage returns state=sending; handleNativeVideoNoteSend drops that because 'sending' is not in its allow-list and paints sent. Fix: audit only pending, skip activeMediaUploadTasks, keep sending.",
+  "selector": "ios/ChatModule/ChatEngine.swift::ChatEngine.logPendingSendDiagnostics",
+  "path": "ios/ChatModule/ChatEngine.swift",
+  "fqn": "ChatEngine.logPendingSendDiagnostics",
+  "line": 12725,
+  "anchor_hash": "3bd355190abee17839dd3dedfa3929ebf03d5de1c698340d0d9e617a7b4841d8",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787744705,
+  "updated_at": 1787744705
+}

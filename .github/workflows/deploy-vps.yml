@@ -1,0 +1,99 @@
+name: Deploy to VPS
+
+# Replaces Railway's GitHub integration, which was the entire pipeline before the
+# move. The tree is rsynced, not cloned, so the box never holds a git credential.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'agent-runtime/**'
+      - 'sandbox-gateway/**'
+      - 'contracts/**'
+      - 'deploy/**'
+      - '.github/workflows/deploy-vps.yml'
+  workflow_dispatch:
+    inputs:
+      rollback_sha:
+        description: 'Retag this sha as :latest instead of building'
+        required: false
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    # Skipped for rollback: an emergency must not be blocked by a red suite.
+    if: ${{ !inputs.rollback_sha }}
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    if: ${{ always() && (needs.ci.result == 'success' || inputs.rollback_sha) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load ssh key and pinned host key
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOST: ${{ secrets.VPS_HOST }}
+          HOSTKEY: ${{ secrets.VPS_HOST_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Pinned, not ssh-keyscan: TOFU in CI would accept a swapped host silently.
+          printf '%s\n' "$HOSTKEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Sync tree to /opt/vibe
+        if: ${{ !inputs.rollback_sha }}
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+        run: |
+          VPS_HOST="$HOST" VPS_USER="$USER" VPS_SSH_STRICT=yes \
+            VPS_SSH_KEY_FILE="$HOME/.ssh/id_ed25519" \
+            bash deploy/scripts/push-tree.sh
+
+      - name: Deploy
+        if: ${{ !inputs.rollback_sha }}
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+        run: |
+          ssh "${USER}@${HOST}" \
+            "VIBE_BUILD_SHA=${GITHUB_SHA::7} /opt/vibe/deploy/scripts/deploy.sh"
+
+      - name: Rollback
+        if: ${{ inputs.rollback_sha }}
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+          SHA: ${{ inputs.rollback_sha }}
+        run: |
+          ssh "${USER}@${HOST}" "/opt/vibe/deploy/scripts/deploy.sh --rollback '${SHA}'"
+
+      - name: Verify health and audit
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+        run: |
+          ssh "${USER}@${HOST}" "/opt/vibe/deploy/scripts/agent-ops.sh health"
+          ssh "${USER}@${HOST}" "/opt/vibe/deploy/scripts/agent-ops.sh audit" || true
+
+      # Proves the whole public path — tunnel, Caddy, core — not just the container.
+      # Set the repo variable VIBE_PUBLIC_HEALTH_URL once DNS is on the tunnel.
+      - name: Public smoke test
+        if: ${{ vars.VIBE_PUBLIC_HEALTH_URL != '' }}
+        run: |
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "${{ vars.VIBE_PUBLIC_HEALTH_URL }}")
+            [ "$code" = "200" ] && exit 0
+            echo "attempt $i: $code"; sleep 10
+          done
+          echo "public health never returned 200" >&2; exit 1

@@ -1,0 +1,18 @@
+[Unit]
+Description=Vibe compose stack (rootless podman)
+After=network-online.target podman.socket
+Wants=network-online.target
+Requires=podman.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/vibe
+# %t = $XDG_RUNTIME_DIR in a user unit — the rootless podman API socket.
+Environment=CONTAINER_SOCKET_HOST_PATH=%t/podman/podman.sock
+ExecStart=/usr/bin/podman compose -f /opt/vibe/deploy/compose.yml up -d
+ExecStop=/usr/bin/podman compose -f /opt/vibe/deploy/compose.yml down
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

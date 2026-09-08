@@ -1,0 +1,13 @@
+apiVersion: 1
+
+# $ALERT_EMAIL_TO comes from env/monitoring.env and must be non-empty — an empty
+# address fails ALL provisioning, taking datasources and dashboards down with it.
+contactPoints:
+  - orgId: 1
+    name: vibe-email
+    receivers:
+      - uid: vibe-email-1
+        type: email
+        settings:
+          addresses: $ALERT_EMAIL_TO
+          singleEmail: true

@@ -77,19 +77,23 @@ struct NativeMusicPlayerTrack: Codable, Equatable {
 
   static func resolveTrackId(from payload: [String: Any]) -> String? {
     let candidates: [Any?] = [
+      payload["trackId"],
       payload["track_id"],
+      payload["videoId"],
       payload["video_id"],
       payload["id"],
+      payload["previewUrl"],
       payload["preview_url"],
+      payload["streamUrl"],
       payload["stream_url"],
+      payload["mediaUrl"],
+      payload["media_url"],
+      payload["localUri"],
       payload["local_uri"],
     ]
     for candidate in candidates {
-      if let value = candidate as? String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-          return trimmed
-        }
+      if let value = Self.stringValue(candidate) {
+        return value
       }
     }
     return nil
@@ -97,77 +101,208 @@ struct NativeMusicPlayerTrack: Codable, Equatable {
 
   init?(payload: [String: Any]) {
     guard let trackId = Self.resolveTrackId(from: payload) else { return nil }
-    let titleRaw = (payload["title"] as? String) ?? (payload["name"] as? String)
+    let titleRaw =
+      Self.stringValue(payload["title"])
+      ?? Self.stringValue(payload["name"])
+      ?? Self.stringValue(payload["fileName"])
+      ?? Self.stringValue(payload["file_name"])
     let titleTrimmed = titleRaw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     let title = titleTrimmed
     let artist =
-      (payload["artist"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      Self.stringValue(payload["artist"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     guard !title.isEmpty else { return nil }
 
     self.trackId = trackId
-    self.videoId = payload["video_id"] as? String
-    self.id = payload["id"] as? String
-    self.source = payload["source"] as? String
+    self.videoId = Self.stringValue(payload["videoId"]) ?? Self.stringValue(payload["video_id"])
+    self.id = Self.stringValue(payload["id"])
+    self.source = Self.stringValue(payload["source"])
     self.title = title
     self.artist = artist.isEmpty ? "Unknown Artist" : artist
-    self.album = payload["album"] as? String
-    self.duration = payload["duration"] as? String
-    self.durationSeconds =
-      (payload["duration_seconds"] as? NSNumber)?.doubleValue
-      ?? (payload["duration_seconds"] as? Double)
-    self.cover = payload["cover"] as? String
-    self.previewURL = payload["preview_url"] as? String
-    self.streamURL = payload["stream_url"] as? String
-    self.localURI = payload["local_uri"] as? String
+    self.album = Self.stringValue(payload["album"])
+    self.duration = Self.durationLabel(from: payload)
+    self.durationSeconds = Self.durationSeconds(from: payload)
+    self.cover =
+      Self.stringValue(payload["cover"])
+      ?? Self.stringValue(payload["thumbnail"])
+      ?? Self.stringValue(payload["artwork"])
+    self.previewURL =
+      Self.stringValue(payload["previewUrl"])
+      ?? Self.stringValue(payload["preview_url"])
+      ?? Self.stringValue(payload["mediaUrl"])
+      ?? Self.stringValue(payload["media_url"])
+    self.streamURL =
+      Self.stringValue(payload["streamUrl"])
+      ?? Self.stringValue(payload["stream_url"])
+      ?? Self.stringValue(payload["mediaUrl"])
+      ?? Self.stringValue(payload["media_url"])
+    self.localURI =
+      Self.stringValue(payload["localUri"]) ?? Self.stringValue(payload["local_uri"])
     self.cachedAt =
-      (payload["cached_at"] as? NSNumber)?.doubleValue
-      ?? (payload["cached_at"] as? Double)
+      Self.doubleValue(payload["cachedAt"]) ?? Self.doubleValue(payload["cached_at"])
     self.playCount =
-      (payload["play_count"] as? NSNumber)?.intValue
-      ?? (payload["play_count"] as? Int)
+      Self.intValue(payload["playCount"])
+      ?? Self.intValue(payload["play_count"])
       ?? 0
     self.lastPlayedAt =
-      (payload["last_played_at"] as? NSNumber)?.doubleValue
-      ?? (payload["last_played_at"] as? Double)
-    self.links = payload["links"] as? [String: String] ?? [:]
+      Self.doubleValue(payload["lastPlayedAt"])
+      ?? Self.doubleValue(payload["last_played_at"])
+    var links = Self.linksValue(from: payload["links"])
+    if links["chat_id"] == nil {
+      if let chatId = Self.stringValue(payload["chat_id"]) ?? Self.stringValue(payload["chatId"]) {
+        links["chat_id"] = chatId
+      }
+    }
+    self.links = links
   }
 
   func applying(payload: [String: Any]) -> NativeMusicPlayerTrack {
     var next = self
-    if let value = payload["video_id"] as? String, !value.isEmpty { next.videoId = value }
-    if let value = payload["id"] as? String, !value.isEmpty { next.id = value }
-    if let value = payload["source"] as? String, !value.isEmpty { next.source = value }
-    if let value = payload["title"] as? String, !value.isEmpty { next.title = value }
-    if let value = payload["artist"] as? String, !value.isEmpty { next.artist = value }
-    if let value = payload["album"] as? String, !value.isEmpty { next.album = value }
-    if let value = payload["duration"] as? String, !value.isEmpty { next.duration = value }
-    if let value = (payload["duration_seconds"] as? NSNumber)?.doubleValue
-      ?? (payload["duration_seconds"] as? Double)
+    if let value = Self.stringValue(payload["videoId"]) ?? Self.stringValue(payload["video_id"]),
+      !value.isEmpty
     {
+      next.videoId = value
+    }
+    if let value = Self.stringValue(payload["id"]), !value.isEmpty { next.id = value }
+    if let value = Self.stringValue(payload["source"]), !value.isEmpty { next.source = value }
+    if let value = Self.stringValue(payload["title"]) ?? Self.stringValue(payload["name"]),
+      !value.isEmpty
+    {
+      next.title = value
+    }
+    if let value = Self.stringValue(payload["artist"]), !value.isEmpty { next.artist = value }
+    if let value = Self.stringValue(payload["album"]), !value.isEmpty { next.album = value }
+    if let value = Self.durationLabel(from: payload), !value.isEmpty { next.duration = value }
+    if let value = Self.durationSeconds(from: payload) {
       next.durationSeconds = value
     }
-    if let value = payload["cover"] as? String, !value.isEmpty { next.cover = value }
-    if let value = payload["preview_url"] as? String, !value.isEmpty { next.previewURL = value }
-    if let value = payload["stream_url"] as? String, !value.isEmpty { next.streamURL = value }
-    if let value = payload["local_uri"] as? String, !value.isEmpty { next.localURI = value }
-    if let value = (payload["cached_at"] as? NSNumber)?.doubleValue
-      ?? (payload["cached_at"] as? Double)
+    if let value =
+      Self.stringValue(payload["cover"])
+      ?? Self.stringValue(payload["thumbnail"])
+      ?? Self.stringValue(payload["artwork"]),
+      !value.isEmpty
+    {
+      next.cover = value
+    }
+    if let value =
+      Self.stringValue(payload["previewUrl"])
+      ?? Self.stringValue(payload["preview_url"])
+      ?? Self.stringValue(payload["mediaUrl"])
+      ?? Self.stringValue(payload["media_url"]),
+      !value.isEmpty
+    {
+      next.previewURL = value
+    }
+    if let value =
+      Self.stringValue(payload["streamUrl"])
+      ?? Self.stringValue(payload["stream_url"])
+      ?? Self.stringValue(payload["mediaUrl"])
+      ?? Self.stringValue(payload["media_url"]),
+      !value.isEmpty
+    {
+      next.streamURL = value
+    }
+    if let value = Self.stringValue(payload["localUri"]) ?? Self.stringValue(payload["local_uri"]),
+      !value.isEmpty
+    {
+      next.localURI = value
+    }
+    if let value = Self.doubleValue(payload["cachedAt"]) ?? Self.doubleValue(payload["cached_at"])
     {
       next.cachedAt = value
     }
-    if let value = (payload["play_count"] as? NSNumber)?.intValue ?? (payload["play_count"] as? Int)
-    {
+    if let value = Self.intValue(payload["playCount"]) ?? Self.intValue(payload["play_count"]) {
       next.playCount = value
     }
-    if let value = (payload["last_played_at"] as? NSNumber)?.doubleValue
-      ?? (payload["last_played_at"] as? Double)
+    if let value =
+      Self.doubleValue(payload["lastPlayedAt"]) ?? Self.doubleValue(payload["last_played_at"])
     {
       next.lastPlayedAt = value
     }
-    if let value = payload["links"] as? [String: String] {
-      next.links = value
+    let links = Self.linksValue(from: payload["links"])
+    if !links.isEmpty {
+      next.links = links
     }
     return next
+  }
+
+  private static func stringValue(_ raw: Any?) -> String? {
+    if let value = raw as? String {
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? nil : trimmed
+    }
+    if let value = raw as? NSNumber {
+      return value.stringValue
+    }
+    return nil
+  }
+
+  private static func doubleValue(_ raw: Any?) -> Double? {
+    if let value = raw as? Double, value.isFinite { return value }
+    if let value = raw as? Float, value.isFinite { return Double(value) }
+    if let value = raw as? NSNumber { return value.doubleValue }
+    if let value = raw as? String {
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      return Double(trimmed)
+    }
+    return nil
+  }
+
+  private static func intValue(_ raw: Any?) -> Int? {
+    if let value = raw as? Int { return value }
+    if let value = raw as? NSNumber { return value.intValue }
+    if let value = raw as? String {
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      return Int(trimmed)
+    }
+    return nil
+  }
+
+  private static func durationSeconds(from payload: [String: Any]) -> Double? {
+    if let value =
+      doubleValue(payload["durationSeconds"]) ?? doubleValue(payload["duration_seconds"])
+    {
+      // Values that look like milliseconds.
+      return value > 10_000 ? value / 1000.0 : value
+    }
+    if let value = doubleValue(payload["duration"]) {
+      return value > 10_000 ? value / 1000.0 : value
+    }
+    if let label = stringValue(payload["duration"]) {
+      let parts = label.split(separator: ":").compactMap { Double($0) }
+      if parts.count == 2 { return parts[0] * 60.0 + parts[1] }
+      if parts.count == 3 { return parts[0] * 3600.0 + parts[1] * 60.0 + parts[2] }
+    }
+    return nil
+  }
+
+  private static func durationLabel(from payload: [String: Any]) -> String? {
+    if let label = stringValue(payload["duration"]), label.contains(":") {
+      return label
+    }
+    if let seconds = durationSeconds(from: payload), seconds.isFinite, seconds > 0 {
+      let total = Int(seconds.rounded())
+      return String(format: "%d:%02d", total / 60, total % 60)
+    }
+    if let label = stringValue(payload["duration"]) {
+      return label
+    }
+    return nil
+  }
+
+  private static func linksValue(from raw: Any?) -> [String: String] {
+    if let dict = raw as? [String: String] {
+      return dict
+    }
+    if let dict = raw as? [String: Any] {
+      var result: [String: String] = [:]
+      for (key, value) in dict {
+        if let string = stringValue(value) {
+          result[key] = string
+        }
+      }
+      return result
+    }
+    return [:]
   }
 
   func toPayload() -> [String: Any] {
@@ -207,7 +342,13 @@ final class NativeMusicPlayerStore {
   private let cacheDirectoryName = "native-music-player-cache"
   private let defaults = UserDefaults.standard
 
-  private var tracks: [String: NativeMusicPlayerTrack] = [:]
+  /// Bumped on every mutation of `tracks`, so callers can memoise derived lists
+  /// instead of re-running `tracks(forChatId:)` — a filter plus a locale-aware sort
+  /// over the whole library — on every playback tick.
+  private(set) var revision: Int = 0
+  private var tracks: [String: NativeMusicPlayerTrack] = [:] {
+    didSet { revision &+= 1 }
+  }
   private var downloadingTracks: [String: Double] = [:]
 
   private init() {
@@ -228,6 +369,21 @@ final class NativeMusicPlayerStore {
 
   func libraryTracksPayload() -> [[String: Any]] {
     libraryTracks().map { $0.toPayload() }
+  }
+
+  func tracks(forChatId chatId: String) -> [NativeMusicPlayerTrack] {
+    let target = chatId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !target.isEmpty else { return [] }
+    return tracks.values
+      .filter { $0.links["chat_id"] == target }
+      .sorted { lhs, rhs in
+        let lhsTime = lhs.cachedAt ?? 0.0
+        let rhsTime = rhs.cachedAt ?? 0.0
+        if lhsTime != rhsTime {
+          return lhsTime > rhsTime
+        }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+      }
   }
 
   func cacheTrack(payload: [String: Any]) -> NativeMusicPlayerTrack? {
@@ -285,10 +441,16 @@ final class NativeMusicPlayerStore {
     persistTracks()
   }
 
+  /// The file to play instead of the network, if this device has one. Shares the full
+  /// resolution with `hasLocalPlaybackFile` — the two disagreeing is what let the engine
+  /// download a track the library already counted as cached. A hit found somewhere other
+  /// than the recorded path heals the record, so the next lookup is a single hit.
   func resolvedCachedFileURL(for track: NativeMusicPlayerTrack) -> URL? {
-    guard let localURI = track.localURI else { return nil }
-    guard let url = resolvedLocalURL(from: localURI) else { return nil }
-    return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    guard let url = resolvedPlayableLocalURL(for: track) else { return nil }
+    if track.localURI != url.absoluteString {
+      updateLocalURI(trackId: track.trackId, localURI: url.absoluteString)
+    }
+    return url
   }
 
   func cacheDestinationURL(for track: NativeMusicPlayerTrack, remoteURL: URL?) -> URL {
@@ -397,14 +559,60 @@ final class NativeMusicPlayerStore {
       }
   }
 
+  /// Every place this track's bytes could legitimately be, in order of authority. The store used
+  /// to consult `localURI` alone, which fails two ordinary ways — the container UUID changes on
+  /// reinstall, and this store's own cache directory lived in `Caches`, which iOS purges — and
+  /// each failure was read as "not downloaded", so the player re-fetched a track the device
+  /// already had. The last stop is the media vault: a track SENT from this device is copied
+  /// there at upload time keyed by its remote URL, and that copy is durable.
   private func resolvedPlayableLocalURL(for track: NativeMusicPlayerTrack) -> URL? {
+    let fm = FileManager.default
     if let localURI = track.localURI,
       let url = resolvedLocalURL(from: localURI),
-      FileManager.default.fileExists(atPath: url.path)
+      fm.fileExists(atPath: url.path)
     {
       return url
     }
+    // The cache slot name is a pure function of trackId, so a stale/lost `localURI` never
+    // hides a file this store itself wrote — including one left in the legacy Caches folder.
+    for directory in [resolvedCacheDirectory()] + Self.legacyCacheDirectories() {
+      guard
+        let items = try? fm.contentsOfDirectory(
+          at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+      else { continue }
+      let slot = Self.cacheSlotName(for: track.trackId)
+      if let hit = items.first(where: { $0.deletingPathExtension().lastPathComponent == slot }) {
+        return hit
+      }
+    }
+    for raw in [track.streamURL, track.previewURL] {
+      guard
+        let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
+        let remoteURL = URL(string: raw), let scheme = remoteURL.scheme?.lowercased(),
+        scheme == "http" || scheme == "https"
+      else { continue }
+      if let hit = VibeMediaVault.shared.cachedURL(
+        for: VibeMediaVault.identity(remoteURL: remoteURL), kind: .audio)
+      {
+        return hit
+      }
+    }
     return nil
+  }
+
+  /// Deterministic slot name for a track's own cached file (no extension).
+  private static func cacheSlotName(for trackId: String) -> String {
+    SHA256.hash(data: Data(trackId.utf8))
+      .compactMap { String(format: "%02x", $0) }
+      .joined()
+  }
+
+  /// Where this store used to write before the cache moved out of `Caches`. Read-only: a file
+  /// still sitting here is played from here rather than re-downloaded.
+  private static func legacyCacheDirectories() -> [URL] {
+    guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+    else { return [] }
+    return [caches.appendingPathComponent("native-music-player-cache", isDirectory: true)]
   }
 
   private func deleteFileIfNeeded(localURI: String) {
@@ -412,11 +620,13 @@ final class NativeMusicPlayerStore {
     try? FileManager.default.removeItem(at: url)
   }
 
+  /// Application Support, not `Caches`. A track the user waited for is not scratch space, and
+  /// iOS reclaims `Caches` whenever it wants — on this device the whole
+  /// `Caches/native-music-player-cache` folder had already been reclaimed, which is why every
+  /// track in the library reported itself as needing a download again.
   private func resolvedCacheDirectory() -> URL {
-    let baseDirectory =
-      FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-      ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-    let directory = baseDirectory.appendingPathComponent(cacheDirectoryName, isDirectory: true)
+    let directory = vibeDurableMediaCacheRoot()
+      .appendingPathComponent(cacheDirectoryName, isDirectory: true)
     if !FileManager.default.fileExists(atPath: directory.path) {
       try? FileManager.default.createDirectory(
         at: directory,
@@ -426,15 +636,22 @@ final class NativeMusicPlayerStore {
     return directory
   }
 
+  /// An absolute path persisted in a previous run is a hint, not a location. iOS mints a new
+  /// data-container UUID whenever the app is reinstalled — the contents are carried over, the
+  /// path is not — so every `localURI` this store saved reads as "missing" after a rebuild and
+  /// the track is downloaded again while its bytes sit on the device. Rebuild the path against
+  /// the CURRENT container before concluding the file is gone.
   private func resolvedLocalURL(from value: String) -> URL? {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
+    let parsed: URL
     if let url = URL(string: trimmed), url.isFileURL {
-      return url
+      parsed = url
+    } else if trimmed.hasPrefix("/") {
+      parsed = URL(fileURLWithPath: trimmed)
+    } else {
+      return nil
     }
-    if trimmed.hasPrefix("/") {
-      return URL(fileURLWithPath: trimmed)
-    }
-    return nil
+    return ChatListView.relocatedToCurrentContainer(parsed)
   }
 }

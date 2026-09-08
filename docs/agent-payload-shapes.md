@@ -31,6 +31,24 @@ iOS ChatEngine → ChatNativeAgentView / ChatAgentMessagesView  (parsed rows)
 `toolEvents`, `status` ("running" | "done"). The final `result` carries the full output;
 progress lines are capped (`@max_stream_lines 500`) so only the result is authoritative.
 
+### Supervisor team runs (`@team`)
+
+Default `@team` / `/team` uses **supervisor** mode (override with `VIBE_TEAM_MODE=sequential`):
+
+| Field | Meaning |
+|---|---|
+| `teamMode` | `"supervisor"` (or legacy `"group_team"` sequential) |
+| `teamRunId` | Durable run id (also `TeamRun` primary key) |
+| `teamWorker` | This frame’s handle |
+| `teamWorkers` | All handles in the run |
+| `leadWorker` | Responsible agent (default preference: Codex → Claude → Grok → Agy) |
+| `teamRole` | `"lead"` \| `"worker"` |
+| `suppressVisible` | `true` for under-hood workers — **no list bubble** |
+| `teamWorkersStatus` | `[{ worker, label, status, durationMs, lastLabel, … }]` for the lead cell strip |
+
+Under-hood workers also emit `agent-team-worker` so the lead cell’s compact strip updates
+without inserting a second synthetic row. iOS pins the visible cell by `teamRunId`.
+
 ---
 
 ## Claude (`stream-json`)
@@ -85,7 +103,8 @@ Session-log-only `type`s (persistence, NOT in live stream — ignore for renderi
 > **CRITICAL:** `codex exec --json` **stdout** (what the bridge captures) is the
 > *thread-item streaming* format below — NOT the `event_msg`/`response_item` shape
 > found in `~/.codex/sessions/**/rollout-*.jsonl`. The rollout files are the
-> on-disk persistence format and are never seen by the bridge. Verified 2026-06-25
+> on-disk persistence format and are never seen by the **live stdout parser**
+> (the bridge's History reader does open them explicitly). Verified 2026-06-25
 > against codex-cli **0.142.0** (binary string analysis + live stdout capture).
 
 One JSON object per line. **Envelope** events keyed by top-level `type`:
@@ -124,6 +143,50 @@ by `item.id` (the worker merges same-id events).
 Common failure surfaced to the user: top-level `{"type":"error","message":"You've
 hit your usage limit…"}` followed by `turn.failed` — that's a Codex quota cap, not
 a parse error. The worker maps the message to the visible result text.
+
+### Codex app persistence (`response_item`) — History only
+
+Captured 2026-07-13 from current Codex app rollouts. Newer app sessions persist
+orchestration through a wrapper that is **not** the real user-facing action:
+
+```jsonc
+{"type":"response_item","payload":{
+  "type":"custom_tool_call","name":"exec","call_id":"call_…",
+  "input":"const r=await tools.exec_command({cmd:\"rg -n Demo lib\"}); text(r.output);"
+}}
+{"type":"response_item","payload":{
+  "type":"function_call","name":"wait","call_id":"call_…",
+  "arguments":"{\"cell_id\":\"121\",\"yield_time_ms\":20000}"
+}}
+```
+
+For `custom_tool_call.name == "exec"`, parse the generated input **without eval**
+and classify **every** nested `tools.<name>(…)` call. A single envelope can contain
+`update_plan` followed by one command, a `Promise.all` with several commands, or a
+mapped command array; taking only the first nested call silently drops the rest.
+
+| nested tool | render as |
+|---|---|
+| `exec_command` | Run, or Read/Search when the shell classifier recognizes it |
+| `apply_patch` | Edit with file and `+N −M` metadata |
+| `view_image` | Read/inspect the image filename |
+| `update_plan` | Planning |
+| `spawn_agent` / `send_message` | Task / subagent activity |
+| MCP/web/image tools | Their nested tool identity, never the outer `exec` |
+| `write_stdin` | suppress (continuation of an existing command) |
+
+Suppress a direct `function_call.name == "wait"` and its paired output for the
+same reason. These continuation frames do not represent new work; showing them
+creates the repeated raw `exec` / `wait` rows seen in the iOS History surface.
+Direct persistence `function_call` / `custom_tool_call` records that are not
+wrappers still use their own `name` and decoded arguments.
+
+Codex IDE user messages may also be wrapped as `# Context from my IDE setup` plus
+`## My request for Codex:`. History must extract the request section before applying
+context filtering, strip attachment wrappers such as `<image …></image>` / `[Image #1]`,
+and ignore injected `AGENTS.md` / plugin-list / bridge-startup records. The extracted
+user prompt is the history title and the visible user bubble; assistant commentary is
+only a fallback when a rollout has no real user prompt.
 
 ---
 
@@ -439,4 +502,3 @@ Tool name map: `view_file`→`read_file`, `run_command`→`run_terminal_command`
 | mention | `@agy` (alias `@antigravity`) |
 | agent user id | `44444444-4444-4444-4444-444444444444` |
 | avatar | `https://media.vibegram.io/chat-media/agent-profiles/agy.png` |
-

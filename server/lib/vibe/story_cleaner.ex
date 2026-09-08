@@ -12,7 +12,6 @@ defmodule Vibe.StoryCleaner do
   @impl true
   def init(state) do
     Logger.info("Starting StoryCleaner...")
-    # Initial cleanup after 1 minute to not block startup
     Process.send_after(self(), :cleanup, 60_000)
     {:ok, state}
   end

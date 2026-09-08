@@ -1,0 +1,18 @@
+{
+  "id": 111,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Channel events are throttled per user via VibeWeb.ChannelThrottle (ETS :channel_throttle created in Application.start). check!/2 throws {:throttled, reply}; each guarded handle_in clause has a function-level catch so the clause body needed no re-nesting.",
+  "selector": "server/lib/vibe_web/channels/chat_channel.ex::VibeWeb.ChatChannel.handle_in",
+  "path": "server/lib/vibe_web/channels/chat_channel.ex",
+  "fqn": "VibeWeb.ChatChannel.handle_in",
+  "line": 86,
+  "anchor_hash": "3fa0f600516cf5046508189568ba8551bb3c0a893ac8c5a883538f65cf5fc854",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787919621,
+  "updated_at": 1787919621
+}

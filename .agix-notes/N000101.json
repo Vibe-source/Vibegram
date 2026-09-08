@@ -1,0 +1,18 @@
+{
+  "id": 101,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — the allowance ran out mid-task\nDID: exec(const r = await tools.exec_command({\"cmd\":\"agix body ChatProfileRootController.handleProfileContactAction\",\"workdir\":\"/Users/mohammads…\nPLAN: 1) [x] Map profile, settings, chat search, mute, QR, and shared-content flows 2) [x] Fix hero/title morph, stable actions, and fallback-avatar expansion gating 3) [x] Redesign username/contact rows and add copy toast plus QR panel 4) [x] Wire profile search, mute, block, and remove appearance row\nFILES: /Users/mohammadshayani/Vibe/.vibe/memory.md, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatProfileMainView.swift",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "codex",
+  "author": "Vibe Team",
+  "created_at": 1787853766,
+  "updated_at": 1787885565
+}

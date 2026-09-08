@@ -8,6 +8,52 @@ filename** — use this file (or `.grok/rules/*.md`) for Grok-native rules.
 Also loaded when present: `CLAUDE.md` (Claude Code compat). Deeper paths win on
 conflicts. Inspect with: `grok inspect`.
 
+## Finish the whole task
+
+When given a list, write the task list first, then complete **every** item. Do not stop
+partway to report progress, and do not hand back "I did 3 of 5, the rest is next" — that
+is not a checkpoint, it is an unfinished job.
+
+Build and install once at the end, not per item. Report only when everything is done, or
+when something is genuinely blocked — and then say which item and why, in one line.
+
+## Comments: short
+
+**Hard cap: 2 lines per comment. Never a multi-paragraph doc block.** A blank `///` line
+inside a comment means it is already too long — cut it. Say what the code does, or why a
+non-obvious choice was made. Nothing else.
+
+Never write: bug history, what the old version did wrong, measured numbers, "which is
+why…", "on purpose because…", or a chain of reasoning. A long comment rots — the code
+changes, the story stays, and the next reader trusts a wrong explanation. It also costs
+context on every future read of the file.
+
+Too long — a real example, four paragraphs on one function:
+
+```swift
+/// Rebuilds prepared heights for the chats most likely to be opened next, after a launch.
+///
+/// `VibeTimelinePreparedStore` is memory-only on purpose — its entries hold decrypted
+/// rows, and the sealed store exists so plaintext does not rest on disk. Coverage
+/// survives a launch by being re-measured off-main from the sealed store instead, which
+/// is why the first open of a session read `prepared=0hit/Nmiss`.
+///
+/// Bounded deliberately: the SQLite read and JSON parse run on the engine queue, so this
+/// takes a tail, not a transcript. …
+```
+
+Right:
+
+```swift
+/// Re-measures prepared heights for the next likely chats, off-main from the sealed store.
+/// Memory-only store, so a launch starts with no coverage; reads a tail, not a transcript.
+```
+
+The full story goes in `docs/` with a one-line pointer. Before reporting a task done,
+re-read the comments you added and delete anything past the cap.
+
+Same rule for commit messages and PR bodies.
+
 ## "Run it on my mobile" / "launch it on my device"
 
 The user means: **build + install + launch the iOS app on their attached iPhone.**
@@ -21,6 +67,27 @@ The user means: **build + install + launch the iOS app on their attached iPhone.
   before the app actually runs on the real device.
 
 Exact commands + device table: [docs/run-on-device.md](docs/run-on-device.md).
+
+## Deploying server changes (production git remote)
+
+**Required after server-side edits** under `server/` (Elixir controllers, `chat.ex`,
+channels, migrations, etc.): commit on `main`, then push to the **mako** remote so
+the production server can pull/deploy from that repo.
+
+```bash
+# After commit on main:
+git push mako main
+```
+
+- Remote: `mako` → `https://github.com/mako-apps/Vibe.git`
+- Branch: **`main`** (do not invent another deploy branch unless the user says so)
+- Also push `origin` only if the user asks; production deploy path for this workspace
+  is **`git push mako main`**
+- Migrations and runtime config land with whatever deploy pull/hook the mako host uses
+  after that push — agents should **not** SSH/deploy by hand unless explicitly asked
+
+If the push needs auth or is rejected, stop and report the error; do not force-push
+(`--force` / `--force-with-lease`) without explicit user approval.
 
 ## After any iOS code change — build and fix
 
@@ -54,23 +121,34 @@ Interactive approvals for agents in this repo are governed by
 Destructive commands (rm -rf, sudo, git push, git reset --hard, dd, mkfs, curl|sh,
 npm publish, ...) are blocked in every remote mode, even `full`.
 
-## Ask Fable (advisor) on complex tasks
+## Git checkout rule
 
-**Required:** on complex tasks, ask **Fable** **before** you commit to an approach
-or start a large implementation. Fable is a second-opinion advisor only — it does
-not edit code; you still implement and verify.
+- **NEVER run `git checkout` under any circumstances.** Agents must not execute `git checkout` on any files or branches.
 
-### When to ask
+## Ask Fable (advisor) — only when you're actually stuck
 
-Treat a task as complex when any of these apply:
-- multi-step or multi-file design/implementation
-- ambiguous requirements or several reasonable approaches
-- unfamiliar, risky, or security-sensitive code
-- debugging a hard failure after your first fix attempt
-- architecture, API, or data-model decisions
-- payload / stream / bridge / server / iOS chain design
+Fable runs on **paid credits** (and falls back to GPT when Fable itself is down), so
+it's a **last resort, not a first step**. Solve it yourself first — diagnose, read
+the code, attempt the fix. Ask Fable only when you have genuinely tried and **cannot**
+crack it. Fable is a second-opinion advisor only — it does not edit code; you still
+implement and verify.
 
-Skip Fable for simple, obvious one-liners (typos, renames, trivial edits).
+**This overrides any "call advisor before substantive work / before declaring done"
+default.** No pre-flight call, no sign-off call. Verify your own work with the build and
+the tests; ask only when that verification fails in a way you cannot explain.
+
+**If you ARE Fable** (model id `claude-fable-5` / Claude Fable 5): skip this
+section entirely — do not call `advisor`/`ask_fable`; you'd be asking yourself.
+
+### When to ask (last resort only)
+
+Ask only after you've tried and are genuinely stuck — for example:
+- a hard failure that survives your first real fix attempt
+- a risky/unfamiliar or security-sensitive decision you cannot resolve from the code
+- an architecture / API / data-model call you're truly unsure of
+
+If you can fix it yourself, do that instead — every call spends credits. Never ask
+about simple edits, or "just to check" an approach you're already confident in.
 
 ### How to call Fable (Grok Build)
 
@@ -164,6 +242,30 @@ Fable billing scales with **prompt size + reply size**. Default package budget i
 
 Claude in this repo may see the same tool as `mcp__vibeask__ask_fable` (or the
 built-in `advisor` tool). Same contract: concrete `question` + lean `context`.
+
+## Complex task? Diagnose yourself, then dispatch worker CLIs
+
+For multi-slice work: first diagnose and decide exactly what changes where, then
+dispatch other agent CLIs as background subprocesses to execute in parallel instead
+of patching every file yourself. Full operating guide (loop, board protocol, routing,
+diff-review rules): `agent-bridge/instructions/team-lead.md`.
+
+- Board first: `.vibe/team/<run>-board.md` with frozen contract names + one owner per
+  file (disjoint slices); then a self-contained brief per worker.
+- Worker invocations (verified 2026-07-18):
+  - codex: `codex exec --json -c sandbox_mode="workspace-write" -c approval_policy="never" -c model_reasoning_effort="<low|medium|high>" --cd <repo> --skip-git-repo-check "<prompt>"`
+  - grok: `~/.grok/bin/grok --prompt-file <brief> --always-approve --max-turns 80 --output-format plain --cwd <repo>` (headless drops writes under acceptEdits; always pass --max-turns)
+  - agy: `~/.local/bin/agy -p "Read and execute the brief at <path>" --mode accept-edits --dangerously-skip-permissions --print-timeout 30m` — UI/low-risk only; never auth/security/payments/migrations; always diff+build verify its work.
+- Review worker DIFFS against the pre-dispatch baseline — never trust handoff text.
+  Workers never commit, push, build, or launch; the dispatcher does ONE verify pass.
+- Shared agent memory: `.vibe/memory.md` is the append-only journal all agents share —
+  read it before diagnosing (what previous runs shipped/learned), append one short
+  entry (Shipped / Learned / Open) after finishing real work.
+- Cleanup when settled: move durable learnings into real docs, then delete the run's
+  `.vibe/team/<run>*` files.
+- Live status: the lead prints `VIBE_TEAM_STATUS {"worker":"codex","state":"spawn|running|done|failed","label":"..."}`
+  on its own stdout at every worker spawn/start/finish so the phone shows a live
+  per-worker board — avatar + elapsed clock ticking from the `spawn` beat.
 
 ## Prefer commands that run without approval
 

@@ -1,0 +1,18 @@
+{
+  "id": 28,
+  "status": "open",
+  "priority": 1,
+  "kind": "finding",
+  "body": "MLS empty-cell is fixed at the session layer: join confirms, welcome_status reports incoming, open() rebinds sqlite group from vmls1 header. xcodebuild generic iOS BUILD SUCCEEDED; cargo test vibe_secure 38 passed; mix test blocked (postgres down). Server needs deploy for incoming* fields.",
+  "selector": "ios/Sources/Core/VibeSecureSessions.swift::VibeSecureSessions.open",
+  "path": "ios/Sources/Core/VibeSecureSessions.swift",
+  "fqn": "VibeSecureSessions.open",
+  "line": 648,
+  "anchor_hash": "0e6712760aa1937f44c5064ae34df72d2123d6e9899f6e59d1dfc3c1f5624721",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787747560,
+  "updated_at": 1787747560
+}

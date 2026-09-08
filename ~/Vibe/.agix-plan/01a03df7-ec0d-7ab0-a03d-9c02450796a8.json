@@ -1,0 +1,54 @@
+{
+  "session": "01a03df7-ec0d-7ab0-a03d-9c02450796a8",
+  "task": "fix the voice not einitlay o ope is closing its…",
+  "steps": [
+    {
+      "what": "Reconstruct continuity + diagnose decrypt failure from attached logs",
+      "id": "1",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Map dual decrypt seams (Swift ChatEngine vs Rust vibe_core MLS)",
+      "id": "2",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Fix MLS session: server welcome_status incoming, join confirms, stop joiner discard, envelope rebind",
+      "id": "3",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Add focused crypto logs only where a blind still exists",
+      "id": "4",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Tests + XCFramework + xcodebuild Vibe scheme",
+      "id": "5",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787747560
+}

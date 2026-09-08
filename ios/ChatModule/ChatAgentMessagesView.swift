@@ -996,6 +996,11 @@ private final class ChatNativeAgentProgressTreeView: UIView {
   //   "Read ChatEngine.swift", "Edit chat.ex  +12 −3", "Run git status", …
   private func agentNodeDisplayLabel(_ node: ChatListRow.AgentProgressNode) -> String {
     guard let kind = node.kind, !kind.isEmpty else { return node.label }
+    // Verb + target is the CLI shape (target = path/command). Native server steps reuse the
+    // same coarse kinds but ship a written label and no target — see chatAgentNodeCompactLabel.
+    if node.target?.isEmpty != false, !node.label.isEmpty, kind != "todo" {
+      return node.label
+    }
     let verb: String
     switch kind {
     case "read": verb = "Read"
@@ -1478,7 +1483,7 @@ private final class ChatNativeAgentRowHostView: UIView {
   private var cachedSubviewFrame: CGRect = .zero
   private var currentRowText: String = ""
   private var currentSourceMessageId: String = ""
-  private var currentAppearance = ChatListAppearance.fallback
+  private var currentAppearance = ChatListAppearance.current
   private let longPressGesture = UILongPressGestureRecognizer()
 
   var onNativeEvent: (([String: Any]) -> Void)? {
@@ -1694,7 +1699,7 @@ final class ChatNativeAgentMessagesView: UIView {
   private var progressRowKinds: [String] = []
   private var footerRowKeys: [String] = []
   private var footerRowKinds: [String] = []
-  private var appearance = ChatListAppearance.fallback
+  private var appearance = ChatListAppearance.current
   private var lastKnownWidth: CGFloat = 0.0
   private var keyboardHeight: CGFloat = 0.0
   private var pendingStreamingTextLayoutInvalidation = false

@@ -89,7 +89,7 @@ final class ChatMainProfileActionNode: UIControl {
     titleView.text = title
   }
 
-  func applyTheme(foreground: UIColor, background: UIColor) {
+  func applyTheme(foreground: UIColor, background: UIColor, isDark: Bool = true) {
     titleView.textColor = foreground
     iconView.tintColor = foreground
 
@@ -99,7 +99,7 @@ final class ChatMainProfileActionNode: UIControl {
       glassView.effect = glass
       glassView.contentView.backgroundColor = .clear
     } else {
-      glassView.effect = UIBlurEffect(style: .systemThinMaterialDark)
+      glassView.effect = UIBlurEffect(style: isDark ? .systemThinMaterialDark : .systemThinMaterialLight)
       glassView.contentView.backgroundColor = background.withAlphaComponent(0.25)
     }
   }

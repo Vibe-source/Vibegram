@@ -1,0 +1,26 @@
+{
+  "name": "Vibe",
+  "one_line": "Private real-time messaging, media, and AI collaboration across native clients.",
+  "sells": "free",
+  "buyers": ["consumers", "teams"],
+  "problem": "People need one place for fast communication and collaborative agents without giving up message privacy.",
+  "promise": "Native communication with end-to-end encrypted direct messages, rich media, channels, and agent-assisted work.",
+  "proof": [],
+  "operators": ["Vibe operations", "Vibe support", "Vibe security"],
+  "public_api": false,
+  "collects": [
+    "account identifiers",
+    "profile and contact data",
+    "message and media metadata",
+    "group and channel content",
+    "device push tokens",
+    "network and security logs",
+    "AI prompts and tool data"
+  ],
+  "regions": ["global"],
+  "tone": "private, direct, trustworthy",
+  "assumed": [
+    "buyers",
+    "regions"
+  ]
+}

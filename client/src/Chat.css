@@ -1,27 +1,30 @@
 :root {
-  /* Dark background matching Perplexity */
-  --bg-primary: #191919;
-  --bg-card: #1f1f1f;
-  --bg-input: #2a2a2a;
-  --text-primary: #f4f4f5;
-  --text-secondary: #6b6b6b;
-  /* Perplexity exact teal - oklch(0.7192 0.112 205.51) ≈ muted cyan */
-  --accent-rgb: 94, 177, 178;
+  /* Vibe Aurora (glacier dark) — mirrors iOS ChatListAppearance.fallback */
+  --bg-primary: #05050B;
+  --bg-card: #12121A;
+  --bg-input: #1A1A24;
+  --text-primary: #E8E6F0;
+  --text-secondary: #9896A8;
+  --accent-rgb: 18, 184, 167;
   --accent: rgb(var(--accent-rgb));
-  --accent-muted: rgba(94, 177, 178, 0.85);
-  /* Lower contrast bubble - softer teal (Opaque to prevent overlap artifacts) */
-  --bubble-me: #3C8181;
-  --bubble-me-solid: #3d8a8a;
-  --bubble-me-gradient: linear-gradient(135deg, #489090 0%, #3C8181 100%);
+  --accent-muted: rgba(18, 184, 167, 0.85);
+  --bubble-me: #08C6B4;
+  --bubble-me-solid: #8B7CFF;
+  --bubble-me-gradient: linear-gradient(135deg, #8B7CFF 0%, #08C6B4 100%);
   --bubble-me-text: #ffffff;
-  /* Received bubble - subtle elevation */
-  --bubble-them: #252525;
-  --bubble-them-gradient: linear-gradient(135deg, #2a2a2a 0%, #252525 100%);
+  --bubble-them: #252936;
+  --bubble-them-gradient: linear-gradient(135deg, #252936 0%, #1A202C 100%);
+  --time-color-me: rgba(255, 255, 255, 0.68);
+  --time-color-them: rgba(255, 255, 255, 0.52);
+  --wallpaper-gradient: linear-gradient(180deg, #05050B 0%, #05050B 100%);
+  --wallpaper-pattern-a: #7F5AF0;
+  --wallpaper-pattern-b: #1DB8A6;
+  --wallpaper-pattern-c: #D16F58;
+  --wallpaper-pattern-opacity: 0.17;
   --header-height: 60px;
   --footer-height: 80px;
   --safe-area-top: env(safe-area-inset-top, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
-
   --app-height: 100%;
 }
 
@@ -197,7 +200,7 @@
   right: 0;
   bottom: 0;
   z-index: -1;
-  background: linear-gradient(to bottom, var(--bg-primary) 0%, rgba(24, 24, 27, 0.85) 50%, transparent 100%);
+  background: linear-gradient(to bottom, var(--bg-primary) 0%, rgba(5, 5, 11, 0.88) 50%, transparent 100%);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
   mask-image: linear-gradient(to bottom, black 0%, black 60%, transparent 100%);
@@ -536,7 +539,7 @@
   height: 250px;
   bottom: -100%;
   z-index: -1;
-  background: linear-gradient(to top, var(--bg-primary) 0%, rgba(24, 24, 27, 0.85) 50%, transparent 100%);
+  background: linear-gradient(to top, var(--bg-primary) 0%, rgba(5, 5, 11, 0.9) 50%, transparent 100%);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
   mask-image: linear-gradient(to top, black 0%, black 60%, transparent 100%);
@@ -631,7 +634,8 @@
 }
 
 .send-btn.active {
-  background: var(--accent);
+  background: var(--bubble-me-gradient, var(--accent));
+  color: #04211e;
   transform: scale(1);
 }
 

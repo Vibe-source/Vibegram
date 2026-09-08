@@ -1,0 +1,18 @@
+{
+  "id": 66,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Send-morph ghost now derives direction from the TEXT, not the view. ChatInputBar.makeTextContentSnapshot used textView.effectiveUserInterfaceLayoutDirection, so an RTL body in an LTR interface flew LTR and snapped on landing. Now ChatNativeAgentTextRenderer.isRTL(committedText) drives paragraph.alignment/.baseWritingDirection, label.textAlignment and label.semanticContentAttribute, and the ghost label frame is pixel-aligned to the screen scale to kill the sub-pixel crossfade slide.",
+  "selector": "ios/ChatModule/ChatInputBar.swift::ChatInputBar.makeTextContentSnapshot",
+  "path": "ios/ChatModule/ChatInputBar.swift",
+  "fqn": "ChatInputBar.makeTextContentSnapshot",
+  "line": 2673,
+  "anchor_hash": "5df940a25597781037b274a2fb4bdeb68db60e5fd0aeaacf2b25bebd7f0979d8",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787762202,
+  "updated_at": 1787762202
+}

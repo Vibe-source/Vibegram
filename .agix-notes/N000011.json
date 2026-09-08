@@ -1,0 +1,18 @@
+{
+  "id": 11,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "Profile privacy is now enforced via Accounts.viewer_can_see?/3: nobody/contacts/everybody. contacts = existing DM and neither blocked. Applied to UserController render/phone lookup and unauthenticated PushAvatar.",
+  "selector": "server/lib/vibe/accounts.ex::Vibe.Accounts.viewer_can_see?",
+  "path": "server/lib/vibe/accounts.ex",
+  "fqn": "Vibe.Accounts.viewer_can_see?",
+  "line": 71,
+  "anchor_hash": "470a9f2090698df27667a02d706ddb0dc0627a01ff66373188e476edb7900c60",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787743236,
+  "updated_at": 1787743236
+}

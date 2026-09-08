@@ -1,0 +1,15 @@
+[Unit]
+Description=Unseal Vibe env into tmpfs
+# Root unit: the host key is root-only, while vibe-stack.service is a rootless user unit.
+After=local-fs.target
+Before=user@1000.service
+RequiresMountsFor=/run
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/vibe/deploy/scripts/unseal-env.sh
+ExecStop=/bin/rm -rf /run/vibe/env /run/vibe/tunnel.json
+
+[Install]
+WantedBy=multi-user.target

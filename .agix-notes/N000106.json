@@ -1,0 +1,18 @@
+{
+  "id": 106,
+  "status": "done",
+  "priority": 2,
+  "kind": "handoff",
+  "body": "Shipped profile follow-up: removed custom top material and restored NavigationStack-owned top scroll edge; tightened hero bottom blur to final third while increasing radius 34→52; group/channel Edit and Channel settings now render inline with callback-driven Cancel/Done instead of path pushes, while deeper detail pages still use NavigationStack. Generic unsigned iOS build is green; attached phone was offline and CoreSimulatorService unavailable.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787909869,
+  "updated_at": 1787920837
+}

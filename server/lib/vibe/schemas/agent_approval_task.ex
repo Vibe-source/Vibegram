@@ -3,6 +3,8 @@ defmodule Vibe.AgentApprovalTask do
   import Ecto.Changeset
 
   @statuses ~w[pending approved rejected expired]
+  @action_modes ~w[single multi]
+  @sources ~w[runbook declared runtime]
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -14,6 +16,11 @@ defmodule Vibe.AgentApprovalTask do
     field :status, :string, default: "pending"
     field :decision_note, :string
     field :decided_at, :utc_datetime
+    field :action_mode, :string, default: "single"
+    field :expires_at, :utc_datetime
+    field :message_id, :binary_id
+    field :chosen_action_id, :string
+    field :source, :string, default: "runbook"
 
     belongs_to :agent, Vibe.Agent
     belongs_to :thread, Vibe.AgentEventThread
@@ -21,8 +28,14 @@ defmodule Vibe.AgentApprovalTask do
     belongs_to :runbook, Vibe.AgentRunbook
     belongs_to :approved_by, Vibe.Accounts.User, foreign_key: :approved_by_user_id
 
+    has_many :decision_actions, Vibe.AgentDecisionAction, foreign_key: :task_id
+
     timestamps()
   end
+
+  def statuses, do: @statuses
+  def action_modes, do: @action_modes
+  def sources, do: @sources
 
   def changeset(task, attrs) do
     task
@@ -37,9 +50,27 @@ defmodule Vibe.AgentApprovalTask do
       :rationale,
       :status,
       :decision_note,
-      :decided_at
+      :decided_at,
+      :action_mode,
+      :expires_at,
+      :message_id,
+      :chosen_action_id,
+      :source
     ])
-    |> validate_required([:agent_id, :thread_id, :event_id, :requested_action, :status, :chat_id])
+    |> validate_required([:agent_id, :requested_action, :status, :chat_id])
+    |> maybe_require_thread_and_event(attrs)
     |> validate_inclusion(:status, @statuses)
+    |> validate_inclusion(:action_mode, @action_modes)
+    |> validate_inclusion(:source, @sources)
+  end
+
+  defp maybe_require_thread_and_event(changeset, attrs) do
+    source = attrs[:source] || attrs["source"] || get_field(changeset, :source)
+
+    if source == "runtime" do
+      changeset
+    else
+      validate_required(changeset, [:thread_id, :event_id])
+    end
   end
 end

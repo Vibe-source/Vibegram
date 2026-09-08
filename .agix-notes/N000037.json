@@ -1,0 +1,18 @@
+{
+  "id": 37,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Two Rust crates both understand envelopes and neither talks to the other: vibe_core::canonical recognises vmls1 and only FLAGS it (Prepared.sealed_elsewhere), vibe_secure::session is what actually opens it. Swift (VibeKeychainKeyUnwrapper/VibeSecureSessions) is the sole bridge. That unwrapper is batched, keyed by message id and retry-tolerant — the wrong shape for MLS: process_message MUTATES the ratchet, is order-sensitive, must not be replayed. This mismatch is why open() needed a pending-commit merge and an envelope-suffix plaintext key. If Rust is to own decryption, the unwrapper contract must become ordered-per-group and single-shot.",
+  "selector": "core/vibe_core/src/canonical.rs::prepare",
+  "path": "core/vibe_core/src/canonical.rs",
+  "fqn": "prepare",
+  "line": 228,
+  "anchor_hash": "68d45ff5875f3b430e30a8443c8a9a071482a6f2bd0b3d6123699fc45e89e9c3",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787750992,
+  "updated_at": 1787750992
+}

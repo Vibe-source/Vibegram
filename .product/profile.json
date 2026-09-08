@@ -1,0 +1,11 @@
+{
+  "class": "mobile",
+  "criticality": "safety",
+  "scale_target": {
+    "users_year_one": 100000,
+    "peak_rps": 2000,
+    "data_year_one_gb": 1000
+  },
+  "availability_target": "99.9%",
+  "compliance": ["GDPR"]
+}

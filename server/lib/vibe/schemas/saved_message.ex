@@ -14,6 +14,7 @@ defmodule Vibe.Chat.SavedMessage do
     field :media_url, :string
     field :timestamp, :integer
     field :extra, :string
+    field :reaction_emoji, :string
 
     belongs_to :user, Vibe.Accounts.User, type: :binary_id
 

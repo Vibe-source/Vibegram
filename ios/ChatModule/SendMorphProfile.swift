@@ -29,11 +29,11 @@ public enum SendMorphProfile {
   static let sourceBackgroundFadeDuration: CFTimeInterval = 0.15
 
   // The clip envelope does NOT own any corner anymore: it sits at a CONSTANT
-  // radius — the destination bubble's smallest true corner (8pt grouped
-  // top-right, else 18pt) — purely as a text-containment clip. Every visible
+  // radius — the destination bubble's smallest true corner — purely as a
+  // text-containment clip. Every visible
   // shape rounds itself: the capsule ghost via its own animated cornerRadius,
   // the plate via its stretch-proof baked corners. So the bubble shows its
-  // REAL corners (including a grouped 8pt top-right) from the first frame it
+  // REAL destination corners from the first frame it
   // fades in, and nothing about the silhouette changes at the reveal.
 
   // Composer text and bubble text ride the same path and crossfade midway,
@@ -49,15 +49,15 @@ public enum SendMorphProfile {
   static let metaFadeDuration: CFTimeInterval = 0.07
 
   // The tail is a constant-size, vector-matched lobe that RIDES the plate's
-  // bottom-trailing corner for the WHOLE flight and fades on exactly the
-  // plate's own schedule (same delay/duration/easing as bubbleFade), so tail
-  // opacity == plate opacity at every instant: the bubble and its tail form as
-  // ONE shape from the first visible frame — the tail is part of the cell in
-  // flight, never something that pops in after the cell lands in the list.
-  // The plate's bottom corner arc is pixel-true at every intermediate size
-  // (9-part raster), so the lobe splices seamlessly at any opacity.
-  static let tailFadeDelay: CFTimeInterval = 0.045
-  static let tailFadeDuration: CFTimeInterval = 0.15
+  // bottom-trailing corner for the WHOLE flight. It starts substantially visible
+  // instead of mirroring destination-plate opacity: the body is also covered by the
+  // outgoing composer snapshot during the crossfade, while the tail has no equivalent
+  // source layer. Giving both the same 0→1 fade made the tail look as if it vanished
+  // specifically on the first empty-chat send. This floor matches the combined body
+  // coverage and settles quickly to the real cell.
+  static let tailFadeFrom: Float = 0.68
+  static let tailFadeDelay: CFTimeInterval = 0.0
+  static let tailFadeDuration: CFTimeInterval = 0.12
   // Media tails are a separate pinned view (no corner travel) — they sit at
   // their FINAL placement, so revealing them early would hang a tail in space
   // before the bubble arrives. They keep the late, quick reveal.
@@ -82,9 +82,9 @@ final class SendTransitionState: NSObject {
   // frame, so it stays glued to the moving corner. nil = a separate-view media
   // tail (pinned at final placement, opacity-only, old behavior).
   let tailCornerTravel: CGSize?
-  // Smallest true corner radius of the destination bubble (8pt for a grouped
-  // top-right corner, else 18) — the clip envelope settles onto this and holds
-  // it, so the real cell's corners are already showing when it is revealed.
+  // Smallest true corner radius of the destination bubble — the clip envelope
+  // settles onto this and holds it, so the real cell's corners are already
+  // showing when it is revealed.
   let clipSettleRadius: CGFloat
   let sourceBackgroundStartFrame: CGRect
   let sourceBackgroundEndFrame: CGRect
@@ -218,7 +218,20 @@ final class SendTransitionState: NSObject {
   }
 
   func start(sourceRect: CGRect, targetRect: CGRect) {
-    overlayContainer.frame = targetRect
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    overlayContainer.bounds = CGRect(origin: .zero, size: targetRect.size)
+    overlayContainer.center = CGPoint(x: targetRect.midX, y: targetRect.midY)
+    overlayContainer.layer.removeAnimation(forKey: "bounds")
+    overlayContainer.layer.removeAnimation(forKey: "bounds.size")
+    overlayContainer.layer.removeAnimation(forKey: "transform")
+    CATransaction.commit()
+    NSLog(
+      "[SendMorphDiag] geometry seeded source=%@ target=%@ model=%@",
+      NSCoder.string(for: sourceRect),
+      NSCoder.string(for: targetRect),
+      NSCoder.string(for: overlayContainer.frame)
+    )
 
     let dx = sourceRect.minX - targetRect.minX
     let dy = sourceRect.maxY - targetRect.maxY
@@ -294,8 +307,8 @@ final class SendTransitionState: NSObject {
     // destination bubble's smallest true corner radius, so it never cuts into
     // any real corner (a smaller-radius cut removes strictly less). The shapes
     // round themselves: the plate raster's baked corners are stretch-proof
-    // (9-part), so the bubble shows its REAL corners — including a grouped 8pt
-    // top-right — from the first frame the plate fades in, and the silhouette
+    // (9-part), so the bubble shows its REAL destination corners from the first
+    // frame the plate fades in, and the silhouette
     // never changes at the reveal.
     let startRadius = min(sourceBackgroundStartFrame.height / 2.0, 22.0)
     let uniformRadius = min(sourceBackgroundEndFrame.height / 2.0, 18.0)
@@ -307,7 +320,7 @@ final class SendTransitionState: NSObject {
     // capture); it used to lean on the envelope for rounding. Now it rounds
     // itself: its own animated cornerRadius is geometry, not raster, so it is
     // exact at every intermediate size — starting as the true pill and
-    // relaxing toward the bubble's 18pt as it crossfades away.
+    // relaxing toward the destination bubble's radius as it crossfades away.
     sourceBackgroundSnapshot.clipsToBounds = true
     sourceBackgroundSnapshot.layer.cornerCurve = .continuous
     sourceBackgroundSnapshot.layer.cornerRadius = uniformRadius
@@ -413,10 +426,10 @@ final class SendTransitionState: NSObject {
 
     // Tail: a constant-size vector lobe outside the clip envelope. For
     // integrated-tail bubbles it RIDES the plate's bottom-trailing corner
-    // (additive position on the plate's own timing) AND fades on the plate's
-    // exact schedule, so tail opacity == plate opacity at every instant: the
-    // bubble forms WITH its tail as one shape for the whole flight — the tail
-    // is never something that appears after the cell lands in the list. Media
+    // (additive position on the plate's own timing) and keeps a strong opacity
+    // floor while the composer/background layers crossfade: the bubble forms
+    // WITH its tail as one shape for the whole flight — the tail is never
+    // something that disappears mid-flight or appears after landing. Media
     // tails (no corner travel) are pinned at final placement and keep the
     // late, quick reveal instead.
     if let tailSnapshot {
@@ -437,7 +450,7 @@ final class SendTransitionState: NSObject {
       let isRidingTail = tailCornerTravel != nil
       addOpacityAnimation(
         layer: tailSnapshot.layer,
-        from: 0.0,
+        from: isRidingTail ? SendMorphProfile.tailFadeFrom : 0.0,
         to: 1.0,
         delay: isRidingTail
           ? SendMorphProfile.tailFadeDelay : SendMorphProfile.mediaTailFadeDelay,
@@ -590,7 +603,12 @@ enum SendTransitionOverlayFactory {
     hostView: UIView
   ) -> Result {
     let motionSourceRect = payload.resolvedSourceBackgroundRect.integral
-    let container = UIView()
+    // Establish the real model bounds before insertion. On an empty-chat send,
+    // adding a zero-frame view and sizing it during the collection update let
+    // Core Animation interpolate the outer container from zero; the sampler
+    // showed the first bubble growing from the upper-left despite a correct
+    // composer source rectangle.
+    let container = UIView(frame: targetBubbleRect)
     container.isUserInteractionEnabled = false
     container.clipsToBounds = false
 
@@ -736,6 +754,12 @@ enum SendTransitionOverlayFactory {
     )
 
     let destinationContentSnapshot: UIView = {
+      if let cleanText = snapshotCell.transitionCleanTextSnapshotView(
+        captureRect: contentCaptureRect,
+        targetFrame: relativeDestinationContentFrame
+      ) {
+        return cleanText
+      }
       if let contentOnly = makeContentSnapshot(
         snapshotCell: snapshotCell, captureRect: contentCaptureRect,
         targetFrame: relativeDestinationContentFrame, part: .text)
@@ -854,10 +878,20 @@ enum SendTransitionOverlayFactory {
     }()
     let tailSnapshot = tailBuild?.view
     let tailCornerTravel = tailBuild?.cornerTravel
+    NSLog(
+      "[SendMorphDiag] parts mid=%@ source=%@ dest=%@ shapeTail=%@ integratedLobe=%@ tailSnapshot=%@ riding=%@",
+      String(payload.messageId.prefix(12)),
+      String(describing: type(of: sourceTextSnapshot as Any)),
+      String(describing: type(of: destinationContentSnapshot)),
+      (snapshotCell.row?.shape.showTail ?? false) ? "Y" : "N",
+      snapshotCell.bubbleView.integratedTailLobePath() == nil ? "N" : "Y",
+      tailSnapshot == nil ? "N" : "Y",
+      tailCornerTravel == nil ? "N" : "Y"
+    )
 
     // Smallest true corner radius of the destination bubble — the envelope
-    // settles onto this (see start()) so a grouped 8pt top-right corner is
-    // already showing, morphed-in smoothly, well before the reveal.
+    // settles onto this (see start()) so the final corners are already showing,
+    // morphed-in smoothly, well before the reveal.
     let cellRadii = snapshotCell.bubbleView.transitionCornerRadii()
     let clipSettleRadius = min(
       min(cellRadii.topLeft, cellRadii.topRight),
@@ -875,7 +909,8 @@ enum SendTransitionOverlayFactory {
     container.addSubview(clippingView)
 
     if let tailSnapshot {
-      tailSnapshot.layer.opacity = 0.0
+      tailSnapshot.layer.opacity =
+        tailCornerTravel == nil ? 0.0 : SendMorphProfile.tailFadeFrom
       container.addSubview(tailSnapshot)
     }
 

@@ -1,0 +1,45 @@
+{
+  "session": "01a03d8d-aae6-7e10-9407-b71229081ad3",
+  "task": "fix the voice not einitlay o ope is closing its…",
+  "steps": [
+    {
+      "what": "Verify the encrypted-message core projection fix on a stable iOS tree",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    },
+    {
+      "what": "Load the repository product and security audit guidance",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    },
+    {
+      "what": "Audit the product and server-side security paths with evidence",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    },
+    {
+      "what": "Create a durable audit note and verify the final tree",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    }
+  ],
+  "state": "draft",
+  "by": "",
+  "at": 1787741011
+}

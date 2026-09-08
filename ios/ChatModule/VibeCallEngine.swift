@@ -163,7 +163,7 @@ public final class VibeNativeCallEngine {
     request.timeoutInterval = 12
     request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-    URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+    VibeHTTP.shared.dataTask(with: request) { [weak self] data, response, error in
       guard let self else { return }
       let finishedAt = self.nowMs()
 

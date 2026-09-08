@@ -1,0 +1,18 @@
+{
+  "id": 112,
+  "status": "open",
+  "priority": 2,
+  "kind": "warning",
+  "body": "MLS audit 2026-08-28: primitives sound. Gaps: (1) hybrid downgrade when server reports no KeyPackage, RSA pubkeys unpinned -> server MITM on never-established DMs; (2) safety number has no UI; (3) MLS SQLite secrets plaintext at rest; (4) retained.v1 lacks forget(messageId:) on delete/view-once; (5) Android pushPreview plaintext.",
+  "selector": "ios/Sources/Core/VibeSecureEstablishment.swift::VibeSecureEstablishment.establishDirectMessage",
+  "path": "ios/Sources/Core/VibeSecureEstablishment.swift",
+  "fqn": "VibeSecureEstablishment.establishDirectMessage",
+  "line": 161,
+  "anchor_hash": "4cfca1e9a1c4fa338f2327fbaa1e582aa941d8504c06e83bfc6ba6437ae4a533",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787920834,
+  "updated_at": 1787920834
+}

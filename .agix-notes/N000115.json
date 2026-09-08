@@ -1,0 +1,18 @@
+{
+  "id": 115,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — the agent asked for the handover\nGOAL: WHAT WE HAVE BEEN DOING HERE Written by earlier threads in this repository, so you are not meeting this work for the first time. It is a record of what was done and decided — not a list of things to do now, and not current evidence. Re-check anything you are about to rely on. THREADS WORKED HERE 2h…\nNEXT: MLS security-audit fixes, priority order (findings in .vibe/memory.md 2026-08-28 entry and agix note on VibeSecureEstablishment.establishDirectMessage): (1) Hybrid downgrade: in ChatEngine.sendMessage the DM path falls back to the hybrid RSA envelope when VibeSecureSessions.markPeerKeysUnavailable was set; RSA public keys from /api/user/:id/prekey-bundle are not pinned. Pin the peer RSA public key alongside VibeSecu…\nDID: Write(/Users/mohammadshayani/Vibe/docs/mls-audit-2026-08-28.md)\nFILES: /Users/mohammadshayani/Vibe/docs/mls-audit-2026-08-28.md, /Users/mohammadshayani/.claude/projects/-Users-mohammadshayani-Vibe/memory/mls-security-audit-2026-08-28.md",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "claude",
+  "author": "Vibe Team",
+  "created_at": 1787920882,
+  "updated_at": 1787921568
+}

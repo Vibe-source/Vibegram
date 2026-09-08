@@ -1,0 +1,18 @@
+{
+  "id": 65,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "RTL bubble text was right-aligned by the SHARED renderer, not by the cell. ChatNativeAgentTextRenderer.makeParagraphStyle sets style.alignment = isRtl ? .right : .natural, and an explicit paragraph alignment outranks UILabel.textAlignment — so ChatListCell.configure's messageLabel.textAlignment = .left was dead code for every Farsi/Arabic body. Fixed in parseBubbleMarkdown (chat-bubble path only, agent surface untouched): re-enumerate .paragraphStyle and force .left when isRTL(text), keeping baseWritingDirection = .rightToLeft for shaping. Alignment does not change measured size, so no bubbleLayoutRevision bump is needed for this.",
+  "selector": "ios/ChatModule/ChatListViewCells.swift::parseBubbleMarkdown",
+  "path": "ios/ChatModule/ChatListViewCells.swift",
+  "fqn": "parseBubbleMarkdown",
+  "line": 4066,
+  "anchor_hash": "53f99085bda82ab09a81b52b7438c88adf327dceceaa1ce7c9c90e90179738f6",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787762200,
+  "updated_at": 1787762200
+}

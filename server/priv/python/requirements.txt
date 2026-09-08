@@ -3,3 +3,5 @@ waitress==3.0.*
 weasyprint==63.*
 openpyxl==3.1.*
 pypdfium2==4.*
+# Music / SoundCloud / YouTube extract for search_music + /api/music/stream
+yt-dlp>=2024.1.0

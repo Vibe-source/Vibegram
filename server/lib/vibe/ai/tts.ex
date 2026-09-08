@@ -3,7 +3,7 @@ defmodule Vibe.AI.TTS do
 
   require Logger
 
-  alias Vibe.SupabaseStorage
+  alias Vibe.Storage
 
   @openai_tts_api "https://api.openai.com/v1/audio/speech"
 
@@ -58,7 +58,7 @@ defmodule Vibe.AI.TTS do
     remote_path = "agents/voice/#{Ecto.UUID.generate()}.mp3"
 
     with :ok <- File.write(temp_path, audio_bin),
-         {:ok, public_url} <- SupabaseStorage.upload(temp_path, remote_path, bucket: :media) do
+         {:ok, public_url} <- Storage.upload(temp_path, remote_path, bucket: :media) do
       duration = estimated_duration_seconds(audio_bin)
       File.rm(temp_path)
       {:ok, %{media_url: public_url, duration: duration}}
@@ -70,8 +70,6 @@ defmodule Vibe.AI.TTS do
   end
 
   defp estimated_duration_seconds(audio_bin) when is_binary(audio_bin) do
-    # Coarse fallback until a proper probe is added.
-    # 24kbps speech MP3 is roughly 3KB/s.
     max(Float.round(byte_size(audio_bin) / 3_000, 1), 1.0)
   end
 end

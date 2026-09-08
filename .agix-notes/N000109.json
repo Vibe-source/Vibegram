@@ -1,0 +1,18 @@
+{
+  "id": 109,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "MLS retained plaintext now lives in App Support/vibe-secure/retained.v1 sealed with the core store key (AES-GCM); legacy UserDefaults vibe.mls.ownPlaintext is migrated then removed. Peer rows whose envelope epoch <= group epoch with no pending commit are tombstoned (unrecoverable set) and never retried; builder renders a resend hint for own/tombstoned rows.",
+  "selector": "ios/Sources/Core/VibeSecureSessions.swift::VibeSecureSessions.open",
+  "path": "ios/Sources/Core/VibeSecureSessions.swift",
+  "fqn": "VibeSecureSessions.open",
+  "line": 789,
+  "anchor_hash": "8950dc6989283e492ac17a4a82f1fdeee7a9fa9bc177ffb613d696436c06fe08",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787919608,
+  "updated_at": 1787919608
+}

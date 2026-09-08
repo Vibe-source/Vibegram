@@ -9,9 +9,7 @@ defmodule Vibe.Subscriptions do
   alias Vibe.Accounts
   alias Vibe.Badges
 
-  # ============================================
   # Plan Functions
-  # ============================================
 
   def list_plans do
     Repo.all(from p in Plan, order_by: [asc: p.price_cents])
@@ -33,9 +31,6 @@ defmodule Vibe.Subscriptions do
     |> Repo.insert()
   end
 
-  # ============================================
-  # Subscription Functions
-  # ============================================
 
   def get_user_subscription(user_id) do
     Repo.one(
@@ -68,9 +63,6 @@ defmodule Vibe.Subscriptions do
     })
   end
 
-  # ============================================
-  # Tier Calculation
-  # ============================================
 
   @doc """
   Calculate the effective tier for a user based on subscription and referrals.
@@ -112,18 +104,17 @@ defmodule Vibe.Subscriptions do
     end
   end
 
+  @unlimited_agent_cap 1_000_000
+
   def agent_limit_for_user(user_id) do
     case Accounts.get_user(user_id) do
-      %{tier: "gold"} -> 10
-      %{tier: "silver"} -> 3
-      %{tier: "bronze"} -> 1
-      _ -> 1
+      %{tier: "gold"} -> @unlimited_agent_cap
+      %{tier: "silver"} -> @unlimited_agent_cap
+      %{tier: "bronze"} -> @unlimited_agent_cap
+      _ -> @unlimited_agent_cap
     end
   end
 
-  # ============================================
-  # Subscription Lifecycle
-  # ============================================
 
   @doc """
   Handle new subscription creation (called from webhook)

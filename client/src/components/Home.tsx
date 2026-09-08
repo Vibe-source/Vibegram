@@ -1,9 +1,15 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence, useMotionValue, useTransform, useAnimation, animate } from 'framer-motion';
 import { useDrag } from '@use-gesture/react';
 import { Trash2, Pin, VolumeX, Copy, Ghost } from 'lucide-react';
 import { Chat } from '../types';
-import { timeAgo } from '../utils';
+import {
+    avatarGradientCss,
+    avatarInitials,
+    chatLastTimestamp,
+    chatPreviewText,
+    formatChatListTime,
+} from '../theme/appearance';
 import HomeHeader from './HomeHeader';
 import './Home.css';
 import Haptics from '../haptics';
@@ -29,7 +35,6 @@ interface ChatListProps {
     username: string;
 }
 
-// Swipeable Row Component using @use-gesture/react
 const SwipeableChatRow = ({
     chat,
     isEditing,
@@ -51,23 +56,23 @@ const SwipeableChatRow = ({
 }) => {
     const x = useMotionValue(0);
     const controls = useAnimation();
-    const lastMsg = chat.messages[chat.messages.length - 1];
+    const seed = chat.friendId || chat.friendName || chat.chatId;
+    const preview = chatPreviewText(chat, userId);
+    const ts = chatLastTimestamp(chat);
+    const isTyping = typingUsers.has(chat.friendId?.toUpperCase());
 
-    // Background color based on swipe direction - Dead zone around 0 to hide icons on hold/jitter
     const bgInfo = useTransform(x, [-100, -30, 0, 30, 100], [
-        'rgba(239, 68, 68, 1)',  // Red at -100
-        'rgba(239, 68, 68, 0)',  // Transparent at -30
-        'rgba(0,0,0,0)',        // Transparent at 0
-        'rgba(59, 130, 246, 0)',  // Transparent at 30
-        'rgba(59, 130, 246, 1)'   // Blue at 100
+        'rgba(239, 68, 68, 1)',
+        'rgba(239, 68, 68, 0)',
+        'rgba(0,0,0,0)',
+        'rgba(59, 130, 246, 0)',
+        'rgba(59, 130, 246, 1)'
     ]);
 
-    // Icon opacity and scale mapping
     const iconOpacity = useTransform(x, [-60, -20, 0, 20, 60], [1, 0, 0, 0, 1]);
     const iconScale = useTransform(x, [-120, -60, 0, 60, 120], [1.5, 1, 0.5, 1, 1.5]);
 
-    // Integrated Long Press Helpers
-    const longPressTimer = React.useRef<any>(null);
+    const longPressTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const clearLongPress = () => {
         if (longPressTimer.current) {
@@ -77,31 +82,24 @@ const SwipeableChatRow = ({
     };
 
     const bind = useDrag(({ active, first, movement: [mx, my], cancel, event }) => {
-        // Normalize event to help TS if needed
         const e = event as unknown as React.PointerEvent;
 
-        // --- Long Press Logic ---
         if (first) {
             clearLongPress();
-            // Start Timer
-            // We need to capture the target immediately
             const target = e?.currentTarget as HTMLElement;
             if (target) {
                 longPressTimer.current = setTimeout(() => {
-                    try { Haptics.medium(); } catch (e) { }
+                    try { Haptics.medium(); } catch { /* ignore */ }
                     const rect = target.getBoundingClientRect();
                     onContextMenu(null, rect);
                 }, 400);
             }
         }
 
-        // Cancel long press if moved
         if (active && (Math.abs(mx) > 10 || Math.abs(my) > 10)) {
             clearLongPress();
         }
 
-        // --- Swipe Logic ---
-        // Suppress vertical
         if (active && Math.abs(my) > Math.abs(mx) * 1.5) {
             cancel();
             clearLongPress();
@@ -109,38 +107,25 @@ const SwipeableChatRow = ({
         }
 
         if (active) {
-            // Haptic feedback on threshold crossing
             if (mx > 60 && x.get() <= 60) Haptics.medium();
             if (mx < -60 && x.get() >= -60) Haptics.medium();
-
-            // Apply damping/resistance
-            const damped = mx;
-            x.set(damped);
+            x.set(mx);
         } else {
-            // console.log('[SwipeableChatRow] Released. Movement:', mx, my);
             clearLongPress();
 
-            // Release logic
             if (Math.abs(mx) < 10 && Math.abs(my) < 10) {
-                // console.log('[SwipeableChatRow] Tap Detected. isEditing:', isEditing);
                 if (isEditing) onDelete();
-                else {
-                    // console.log('[SwipeableChatRow] Calling onOpen');
-                    onOpen();
-                }
+                else onOpen();
             } else if (mx < -60) {
-                // Swipe Left -> Delete
                 Haptics.error();
-                if (window.confirm("Delete this chat?")) onDelete();
+                if (window.confirm('Delete this chat?')) onDelete();
                 controls.start({ x: 0 });
             } else if (mx > 60) {
-                // Swipe Right -> Pin
                 Haptics.success();
                 onPin();
                 controls.start({ x: 0 });
             } else {
-                // Snap back
-                animate(x, 0, { type: "spring", stiffness: 400, damping: 30 });
+                animate(x, 0, { type: 'spring', stiffness: 400, damping: 30 });
             }
         }
     }, {
@@ -151,8 +136,7 @@ const SwipeableChatRow = ({
     });
 
     return (
-        <motion.div layout className="chat-row-wrapper" style={{ position: 'relative' }}>
-            {/* Background Actions */}
+        <motion.div layout className="chat-row-wrapper">
             <motion.div className="chat-row-bg-actions" style={{ background: bgInfo }}>
                 <motion.div style={{ display: 'flex', alignItems: 'center', color: '#fff', opacity: iconOpacity, scale: iconScale, x: 20 }}>
                     <Pin size={24} fill="white" />
@@ -162,56 +146,68 @@ const SwipeableChatRow = ({
                 </motion.div>
             </motion.div>
 
-            {/* Foreground Content - Swipeable Layer */}
             <motion.div
-                className="chat-row-card"
+                className={`chat-row-card${chat.unreadCount ? ' has-unread' : ''}${chat.pinned ? ' is-pinned' : ''}`}
                 style={{ x, touchAction: 'pan-y' }}
                 {...(bind() as any)}
                 animate={controls}
-                whileTap={{ scale: 0.98 }}
+                whileTap={{ scale: 0.99 }}
                 onContextMenu={(e) => {
                     e.preventDefault();
                     onContextMenu(e);
                 }}
             >
                 {isEditing && (
-                    <div style={{ marginRight: 12 }}>
-                        <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="edit-delete-btn">
+                    <div className="chat-row-edit">
+                        <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(); }} className="edit-delete-btn">
                             <Trash2 size={14} />
                         </button>
                     </div>
                 )}
+
                 <div className="avatar-container">
                     {chat.friendImage ? (
-                        <div className="avatar" style={{ overflow: 'hidden' }}>
-                            <img src={chat.friendImage} style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="" />
+                        <div className="avatar avatar--image">
+                            <img src={chat.friendImage} alt="" />
                         </div>
                     ) : (
-                        <div className="avatar">{(chat.friendName || '?')[0]?.toUpperCase()}</div>
+                        <div
+                            className="avatar"
+                            style={{ background: avatarGradientCss(seed) }}
+                        >
+                            {avatarInitials(chat.friendName || '?')}
+                        </div>
                     )}
-                    {typingUsers.has(chat.friendId?.toUpperCase()) && <div className="online-badge" />}
+                    {isTyping && <div className="online-badge" title="Typing" />}
                 </div>
+
                 <div className="chat-row-content">
-                    <span className="chat-name-text">{chat.friendName}</span>
+                    <div className="chat-name-row">
+                        <span className="chat-name-text">{chat.friendName || 'Chat'}</span>
+                        {chat.pinned && (
+                            <Pin size={12} className="chat-name-pin" fill="currentColor" />
+                        )}
+                    </div>
                     <div className="chat-status-text">
-                        {typingUsers.has(chat.friendId?.toUpperCase()) ? (
-                            <span className="typing-shine">typing...</span>
+                        {isTyping ? (
+                            <span className="typing-shine">typing…</span>
                         ) : (
-                            <span>
-                                {lastMsg ? (
-                                    (lastMsg.fromId?.toLowerCase() === userId?.toLowerCase()) ?
-                                        (lastMsg.status === 'read' ? `Read ${timeAgo(lastMsg.timestamp)}` : `Sent ${timeAgo(lastMsg.timestamp)}`)
-                                        : timeAgo(lastMsg.timestamp)
-                                ) : <span>No messages</span>}
-                            </span>
+                            <span className="chat-preview-text">{preview}</span>
                         )}
                     </div>
                 </div>
+
                 <div className="chat-row-meta-col">
-                    {chat.unreadCount ? <div className="unread-badge">{chat.unreadCount}</div> : null}
+                    <span className={`chat-time-text${chat.unreadCount ? ' unread' : ''}`}>
+                        {formatChatListTime(ts)}
+                    </span>
                     <div className="chat-row-icons">
-                        {chat.pinned && <Pin size={14} fill="var(--text-secondary)" color="var(--text-secondary)" style={{ transform: 'rotate(45deg)' }} />}
-                        {chat.muted && <VolumeX size={14} color="var(--text-secondary)" />}
+                        {chat.muted && <VolumeX size={14} className="chat-meta-icon" />}
+                        {chat.unreadCount ? (
+                            <div className={`unread-badge${chat.muted ? ' muted' : ''}`}>
+                                {chat.unreadCount > 99 ? '99+' : chat.unreadCount}
+                            </div>
+                        ) : null}
                     </div>
                 </div>
             </motion.div>
@@ -224,13 +220,19 @@ const Home: React.FC<ChatListProps> = ({
     chats, userId, openChat, deleteChat, typingUsers, setShowNewChatModal,
     toast, pinChat, toggleMute
 }) => {
-
-
-    // Context Menu State
     const [contextMenu, setContextMenu] = useState<{
         chatId: string;
         rect: DOMRect;
     } | null>(null);
+
+    // Stable order: pinned first, then by last activity (matches Chat.tsx / mobile)
+    const orderedChats = useMemo(() => {
+        return [...chats].sort((a, b) => {
+            if (a.pinned && !b.pinned) return -1;
+            if (!a.pinned && b.pinned) return 1;
+            return chatLastTimestamp(b) - chatLastTimestamp(a);
+        });
+    }, [chats]);
 
     const handleContextMenu = (e: React.MouseEvent | React.PointerEvent | null, chatId: string, manualRect?: DOMRect) => {
         if (e) e.preventDefault();
@@ -246,8 +248,8 @@ const Home: React.FC<ChatListProps> = ({
         setContextMenu({ chatId, rect });
         try {
             if (navigator.vibrate) navigator.vibrate(50);
-        } catch (e) {
-            // Ignore haptics error (user gesture requirement)
+        } catch {
+            /* ignore */
         }
     };
 
@@ -255,7 +257,6 @@ const Home: React.FC<ChatListProps> = ({
 
     return (
         <div className="home-view-container" onClick={closeContextMenu}>
-            {/* Header - Fixed & Absolute */}
             <div className="home-header-fixed">
                 <HomeHeader
                     connectionStatus={connectionStatus}
@@ -266,56 +267,44 @@ const Home: React.FC<ChatListProps> = ({
                 />
             </div>
 
-            {/* Scrollable List Container */}
             <div className="home-scroll-container">
-                {areChatsLoading && chats.length === 0 ? (
-                    <div style={{ padding: 20 }}>
-                        {[1, 2, 3].map(i => (
-                            <div key={i} style={{ display: 'flex', alignItems: 'center', marginBottom: 20, opacity: 0.6 }}>
-                                <div style={{ width: 50, height: 50, borderRadius: '50%', background: 'rgba(255,255,255,0.05)', marginRight: 15 }} />
-                                <div style={{ flex: 1 }}>
-                                    <div style={{ width: '40%', height: 12, borderRadius: 6, background: 'rgba(255,255,255,0.05)', marginBottom: 8 }} />
-                                    <div style={{ width: '70%', height: 12, borderRadius: 6, background: 'rgba(255,255,255,0.05)' }} />
+                {areChatsLoading && orderedChats.length === 0 ? (
+                    <div className="home-skeleton-list">
+                        {[1, 2, 3, 4, 5].map(i => (
+                            <div key={i} className="home-skeleton-row">
+                                <div className="home-skeleton-avatar" />
+                                <div className="home-skeleton-lines">
+                                    <div className="home-skeleton-line short" />
+                                    <div className="home-skeleton-line long" />
                                 </div>
                             </div>
                         ))}
                     </div>
-                ) : chats.length === 0 ? (
-                    <div className="empty-state fade-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, minHeight: '60vh' }}>
+                ) : orderedChats.length === 0 ? (
+                    <div className="empty-state fade-in">
                         <motion.div
                             animate={{ y: [0, -10, 0] }}
-                            transition={{ repeat: Infinity, duration: 3, ease: "easeInOut" }}
-                            style={{ marginBottom: 20, opacity: 0.5 }}
+                            transition={{ repeat: Infinity, duration: 3, ease: 'easeInOut' }}
+                            className="empty-state-icon"
                         >
-                            <Ghost size={120} strokeWidth={1} color="var(--text-secondary)" />
+                            <Ghost size={96} strokeWidth={1} color="var(--text-secondary)" />
                         </motion.div>
 
-                        <p style={{ color: 'var(--text-secondary)', fontSize: 18, fontWeight: 500, margin: '0 0 30px 0' }}>
-                            Waiting for a friend?
-                        </p>
+                        <p className="empty-state-title">Waiting for a friend?</p>
+                        <p className="empty-state-sub">Start a chat with a username or secure ID.</p>
 
                         <motion.button
-                            whileHover={{ scale: 1.05 }}
-                            whileTap={{ scale: 0.95 }}
+                            whileHover={{ scale: 1.03 }}
+                            whileTap={{ scale: 0.97 }}
                             onClick={() => setShowNewChatModal(true)}
-                            style={{
-                                backgroundColor: 'var(--bubble-me)',
-                                color: 'white',
-                                padding: '14px 32px',
-                                borderRadius: '30px',
-                                fontSize: '16px',
-                                fontWeight: '600',
-                                border: 'none',
-                                cursor: 'pointer',
-
-                            }}
+                            className="empty-state-cta"
                         >
                             Start Vibing
                         </motion.button>
                     </div>
                 ) : (
-                    <div style={{ paddingBottom: 80 }}>
-                        {chats.map(c => (
+                    <div className="home-chat-list">
+                        {orderedChats.map(c => (
                             <SwipeableChatRow
                                 key={c.chatId}
                                 chat={c}
@@ -333,16 +322,18 @@ const Home: React.FC<ChatListProps> = ({
             </div>
 
             {toast && (
-                <div style={{ position: 'absolute', bottom: 80, left: '50%', transform: 'translateX(-50%)', zIndex: 100 }}>
+                <div className="home-toast-anchor">
                     <div className="toast-notification">{toast}</div>
                 </div>
             )}
 
-            {/* Context Menu Overlay */}
             <AnimatePresence>
                 {contextMenu && (() => {
-                    const activeMenuChat = chats.find(c => c.chatId === contextMenu.chatId);
+                    const activeMenuChat = orderedChats.find(c => c.chatId === contextMenu.chatId);
                     if (!activeMenuChat) return null;
+                    const seed = activeMenuChat.friendId || activeMenuChat.friendName || activeMenuChat.chatId;
+                    const preview = chatPreviewText(activeMenuChat, userId);
+                    const ts = chatLastTimestamp(activeMenuChat);
 
                     return (
                         <motion.div
@@ -352,8 +343,7 @@ const Home: React.FC<ChatListProps> = ({
                             className="context-menu-overlay"
                             onClick={closeContextMenu}
                         >
-                            <div className="cloned-bubble-wrapper"
-                                style={{ top: 0, left: 0, width: '100%', height: '100%' }}>
+                            <div className="cloned-bubble-wrapper" style={{ top: 0, left: 0, width: '100%', height: '100%' }}>
                                 <motion.div
                                     initial={{
                                         top: contextMenu.rect.top,
@@ -375,37 +365,30 @@ const Home: React.FC<ChatListProps> = ({
                                     <div className="chat-row-card" style={{ padding: '12px 16px', background: 'var(--bg-primary)' }}>
                                         <div className="avatar-container">
                                             {activeMenuChat.friendImage ? (
-                                                <div className="avatar" style={{ overflow: 'hidden' }}>
-                                                    <img src={activeMenuChat.friendImage} style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="" />
+                                                <div className="avatar avatar--image">
+                                                    <img src={activeMenuChat.friendImage} alt="" />
                                                 </div>
                                             ) : (
-                                                <div className="avatar">{(activeMenuChat.friendName || '?')[0]?.toUpperCase()}</div>
+                                                <div className="avatar" style={{ background: avatarGradientCss(seed) }}>
+                                                    {avatarInitials(activeMenuChat.friendName || '?')}
+                                                </div>
                                             )}
-                                            {typingUsers.has(activeMenuChat.friendId?.toUpperCase()) && <div className="online-badge" />}
                                         </div>
                                         <div className="chat-row-content">
                                             <span className="chat-name-text">{activeMenuChat.friendName}</span>
                                             <div className="chat-status-text">
-                                                <span>
-                                                    {activeMenuChat.messages[activeMenuChat.messages.length - 1] ? (
-                                                        (activeMenuChat.messages[activeMenuChat.messages.length - 1].fromId?.toLowerCase() === userId?.toLowerCase()) ?
-                                                            (activeMenuChat.messages[activeMenuChat.messages.length - 1].status === 'read' ? `Read ${timeAgo(activeMenuChat.messages[activeMenuChat.messages.length - 1].timestamp)}` : `Sent ${timeAgo(activeMenuChat.messages[activeMenuChat.messages.length - 1].timestamp)}`)
-                                                            : timeAgo(activeMenuChat.messages[activeMenuChat.messages.length - 1].timestamp)
-                                                    ) : <span>No messages</span>}
-                                                </span>
+                                                <span className="chat-preview-text">{preview}</span>
                                             </div>
                                         </div>
                                         <div className="chat-row-meta-col">
-                                            {activeMenuChat.unreadCount ? <div className="unread-badge">{activeMenuChat.unreadCount}</div> : null}
-                                            <div className="chat-row-icons">
-                                                {activeMenuChat.pinned && <Pin size={14} fill="var(--text-secondary)" color="var(--text-secondary)" style={{ transform: 'rotate(45deg)' }} />}
-                                                {activeMenuChat.muted && <VolumeX size={14} color="var(--text-secondary)" />}
-                                            </div>
+                                            <span className="chat-time-text">{formatChatListTime(ts)}</span>
+                                            {activeMenuChat.unreadCount ? (
+                                                <div className="unread-badge">{activeMenuChat.unreadCount}</div>
+                                            ) : null}
                                         </div>
                                     </div>
                                 </motion.div>
 
-                                {/* Menu Items */}
                                 <motion.div
                                     initial={{ opacity: 0, scale: 0.95 }}
                                     animate={{ opacity: 1, scale: 1 }}
@@ -414,19 +397,23 @@ const Home: React.FC<ChatListProps> = ({
                                     style={{
                                         position: 'absolute',
                                         width: 240,
-                                        top: contextMenu.rect.bottom + 10,
+                                        top: Math.min(contextMenu.rect.bottom + 10, window.innerHeight - 220),
                                         left: (window.innerWidth - 240) / 2
                                     }}
                                     onClick={(e) => e.stopPropagation()}
                                 >
-                                    <button className="context-menu-item" onClick={() => {
-                                        navigator.clipboard.writeText(activeMenuChat.previewLastMessage || activeMenuChat.messages[activeMenuChat.messages.length - 1]?.plaintext || '');
+                                    <button type="button" className="context-menu-item" onClick={() => {
+                                        navigator.clipboard.writeText(
+                                            activeMenuChat.previewLastMessage
+                                            || activeMenuChat.messages[activeMenuChat.messages.length - 1]?.plaintext
+                                            || ''
+                                        );
                                         closeContextMenu();
                                     }}>
-                                        <Copy size={20} strokeWidth={1.5} /> <span>Copy Value</span>
+                                        <Copy size={20} strokeWidth={1.5} /> <span>Copy Preview</span>
                                     </button>
 
-                                    <button className="context-menu-item" onClick={(e) => {
+                                    <button type="button" className="context-menu-item" onClick={(e) => {
                                         e.stopPropagation();
                                         toggleMute(contextMenu.chatId);
                                         closeContextMenu();
@@ -434,7 +421,7 @@ const Home: React.FC<ChatListProps> = ({
                                         <VolumeX size={20} strokeWidth={1.5} /> <span>{activeMenuChat.muted ? 'Unmute' : 'Mute'}</span>
                                     </button>
 
-                                    <button className="context-menu-item" onClick={(e) => {
+                                    <button type="button" className="context-menu-item" onClick={(e) => {
                                         e.stopPropagation();
                                         pinChat(contextMenu.chatId);
                                         closeContextMenu();
@@ -444,7 +431,7 @@ const Home: React.FC<ChatListProps> = ({
 
                                     <div className="context-menu-divider" />
 
-                                    <button className="context-menu-item danger" onClick={(e) => {
+                                    <button type="button" className="context-menu-item danger" onClick={(e) => {
                                         e.stopPropagation();
                                         if (confirm('Delete this chat?')) deleteChat(contextMenu.chatId);
                                         closeContextMenu();

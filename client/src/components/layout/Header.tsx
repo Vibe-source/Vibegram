@@ -32,7 +32,6 @@ export const Header = () => {
     const navLinks = isDocsPage
         ? []
         : [
-            { label: 'Network', href: '#network' },
             { label: 'Cipher', href: '#cipher' },
             { label: 'Passage', href: '#passage' },
             { label: 'Agents', href: '#agents' },
@@ -106,7 +105,7 @@ export const Header = () => {
                         <>
                             <button className="vl-nav-ghost" onClick={() => navigate('/app')}>Sign in</button>
                             <button className="vl-nav-cta" onClick={() => navigate('/app')}>
-                                Enter the mesh
+                                Open Vibe
                             </button>
                             <button
                                 className="vl-nav-burger"
@@ -132,7 +131,7 @@ export const Header = () => {
                             </button>
                         ))}
                         <button type="button" className="vl-nav-overlay-cta" onClick={() => { setMobileMenuOpen(false); navigate('/app'); }}>
-                            Enter the mesh →
+                            Open Vibe →
                         </button>
                     </div>
                     <div className="vl-nav-overlay-meta">

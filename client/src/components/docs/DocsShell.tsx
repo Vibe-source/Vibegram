@@ -16,6 +16,7 @@ interface DocsShellProps {
     intro: string;
     tabs: AgentDocsTab[];
     sections: DocsSectionLink[];
+    sidebarLabel?: string;
     children: React.ReactNode;
 }
 
@@ -54,6 +55,7 @@ export default function DocsShell({
     intro,
     tabs,
     sections,
+    sidebarLabel,
     children,
 }: DocsShellProps) {
     const navigate = useNavigate();
@@ -130,7 +132,7 @@ export default function DocsShell({
                 {/* ── Left Sidebar ─────────────────── */}
                 <aside className="docs-sidebar">
                     <div className="docs-sidebar-group">
-                        <div className="docs-sidebar-label">Agents</div>
+                        <div className="docs-sidebar-label">{sidebarLabel ?? 'Agents'}</div>
                         <div className="docs-sidebar-nav">
                             {tabs.map(tab => (
                                 <button

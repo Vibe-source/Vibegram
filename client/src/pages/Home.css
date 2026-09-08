@@ -1,25 +1,13 @@
 /* ==================================================================
    VIBE — landing design system  ·  concept "TERRAIN"
    One continuous shader substrate (living topographic contours),
-   editorial grotesque + serif-italic accents, mono meta everywhere.
+   editorial grotesque + serif-italic accents, mono meta sparingly.
    All classes are vl- prefixed and scoped under .vl-root.
    ================================================================== */
 
 .vl-root {
-    --vl-bg: #050807;
-    --vl-ink: #e9f4f1;
-    --vl-dim: #93aaa6;
-    --vl-faint: #566b68;
-    --vl-teal: #63e2d9;
-    --vl-violet: #9c8cff;
-    --vl-red: #f0716d;
-    --vl-line: rgba(147, 197, 190, 0.14);
-    --vl-panel: linear-gradient(180deg, rgba(13, 20, 19, 0.82), rgba(7, 11, 10, 0.92));
-    --vl-font-display: 'Space Grotesk Variable', 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
-    --vl-font-serif: 'Instrument Serif', Georgia, 'Times New Roman', serif;
-    --vl-font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
-    --vl-gutter: clamp(20px, 5vw, 72px);
-
+    /* Tokens (--vl-bg, --vl-teal, --vl-font-*, etc.) come from the global
+       ../theme/site-tokens.css — do not redeclare them here. */
     position: relative;
     min-height: 100vh;
     background: var(--vl-bg);
@@ -62,16 +50,24 @@
     font-family: var(--vl-font-mono) !important;
     font-size: 11px;
     font-weight: 500;
-    letter-spacing: 0.28em;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
     color: var(--vl-teal);
     margin: 0 0 26px;
 }
 
+.vl-kicker--blend {
+    background: linear-gradient(90deg, var(--vl-violet), var(--vl-teal));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
 .vl-display {
-    font-size: clamp(46px, 8.2vw, 116px);
+    font-size: clamp(42px, 7.2vw, 108px);
     font-weight: 500;
-    line-height: 0.98;
-    letter-spacing: -0.045em;
+    line-height: 1.02;
+    letter-spacing: -0.04em;
     margin: 0;
     color: var(--vl-ink);
 }
@@ -90,17 +86,22 @@
     padding-right: 0.06em;
 }
 
+/* Section-local em color via accent inheritance */
+.vl-section--agents .vl-h2 em {
+    color: var(--vl-violet);
+}
+
 .vl-h2 {
-    font-size: clamp(30px, 4.2vw, 54px);
+    font-size: clamp(28px, 3.8vw, 50px);
     font-weight: 500;
-    line-height: 1.05;
+    line-height: 1.08;
     letter-spacing: -0.03em;
     margin: 0 0 24px;
 }
 
 .vl-lede {
     max-width: 580px;
-    font-size: clamp(16px, 1.5vw, 19px);
+    font-size: clamp(15px, 1.45vw, 18px);
     line-height: 1.65;
     color: var(--vl-dim);
     margin: 28px 0 0;
@@ -135,7 +136,7 @@
     gap: 10px;
     height: 54px;
     padding: 0 30px;
-    border-radius: 12px;
+    border-radius: 14px;
     font-family: var(--vl-font-display) !important;
     font-size: 15px;
     font-weight: 600;
@@ -147,7 +148,7 @@
 .vl-btn--primary {
     border: none;
     color: #04211e;
-    background: linear-gradient(135deg, #7deee4 0%, #46c9bd 100%);
+    background: var(--vl-btn-gradient);
     box-shadow:
         inset 0 1px 0 rgba(255, 255, 255, 0.4),
         0 14px 38px -14px rgba(99, 226, 217, 0.55);
@@ -175,15 +176,15 @@
 }
 
 .vl-btn--ghost {
-    background: rgba(233, 244, 241, 0.02);
-    border: 1px solid var(--vl-line);
+    background: rgba(233, 244, 241, 0.03);
+    border: 1px solid rgba(147, 197, 190, 0.18);
     color: var(--vl-ink);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
 }
 
 .vl-btn--ghost:hover {
-    border-color: rgba(99, 226, 217, 0.45);
+    border-color: rgba(99, 226, 217, 0.4);
     background: rgba(99, 226, 217, 0.06);
     transform: translateY(-2px);
 }
@@ -192,125 +193,180 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-family: var(--vl-font-mono) !important;
-    font-size: 12px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
+    font-family: var(--vl-font-display) !important;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
     color: var(--vl-teal);
     text-decoration: none;
-    border-bottom: 1px solid rgba(99, 226, 217, 0.3);
+    border-bottom: 1px solid rgba(99, 226, 217, 0.28);
     padding-bottom: 4px;
     transition: border-color 0.2s ease, color 0.2s ease;
 }
 
 .vl-textlink:hover {
     color: #a5f2ec;
-    border-color: rgba(99, 226, 217, 0.8);
+    border-color: rgba(99, 226, 217, 0.75);
+}
+
+.vl-textlink--violet {
+    color: var(--vl-violet);
+    border-bottom-color: rgba(156, 140, 255, 0.3);
+}
+
+.vl-textlink--violet:hover {
+    color: #c4bbff;
+    border-bottom-color: rgba(156, 140, 255, 0.75);
 }
 
 /* ------------------------------------------------------------------
-   hero
+   hero — static pre-generated chat field + Ken Burns drift
    ------------------------------------------------------------------ */
 
-.vl-hero {
+.vl-storyline {
     position: relative;
     min-height: 100svh;
     display: flex;
-    flex-direction: column;
+    align-items: center;
     justify-content: center;
-    padding: clamp(110px, 16vh, 180px) var(--vl-gutter) 90px;
-}
-
-.vl-hero-body {
-    max-width: 1440px;
-    width: 100%;
-    margin: 0 auto;
-}
-
-.vl-hero-rail {
-    position: absolute;
-    top: 50%;
-    right: calc(var(--vl-gutter) * 0.45);
-    transform: translateY(-50%);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 18px;
-    writing-mode: vertical-rl;
-    font-family: var(--vl-font-mono) !important;
-    font-size: 10px;
-    letter-spacing: 0.26em;
-    color: var(--vl-faint);
-    user-select: none;
-}
-
-.vl-rail-rule {
-    width: 1px;
-    height: 54px;
-    background: var(--vl-line);
-}
-
-.vl-rail-live {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    color: var(--vl-teal);
-}
-
-.vl-live-dot {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--vl-teal);
-    box-shadow: 0 0 10px 1px rgba(99, 226, 217, 0.8);
-    animation: vl-pulse 2.2s ease-in-out infinite;
-}
-
-@keyframes vl-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
-}
-
-.vl-hero-foot {
-    position: absolute;
-    bottom: 34px;
-    left: var(--vl-gutter);
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    font-family: var(--vl-font-mono) !important;
-    font-size: 9.5px;
-    letter-spacing: 0.3em;
-    color: var(--vl-faint);
-    user-select: none;
-}
-
-.vl-scroll-cue {
-    position: relative;
-    display: block;
-    width: 1px;
-    height: 44px;
-    background: var(--vl-line);
+    padding:
+        clamp(110px, 18vh, 160px)
+        var(--vl-gutter)
+        clamp(72px, 12vh, 120px);
     overflow: hidden;
 }
 
-.vl-scroll-cue i {
+.vl-hero-ambient {
     position: absolute;
-    left: 0;
-    top: -40%;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.vl-hero-chat-drift {
+    position: absolute;
+    /* Oversize for Ken Burns travel */
+    inset: -10%;
+    width: 120%;
+    height: 120%;
+    animation: vl-hero-drift 36s ease-in-out infinite alternate;
+    will-change: transform;
+}
+
+.vl-hero-chat {
+    display: block;
     width: 100%;
-    height: 40%;
-    background: var(--vl-teal);
-    animation: vl-cue 2.4s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+    height: 100%;
+    opacity: 0.92;
+    background-image: var(--hero-bg-desktop);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
 }
 
-@keyframes vl-cue {
-    0% { top: -40%; }
-    100% { top: 110%; }
+/* Soft optical veil — darkens center so type holds, keeps bubble color at edges */
+.vl-hero-veil {
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(
+            70% 60% at 50% 48%,
+            rgba(5, 8, 7, 0.28) 0%,
+            rgba(5, 8, 7, 0.55) 55%,
+            rgba(5, 8, 7, 0.82) 100%
+        ),
+        linear-gradient(
+            180deg,
+            rgba(5, 8, 7, 0.55) 0%,
+            rgba(5, 8, 7, 0.12) 35%,
+            rgba(5, 8, 7, 0.12) 65%,
+            rgba(5, 8, 7, 0.7) 100%
+        );
 }
 
-@media (max-width: 1023px) {
-    .vl-hero-rail { display: none; }
+.vl-hero-content {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 920px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+.vl-hero-title {
+    max-width: 14ch;
+}
+
+.vl-hero-lede {
+    max-width: 36ch;
+    margin-top: 20px;
+}
+
+/* Mobile / small phones (~390px): keep title confident but not oversized */
+@media (max-width: 639px) {
+    .vl-storyline {
+        min-height: 100svh;
+        align-items: flex-end;
+        padding-bottom: clamp(52px, 11vh, 80px);
+    }
+
+    .vl-hero-content {
+        max-width: 100%;
+    }
+
+    .vl-hero-title {
+        max-width: 11ch;
+        font-size: clamp(32px, 8.4vw, 42px);
+        line-height: 1.06;
+        letter-spacing: -0.035em;
+    }
+
+    .vl-hero-lede {
+        max-width: 34ch;
+        margin-top: 16px;
+        font-size: 14.5px;
+        line-height: 1.6;
+    }
+
+    .vl-hero-chat {
+        background-image: var(--hero-bg-mobile);
+        background-position: center 40%;
+    }
+
+    .vl-cta-row {
+        margin-top: 28px;
+        gap: 12px;
+    }
+
+    .vl-btn {
+        height: 48px;
+        padding: 0 22px;
+        font-size: 14px;
+        border-radius: 12px;
+    }
+}
+
+/* Tablet: intermediate title scale */
+@media (min-width: 640px) and (max-width: 919px) {
+    .vl-hero-title {
+        font-size: clamp(40px, 6.5vw, 64px);
+        max-width: 13ch;
+    }
+
+    .vl-hero-lede {
+        font-size: 16px;
+    }
+}
+
+@keyframes vl-hero-drift {
+    0% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    100% {
+        transform: translate3d(-3.5%, -2.2%, 0) scale(1.06);
+    }
 }
 
 /* ------------------------------------------------------------------
@@ -319,18 +375,18 @@
 
 .vl-ticker {
     position: relative;
-    border-block: 1px solid var(--vl-line);
+    border-block: 1px solid rgba(147, 197, 190, 0.1);
     overflow: hidden;
-    background: rgba(5, 8, 7, 0.55);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    background: rgba(5, 8, 7, 0.45);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     user-select: none;
 }
 
 .vl-ticker-track {
     display: inline-flex;
     white-space: nowrap;
-    padding: 15px 0;
+    padding: 14px 0;
     animation: vl-marquee 44s linear infinite;
     will-change: transform;
 }
@@ -348,9 +404,11 @@
     align-items: center;
     gap: 42px;
     padding-right: 42px;
-    font-family: var(--vl-font-mono) !important;
-    font-size: 10.5px;
-    letter-spacing: 0.24em;
+    font-family: var(--vl-font-display) !important;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
     color: var(--vl-dim);
 }
 
@@ -358,46 +416,117 @@
     width: 3px;
     height: 3px;
     border-radius: 50%;
-    background: var(--vl-teal);
-    opacity: 0.6;
+    background: linear-gradient(135deg, var(--vl-violet), var(--vl-teal));
+    opacity: 0.7;
 }
 
 /* ------------------------------------------------------------------
-   sections
+   sections + ambient washes
    ------------------------------------------------------------------ */
 
 .vl-section {
     position: relative;
-    max-width: 1440px;
-    margin: 0 auto;
-    padding: clamp(100px, 12vw, 180px) var(--vl-gutter);
+    padding: clamp(96px, 11vw, 168px) var(--vl-gutter);
     scroll-margin-top: 70px;
+    overflow: hidden;
+}
+
+/* Constrain section content; wash stays full-bleed behind it */
+.vl-section-head,
+.vl-section .vl-split {
+    max-width: 1440px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+/* Soft section-local color field (SectionWash) */
+.vl-section-wash {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+}
+
+.vl-section-wash--teal {
+    background:
+        radial-gradient(55% 50% at 12% 40%, rgba(8, 198, 180, 0.1) 0%, transparent 70%),
+        radial-gradient(40% 45% at 88% 70%, rgba(99, 226, 217, 0.05) 0%, transparent 65%);
+}
+
+.vl-section-wash--violet {
+    background:
+        radial-gradient(55% 50% at 88% 35%, rgba(139, 124, 255, 0.12) 0%, transparent 70%),
+        radial-gradient(42% 48% at 10% 75%, rgba(156, 140, 255, 0.06) 0%, transparent 65%);
+}
+
+.vl-section-wash--blend {
+    background:
+        radial-gradient(50% 55% at 30% 40%, rgba(139, 124, 255, 0.1) 0%, transparent 68%),
+        radial-gradient(48% 50% at 72% 60%, rgba(8, 198, 180, 0.09) 0%, transparent 68%);
+}
+
+.vl-section > :not(.vl-section-wash) {
+    position: relative;
+    z-index: 1;
+}
+
+/* Cipher / Passage lean teal */
+.vl-section--cipher .vl-section-index,
+.vl-section--passage .vl-section-index {
+    color: var(--vl-teal);
+}
+
+.vl-section--cipher .vl-chip,
+.vl-section--passage .vl-chip {
+    border-color: rgba(99, 226, 217, 0.16);
+}
+
+.vl-section--cipher .vl-chip:hover,
+.vl-section--passage .vl-chip:hover {
+    border-color: rgba(99, 226, 217, 0.35);
+    color: var(--vl-teal);
+}
+
+/* Agents lean violet */
+.vl-section--agents .vl-section-index {
+    color: var(--vl-violet);
+}
+
+.vl-section--agents .vl-section-rule {
+    background: linear-gradient(90deg, rgba(156, 140, 255, 0.22), transparent);
 }
 
 .vl-section-head {
     display: flex;
     align-items: center;
     gap: 20px;
-    margin-bottom: clamp(48px, 6vw, 84px);
+    margin-bottom: clamp(44px, 5.5vw, 76px);
 }
 
 .vl-section-index {
-    font-family: var(--vl-font-mono) !important;
-    font-size: 12px;
-    letter-spacing: 0.2em;
+    font-family: var(--vl-font-display) !important;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
     color: var(--vl-teal);
 }
 
 .vl-section-rule {
     flex: 1;
     height: 1px;
-    background: var(--vl-line);
+    background: linear-gradient(90deg, rgba(147, 197, 190, 0.18), transparent);
+}
+
+.vl-section--agents .vl-section-rule {
+    background: linear-gradient(90deg, rgba(156, 140, 255, 0.22), transparent);
 }
 
 .vl-section-label {
-    font-family: var(--vl-font-mono) !important;
+    font-family: var(--vl-font-display) !important;
     font-size: 12px;
-    letter-spacing: 0.34em;
+    font-weight: 500;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
     color: var(--vl-faint);
 }
 
@@ -420,28 +549,6 @@
     .vl-split--reverse .vl-split-stage { order: 2; }
 }
 
-/* stats */
-
-.vl-stats {
-    border-top: 1px solid var(--vl-line);
-    max-width: 460px;
-}
-
-.vl-stat-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 20px;
-    padding: 15px 0;
-    border-bottom: 1px solid var(--vl-line);
-    font-family: var(--vl-font-mono) !important;
-    font-size: 11.5px;
-    letter-spacing: 0.14em;
-}
-
-.vl-stat-row span:first-child { color: var(--vl-faint); }
-.vl-stat-row span:last-child { color: var(--vl-ink); }
-
 /* chips */
 
 .vl-chips {
@@ -451,75 +558,54 @@
 }
 
 .vl-chip {
-    font-family: var(--vl-font-mono) !important;
-    font-size: 10px;
-    letter-spacing: 0.18em;
+    font-family: var(--vl-font-display) !important;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
     color: var(--vl-dim);
-    border: 1px solid var(--vl-line);
+    border: 1px solid rgba(147, 197, 190, 0.14);
     border-radius: 999px;
     padding: 8px 14px;
-    background: rgba(233, 244, 241, 0.02);
+    background: rgba(233, 244, 241, 0.025);
+    transition: border-color 0.2s ease, color 0.2s ease;
 }
 
-/* stage panels + corner brackets */
+.vl-section--agents .vl-chip {
+    border-color: rgba(156, 140, 255, 0.16);
+}
+
+/* stage panels — soft glass, no corner brackets */
 
 .vl-stage {
     position: relative;
-    border: 1px solid var(--vl-line);
-    border-radius: 20px;
-    background: var(--vl-panel);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(147, 197, 190, 0.12);
+    border-radius: 24px;
+    background:
+        linear-gradient(165deg, rgba(16, 24, 23, 0.72) 0%, rgba(7, 11, 10, 0.88) 100%);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.02) inset,
+        0 24px 64px -32px rgba(0, 0, 0, 0.55);
     overflow: hidden;
 }
 
-.vl-stage-canvas {
-    display: block;
-    width: 100%;
-    height: clamp(360px, 42vw, 520px);
-}
-
-.vl-stage-tag {
-    position: absolute;
-    bottom: 14px;
-    right: 16px;
-    font-family: var(--vl-font-mono) !important;
-    font-size: 9px;
-    letter-spacing: 0.22em;
-    color: var(--vl-faint);
-    user-select: none;
-}
-
-.vl-corners {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    z-index: 2;
-}
-
-.vl-corners i {
-    position: absolute;
-    width: 14px;
-    height: 14px;
-    border: 1px solid rgba(99, 226, 217, 0.5);
-}
-
-.vl-corners i:nth-child(1) { top: 10px; left: 10px; border-right: none; border-bottom: none; }
-.vl-corners i:nth-child(2) { top: 10px; right: 10px; border-left: none; border-bottom: none; }
-.vl-corners i:nth-child(3) { bottom: 10px; left: 10px; border-right: none; border-top: none; }
-.vl-corners i:nth-child(4) { bottom: 10px; right: 10px; border-left: none; border-top: none; }
-
 /* ------------------------------------------------------------------
-   02 · cipher demo
+   01 · cipher demo — teal security accent
    ------------------------------------------------------------------ */
 
 .vl-cipher-card {
     position: relative;
-    border: 1px solid var(--vl-line);
-    border-radius: 20px;
-    background: var(--vl-panel);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(99, 226, 217, 0.14);
+    border-radius: 24px;
+    background:
+        linear-gradient(165deg, rgba(12, 22, 20, 0.78) 0%, rgba(6, 12, 11, 0.92) 100%);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow:
+        0 0 0 1px rgba(99, 226, 217, 0.04) inset,
+        0 28px 70px -36px rgba(8, 198, 180, 0.22),
+        0 24px 64px -32px rgba(0, 0, 0, 0.5);
     padding: clamp(24px, 3vw, 40px);
 }
 
@@ -529,29 +615,40 @@
     align-items: center;
     gap: 16px;
     margin-bottom: 26px;
-    font-family: var(--vl-font-mono) !important;
-    font-size: 10px;
-    letter-spacing: 0.2em;
+    font-family: var(--vl-font-display) !important;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
     color: var(--vl-faint);
 }
 
-.vl-cipher-state { color: var(--vl-dim); transition: color 0.3s ease; }
-.vl-cipher-state.is-sealed { color: var(--vl-teal); }
+.vl-cipher-state {
+    color: var(--vl-dim);
+    transition: color 0.3s ease;
+}
+
+.vl-cipher-state.is-sealed {
+    color: var(--vl-teal);
+}
 
 .vl-cipher-text {
     font-family: var(--vl-font-mono) !important;
-    font-size: clamp(15px, 1.8vw, 19px);
+    font-size: clamp(14px, 1.7vw, 18px);
     line-height: 1.9;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.03em;
     margin: 0 0 30px;
     min-height: 4.5em;
     word-break: break-word;
 }
 
-.vl-cipher-c { color: var(--vl-ink); transition: color 0.15s ease; }
+.vl-cipher-c {
+    color: var(--vl-ink);
+    transition: color 0.15s ease;
+}
+
 .vl-cipher-c.is-sealed {
     color: rgba(99, 226, 217, 0.72);
-    text-shadow: 0 0 12px rgba(99, 226, 217, 0.25);
+    text-shadow: 0 0 12px rgba(99, 226, 217, 0.22);
 }
 
 .vl-cipher-foot {
@@ -560,46 +657,58 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 16px;
-    border-top: 1px solid var(--vl-line);
+    border-top: 1px solid rgba(99, 226, 217, 0.1);
     padding-top: 22px;
 }
 
 .vl-cipher-spec {
-    font-family: var(--vl-font-mono) !important;
-    font-size: 9.5px;
-    letter-spacing: 0.18em;
+    font-family: var(--vl-font-display) !important;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
     color: var(--vl-faint);
 }
 
 .vl-hold-btn {
-    font-family: var(--vl-font-mono) !important;
-    font-size: 11px;
-    letter-spacing: 0.2em;
+    font-family: var(--vl-font-display) !important;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
     color: var(--vl-teal);
-    background: rgba(99, 226, 217, 0.05);
-    border: 1px solid rgba(99, 226, 217, 0.4);
-    border-radius: 10px;
+    background: rgba(99, 226, 217, 0.06);
+    border: 1px solid rgba(99, 226, 217, 0.35);
+    border-radius: 12px;
     padding: 13px 22px;
     cursor: pointer;
     user-select: none;
     -webkit-user-select: none;
     touch-action: none;
-    transition: background 0.2s ease, color 0.2s ease, box-shadow 0.25s ease;
+    transition: background 0.2s ease, color 0.2s ease, box-shadow 0.25s ease, border-color 0.2s ease;
 }
 
 .vl-hold-btn:hover {
-    background: rgba(99, 226, 217, 0.1);
+    background: rgba(99, 226, 217, 0.12);
+    border-color: rgba(99, 226, 217, 0.5);
 }
 
 .vl-hold-btn.is-holding {
     background: var(--vl-teal);
     color: #04211e;
+    border-color: transparent;
     box-shadow: 0 0 34px -6px rgba(99, 226, 217, 0.7);
 }
 
 /* ------------------------------------------------------------------
-   03 · passage board
+   02 · passage board — teal security accent
    ------------------------------------------------------------------ */
+
+.vl-section--passage .vl-stage {
+    border-color: rgba(99, 226, 217, 0.12);
+    box-shadow:
+        0 0 0 1px rgba(99, 226, 217, 0.03) inset,
+        0 28px 70px -36px rgba(8, 198, 180, 0.16),
+        0 24px 64px -32px rgba(0, 0, 0, 0.5);
+}
 
 .vl-passage-stage {
     padding: clamp(10px, 2vw, 22px);
@@ -612,7 +721,7 @@
 }
 
 .vl-wall line {
-    stroke: rgba(240, 113, 109, 0.55);
+    stroke: rgba(240, 113, 109, 0.5);
     stroke-width: 1.4;
 }
 
@@ -622,14 +731,15 @@
 }
 
 .vl-svg-label {
-    font-family: var(--vl-font-mono) !important;
+    font-family: var(--vl-font-display) !important;
     font-size: 10px;
-    letter-spacing: 0.16em;
+    font-weight: 500;
+    letter-spacing: 0.1em;
     fill: var(--vl-faint);
 }
 
 .vl-svg-label--wall {
-    fill: rgba(240, 113, 109, 0.75);
+    fill: rgba(240, 113, 109, 0.7);
     writing-mode: tb;
     font-size: 9px;
 }
@@ -640,9 +750,9 @@
     stroke-dasharray: 3 6;
 }
 
-.vl-route--direct { stroke: rgba(240, 113, 109, 0.4); }
-.vl-route--front { stroke: rgba(99, 226, 217, 0.45); }
-.vl-route--tunnel { stroke: rgba(156, 140, 255, 0.45); }
+.vl-route--direct { stroke: rgba(240, 113, 109, 0.38); }
+.vl-route--front { stroke: rgba(99, 226, 217, 0.48); }
+.vl-route--tunnel { stroke: rgba(156, 140, 255, 0.42); }
 
 .vl-waypoint--front { fill: var(--vl-teal); }
 .vl-waypoint--tunnel { fill: var(--vl-violet); }
@@ -664,10 +774,12 @@
 }
 
 .vl-passage-log {
-    margin-top: 16px;
-    border: 1px solid var(--vl-line);
-    border-radius: 14px;
-    background: rgba(5, 8, 7, 0.7);
+    margin-top: 14px;
+    border: 1px solid rgba(99, 226, 217, 0.1);
+    border-radius: 16px;
+    background: rgba(5, 10, 9, 0.72);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     padding: 16px 20px;
     min-height: 92px;
     display: flex;
@@ -676,9 +788,10 @@
 }
 
 .vl-log-line {
-    font-family: var(--vl-font-mono) !important;
-    font-size: 10.5px;
-    letter-spacing: 0.12em;
+    font-family: var(--vl-font-display) !important;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
     color: var(--vl-faint);
 }
 
@@ -687,16 +800,21 @@
 .vl-log-line.is-fail:first-child { color: var(--vl-red); }
 
 /* ------------------------------------------------------------------
-   04 · agent terminal
+   03 · agent terminal — violet intelligence accent
    ------------------------------------------------------------------ */
 
 .vl-terminal {
     position: relative;
-    border: 1px solid var(--vl-line);
-    border-radius: 20px;
-    background: rgba(4, 7, 6, 0.88);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(156, 140, 255, 0.16);
+    border-radius: 24px;
+    background:
+        linear-gradient(165deg, rgba(14, 12, 22, 0.88) 0%, rgba(6, 6, 12, 0.94) 100%);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow:
+        0 0 0 1px rgba(156, 140, 255, 0.05) inset,
+        0 28px 70px -36px rgba(139, 124, 255, 0.28),
+        0 24px 64px -32px rgba(0, 0, 0, 0.55);
     overflow: hidden;
 }
 
@@ -705,7 +823,8 @@
     align-items: center;
     gap: 14px;
     padding: 14px 20px;
-    border-bottom: 1px solid var(--vl-line);
+    border-bottom: 1px solid rgba(156, 140, 255, 0.1);
+    background: rgba(139, 124, 255, 0.04);
 }
 
 .vl-term-dots {
@@ -714,25 +833,32 @@
 }
 
 .vl-term-dots i {
-    width: 9px;
-    height: 9px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    background: rgba(147, 197, 190, 0.18);
+    background: rgba(156, 140, 255, 0.22);
 }
 
+.vl-term-dots i:nth-child(1) { background: rgba(240, 113, 109, 0.45); }
+.vl-term-dots i:nth-child(2) { background: rgba(99, 226, 217, 0.35); }
+.vl-term-dots i:nth-child(3) { background: rgba(156, 140, 255, 0.45); }
+
 .vl-term-title {
-    font-family: var(--vl-font-mono) !important;
-    font-size: 10.5px;
-    letter-spacing: 0.16em;
+    font-family: var(--vl-font-display) !important;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
     color: var(--vl-dim);
 }
 
 .vl-term-status {
     margin-left: auto;
-    font-family: var(--vl-font-mono) !important;
-    font-size: 9px;
-    letter-spacing: 0.2em;
-    color: var(--vl-teal);
+    font-family: var(--vl-font-display) !important;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--vl-violet);
 }
 
 .vl-terminal-body {
@@ -747,7 +873,7 @@
 .vl-term-line { white-space: pre-wrap; word-break: break-word; }
 .vl-term-line--cmd { color: var(--vl-ink); }
 .vl-term-line--sys { color: var(--vl-faint); }
-.vl-term-line--tool { color: rgba(99, 226, 217, 0.75); }
+.vl-term-line--tool { color: rgba(156, 140, 255, 0.78); }
 .vl-term-line--ok { color: var(--vl-violet); }
 
 .vl-term-caret {
@@ -755,7 +881,7 @@
     width: 7px;
     height: 14px;
     margin-left: 3px;
-    background: var(--vl-teal);
+    background: var(--vl-violet);
     vertical-align: -2px;
     animation: vl-caret 1s steps(1) infinite;
 }
@@ -765,107 +891,48 @@
 }
 
 /* ------------------------------------------------------------------
-   join
+   join — both colors meet
    ------------------------------------------------------------------ */
 
 .vl-join {
     position: relative;
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: clamp(120px, 16vw, 220px) var(--vl-gutter);
+    padding: clamp(112px, 15vw, 200px) var(--vl-gutter);
     text-align: center;
+    overflow: hidden;
 }
 
-.vl-join .vl-kicker { margin-bottom: 30px; }
+.vl-join-inner {
+    position: relative;
+    z-index: 1;
+    max-width: 1100px;
+    margin: 0 auto;
+}
+
+.vl-join .vl-kicker { margin-bottom: 28px; }
 
 .vl-display--join {
-    font-size: clamp(40px, 6.6vw, 96px);
+    font-size: clamp(36px, 6vw, 88px);
+}
+
+.vl-display--join em {
+    background: linear-gradient(120deg, var(--vl-violet) 0%, var(--vl-teal) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
 }
 
 .vl-join-fine {
     margin: 34px auto 0;
     max-width: 420px;
-    font-family: var(--vl-font-mono) !important;
-    font-size: 10.5px;
-    letter-spacing: 0.16em;
-    line-height: 1.9;
+    font-family: var(--vl-font-display) !important;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    line-height: 1.8;
     color: var(--vl-faint);
 }
 
-/* ------------------------------------------------------------------
-   footer
-   ------------------------------------------------------------------ */
-
-.vl-footer {
-    border-top: 1px solid var(--vl-line);
-    background: rgba(4, 7, 6, 0.72);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    padding: clamp(48px, 7vw, 90px) var(--vl-gutter) 36px;
-    overflow: hidden;
-}
-
-.vl-footer-word {
-    font-size: clamp(110px, 24vw, 340px);
-    font-weight: 600;
-    line-height: 0.78;
-    letter-spacing: -0.05em;
-    color: transparent;
-    -webkit-text-stroke: 1px rgba(147, 197, 190, 0.14);
-    user-select: none;
-    text-align: center;
-    margin-bottom: clamp(40px, 6vw, 80px);
-    transform: translateY(6%);
-}
-
-.vl-footer-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 36px;
-    max-width: 900px;
-    margin: 0 auto clamp(48px, 6vw, 80px);
-}
-
-@media (max-width: 640px) {
-    .vl-footer-grid { grid-template-columns: 1fr; gap: 30px; }
-}
-
-.vl-footer-col {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-.vl-footer-head {
-    font-family: var(--vl-font-mono) !important;
-    font-size: 10px;
-    letter-spacing: 0.26em;
-    color: var(--vl-teal);
-    margin-bottom: 6px;
-}
-
-.vl-footer-col a {
-    color: var(--vl-dim);
-    text-decoration: none;
-    font-size: 14px;
-    transition: color 0.18s ease;
-    width: fit-content;
-}
-
-.vl-footer-col a:hover { color: var(--vl-ink); }
-
-.vl-footer-bottom {
-    display: flex;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 12px 28px;
-    border-top: 1px solid var(--vl-line);
-    padding-top: 24px;
-    font-family: var(--vl-font-mono) !important;
-    font-size: 9px;
-    letter-spacing: 0.2em;
-    color: var(--vl-faint);
-}
+/* Footer styles live in ../components/layout/Footer.css */
 
 /* ------------------------------------------------------------------
    reduced motion
@@ -874,6 +941,11 @@
 @media (prefers-reduced-motion: reduce) {
 
     .vl-ticker-track {
+        animation: none;
+        transform: none;
+    }
+
+    .vl-hero-chat-drift {
         animation: none;
         transform: none;
     }

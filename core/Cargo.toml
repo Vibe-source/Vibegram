@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = ["vibe_core"]
+
+# Host-only workspace. Nothing here is linked into the iOS or Android app in P1.
+# See ../docs/production-timeline-core-refactor.md for the phase plan.
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.82"
+license = "UNLICENSED"
+publish = false
+
+[workspace.lints.rust]
+missing_debug_implementations = "allow" # deliberate: plaintext/secret types must not be Debug
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Style lints turned off deliberately, with the reason each time.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_lossless = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+single_match_else = "allow"
+format_push_string = "allow"
+implicit_hasher = "allow"
+return_self_not_must_use = "allow"
+# The docs in this crate are prose about a wire protocol; backticking every
+# product name (SQLite, RustCrypto, WebCrypto, …) makes them harder to read.
+doc_markdown = "allow"
+# Load-bearing: several `Debug` impls in this crate deliberately omit fields
+# because those fields are message bodies, key material, or ciphertext. This
+# lint asks for exactly the leak the crate exists to prevent.
+missing_fields_in_debug = "allow"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "unwind" # never `abort`: a core panic must degrade to the Swift path, not kill the host

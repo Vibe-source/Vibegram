@@ -293,15 +293,48 @@ private final class NativeStoryComposerSliderTrackView: UIView {
 
   override func layoutSubviews() {
     super.layoutSubviews()
-    let inset: CGFloat = 3.0
+    let inset: CGFloat = 2.0
     let path = UIBezierPath()
     path.move(to: CGPoint(x: inset, y: 0.0))
     path.addLine(to: CGPoint(x: bounds.width - inset, y: 0.0))
-    path.addLine(to: CGPoint(x: bounds.width * 0.56, y: bounds.height))
-    path.addLine(to: CGPoint(x: bounds.width * 0.44, y: bounds.height))
+    path.addLine(to: CGPoint(x: bounds.width * 0.58, y: bounds.height))
+    path.addLine(to: CGPoint(x: bounds.width * 0.42, y: bounds.height))
     path.close()
     shapeLayer.frame = bounds
     shapeLayer.path = path.cgPath
+  }
+}
+
+private func makeLiquidGlassView(
+  cornerRadius: CGFloat = 0.0,
+  capsule: Bool = false,
+  tintColor: UIColor? = nil
+) -> UIVisualEffectView {
+  let view = UIVisualEffectView(effect: nil)
+  if #available(iOS 26.0, *) {
+    let effect = UIGlassEffect(style: .regular)
+    effect.isInteractive = true
+    effect.tintColor = tintColor
+    view.effect = effect
+    if capsule {
+      view.cornerConfiguration = .capsule()
+    } else {
+      view.cornerConfiguration = .uniformCorners(radius: .fixed(cornerRadius))
+    }
+  } else {
+    view.effect = UIBlurEffect(style: .systemThinMaterialDark)
+    view.layer.cornerRadius = cornerRadius
+    view.layer.cornerCurve = .continuous
+  }
+  view.clipsToBounds = true
+  view.contentView.backgroundColor = .clear
+  return view
+}
+
+private final class NativeStoryComposerPassthroughView: UIView {
+  override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+    let hit = super.hitTest(point, with: event)
+    return hit === self ? nil : hit
   }
 }
 
@@ -311,40 +344,45 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
   private let cardContainer = UIView()
   private let mediaView = NativeStoryComposerMediaView()
   private let overlaysContainer = UIView()
-  private let topBar = UIView()
+  private let topBar = NativeStoryComposerPassthroughView()
+  private var closeButtonGlassView = UIVisualEffectView()
   private let closeButton = UIButton(type: .system)
-  private let topActionsView = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+  private var topActionsView = UIVisualEffectView()
   private let downloadButton = UIButton(type: .system)
   private let addTextButton = UIButton(type: .system)
   private let emojiButton = UIButton(type: .system)
   private let musicButton = UIButton(type: .system)
   private let settingsButton = UIButton(type: .system)
+  private var nextButtonGlassView = UIVisualEffectView()
   private let nextButton = UIButton(type: .system)
   private let bottomBar = UIView()
-  private let promptChromeView = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
+  private var promptChromeView = UIVisualEffectView()
   private let promptTextView = UITextView()
   private let promptPlaceholderLabel = UILabel()
   private let promptSendButton = UIButton(type: .system)
 
-  private let selectedActionBar = UIView()
+  private var selectedActionBarGlassView = UIVisualEffectView()
   private let selectedEditButton = UIButton(type: .system)
   private let selectedDeleteButton = UIButton(type: .system)
 
   private let editorOverlay = UIView()
+  private var editorCancelGlassView = UIVisualEffectView()
+  private var editorDoneGlassView = UIVisualEffectView()
   private let editorCancelButton = UIButton(type: .system)
   private let editorDoneButton = UIButton(type: .system)
   private let editorTextView = UITextView()
+  private var editorSliderGlassView = UIVisualEffectView()
   private let editorSliderContainer = UIView()
   private let editorSliderTrackView = NativeStoryComposerSliderTrackView()
   private let editorSliderHandleView = UIView()
-  private let editorControlsView = UIView()
+  private var editorControlsGlassView = UIVisualEffectView()
   private let colorToggleButton = UIButton(type: .system)
   private let fontCycleButton = UIButton(type: .system)
   private let alignCycleButton = UIButton(type: .system)
   private let colorsScrollView = UIScrollView()
 
   private let publishBackdropView = UIView()
-  private let publishSheetView = UIView()
+  private var publishSheetGlassView = UIVisualEffectView()
   private let publishTitleLabel = UILabel()
   private let audienceStackView = UIStackView()
   private let allowScreenshotsLabel = UILabel()
@@ -424,184 +462,199 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
     super.layoutSubviews()
 
     let safeTop = max(safeAreaInsets.top, 12.0)
-    let safeBottom = max(safeAreaInsets.bottom, 20.0)
-    let horizontalMargin: CGFloat = 10.0
-    let bottomReservedHeight: CGFloat = 140.0
-    let cardTop = safeTop + 4.0
-    let cardWidth = max(0.0, bounds.width - (horizontalMargin * 2.0))
-    let maxCardHeight = max(280.0, bounds.height - cardTop - bottomReservedHeight)
-    let preferredCardHeight = max(340.0, bounds.height * 0.85)
-    let cardHeight = min(preferredCardHeight, maxCardHeight)
+    let safeBottom = max(safeAreaInsets.bottom, 16.0)
 
-    cardContainer.frame = CGRect(
-      x: horizontalMargin,
-      y: cardTop,
-      width: cardWidth,
-      height: cardHeight
-    )
+    cardContainer.frame = bounds
     mediaView.frame = cardContainer.bounds
     overlaysContainer.frame = cardContainer.bounds
 
-    topBar.frame = CGRect(x: 14.0, y: 14.0, width: max(0.0, cardWidth - 28.0), height: 44.0)
-    closeButton.frame = CGRect(x: 0.0, y: 0.0, width: 44.0, height: 44.0)
-    let topActionButtonWidth: CGFloat = 40.0
-    let topActionSpacing: CGFloat = 4.0
-    let topActionCount: CGFloat = 5.0
-    let topActionsWidth = (topActionButtonWidth * topActionCount) + (topActionSpacing * 2.0)
+    let topY = safeTop + 4.0
+    let railWidth: CGFloat = 40.0
+    let actionButtonSize: CGFloat = 36.0
+    let actionSpacing: CGFloat = 4.0
+    let railPadding: CGFloat = 4.0
+    let railHeight = (actionButtonSize * 5.0) + (actionSpacing * 4.0) + (railPadding * 2.0)
+
+    topBar.frame = CGRect(x: 14.0, y: topY, width: max(0.0, bounds.width - 28.0), height: railHeight)
+
+    closeButtonGlassView.frame = CGRect(x: 0.0, y: 0.0, width: 44.0, height: 44.0)
+    closeButton.frame = closeButtonGlassView.bounds
+
     topActionsView.frame = CGRect(
-      x: max(52.0, topBar.bounds.width - topActionsWidth),
+      x: max(52.0, topBar.bounds.width - railWidth),
       y: 0.0,
-      width: topActionsWidth,
-      height: 44.0
+      width: railWidth,
+      height: railHeight
     )
     let topButtons = [downloadButton, addTextButton, emojiButton, musicButton, settingsButton]
     for (index, button) in topButtons.enumerated() {
       button.frame = CGRect(
-        x: topActionSpacing + (CGFloat(index) * topActionButtonWidth),
-        y: 2.0,
-        width: topActionButtonWidth,
-        height: 40.0
+        x: (railWidth - actionButtonSize) * 0.5,
+        y: railPadding + (CGFloat(index) * (actionButtonSize + actionSpacing)),
+        width: actionButtonSize,
+        height: actionButtonSize
       )
     }
 
+    let bottomBarHeight: CGFloat = 48.0
+    let promptKeyboardLift = promptTextView.isFirstResponder
+      ? max(0.0, keyboardHeight - safeBottom + 6.0)
+      : 0.0
     bottomBar.frame = CGRect(
-      x: 10.0,
-      y: cardContainer.frame.maxY + 18.0,
-      width: max(0.0, bounds.width - 20.0),
-      height: 56.0
+      x: 12.0,
+      y: bounds.height - safeBottom - bottomBarHeight - promptKeyboardLift,
+      width: max(0.0, bounds.width - 24.0),
+      height: bottomBarHeight
     )
     let promptExpanded = isPromptExpanded
-    let nextButtonWidth: CGFloat = promptExpanded ? 0.0 : 80.0
+    let nextButtonWidth: CGFloat = promptExpanded ? 0.0 : 76.0
     let nextGap: CGFloat = promptExpanded ? 0.0 : 8.0
     let promptWidth = max(0.0, bottomBar.bounds.width - nextButtonWidth - nextGap)
-    promptChromeView.frame = CGRect(x: 0.0, y: 0.0, width: promptWidth, height: bottomBar.bounds.height)
-    nextButton.frame = CGRect(
+    promptChromeView.frame = CGRect(x: 0.0, y: 0.0, width: promptWidth, height: bottomBarHeight)
+    nextButtonGlassView.frame = CGRect(
       x: promptChromeView.frame.maxX + nextGap,
       y: 0.0,
       width: nextButtonWidth,
-      height: bottomBar.bounds.height
+      height: bottomBarHeight
     )
-    nextButton.alpha = promptExpanded ? 0.0 : 1.0
+    nextButton.frame = nextButtonGlassView.bounds
+    nextButtonGlassView.alpha = promptExpanded ? 0.0 : 1.0
     promptTextView.frame = CGRect(
       x: 14.0,
-      y: 8.0,
-      width: max(0.0, promptChromeView.bounds.width - 64.0),
-      height: promptChromeView.bounds.height - 16.0
+      y: 6.0,
+      width: max(0.0, promptChromeView.bounds.width - 58.0),
+      height: bottomBarHeight - 12.0
     )
     promptPlaceholderLabel.frame = CGRect(
       x: promptTextView.frame.minX + 4.0,
       y: 0.0,
-      width: max(0.0, promptChromeView.bounds.width - 88.0),
-      height: promptChromeView.bounds.height
+      width: max(0.0, promptChromeView.bounds.width - 80.0),
+      height: bottomBarHeight
     )
     promptSendButton.frame = CGRect(
-      x: max(0.0, promptChromeView.bounds.width - 44.0),
+      x: max(0.0, promptChromeView.bounds.width - 42.0),
       y: 6.0,
-      width: 38.0,
-      height: 38.0
+      width: 36.0,
+      height: 36.0
     )
 
     if let selectedOverlayId, stickerViews[selectedOverlayId] != nil, !editorOverlay.isHidden {
-      selectedActionBar.isHidden = true
+      selectedActionBarGlassView.isHidden = true
     } else if let selectedOverlayId, let stickerView = stickerViews[selectedOverlayId] {
-      selectedActionBar.isHidden = false
+      selectedActionBarGlassView.isHidden = false
       let stickerFrame = overlaysContainer.convert(stickerView.frame, to: cardContainer)
       let barWidth: CGFloat = 92.0
       let barHeight: CGFloat = 36.0
       let barX = min(max(12.0, stickerFrame.midX - (barWidth * 0.5)), max(12.0, cardContainer.bounds.width - barWidth - 12.0))
       let barY = max(16.0, stickerFrame.minY - barHeight - 10.0)
-      selectedActionBar.frame = CGRect(x: barX, y: barY, width: barWidth, height: barHeight)
+      selectedActionBarGlassView.frame = CGRect(x: barX, y: barY, width: barWidth, height: barHeight)
       selectedEditButton.frame = CGRect(x: 0.0, y: 0.0, width: 44.0, height: barHeight)
       selectedDeleteButton.frame = CGRect(x: barWidth - 44.0, y: 0.0, width: 44.0, height: barHeight)
     } else {
-      selectedActionBar.isHidden = true
+      selectedActionBarGlassView.isHidden = true
     }
 
     editorOverlay.frame = bounds
-    let editorTop = safeTop + 14.0
-    editorCancelButton.frame = CGRect(x: 20.0, y: editorTop, width: 70.0, height: 32.0)
-    editorDoneButton.frame = CGRect(x: bounds.width - 90.0, y: editorTop, width: 70.0, height: 32.0)
-    let controlsHeight: CGFloat = editorShowsColorPicker ? 104.0 : 48.0
-    editorControlsView.frame = CGRect(
+    let editorTop = safeTop + 4.0
+    editorCancelGlassView.frame = CGRect(x: 16.0, y: editorTop, width: 72.0, height: 44.0)
+    editorDoneGlassView.frame = CGRect(x: bounds.width - 88.0, y: editorTop, width: 72.0, height: 44.0)
+    editorCancelButton.frame = editorCancelGlassView.bounds
+    editorDoneButton.frame = editorDoneGlassView.bounds
+    let controlsHeight: CGFloat = editorShowsColorPicker ? 96.0 : 48.0
+    let editorBottomInset = keyboardHeight > 0.0 ? keyboardHeight + 6.0 : safeBottom
+    editorControlsGlassView.frame = CGRect(
       x: 16.0,
-      y: bounds.height - safeBottom - controlsHeight - max(0.0, keyboardHeight),
+      y: bounds.height - editorBottomInset - controlsHeight,
       width: max(0.0, bounds.width - 32.0),
       height: controlsHeight
     )
-    editorSliderContainer.frame = CGRect(
-      x: 4.0,
-      y: max(editorTop + 72.0, min(bounds.height * 0.28, editorControlsView.frame.minY - 260.0)),
-      width: 56.0,
-      height: 240.0
+
+    let paddleWidth: CGFloat = 32.0
+    let paddleHeight: CGFloat = 120.0
+    let paddleY = max(editorTop + 52.0, (editorControlsGlassView.frame.minY - paddleHeight) * 0.5)
+    editorSliderGlassView.frame = CGRect(
+      x: 12.0,
+      y: paddleY,
+      width: paddleWidth,
+      height: paddleHeight
     )
-    editorSliderTrackView.frame = CGRect(x: 8.0, y: 0.0, width: 40.0, height: 240.0)
-    editorSliderHandleView.frame = CGRect(x: 10.0, y: sliderHandleY(for: editorFontSize), width: 36.0, height: 36.0)
-    let textWidth = max(120.0, bounds.width - 112.0)
+    editorSliderContainer.frame = editorSliderGlassView.bounds
+    editorSliderTrackView.frame = editorSliderContainer.bounds
+    let handleSize: CGFloat = 24.0
+    editorSliderHandleView.frame = CGRect(
+      x: (paddleWidth - handleSize) * 0.5,
+      y: sliderHandleY(for: editorFontSize),
+      width: handleSize,
+      height: handleSize
+    )
+
+    let textX: CGFloat = 52.0
+    let textWidth = max(120.0, bounds.width - 104.0)
     editorTextView.frame = CGRect(
-      x: 56.0,
-      y: max(editorTop + 48.0, ((editorControlsView.frame.minY - 180.0) * 0.5)),
+      x: textX,
+      y: paddleY,
       width: textWidth,
-      height: min(200.0, editorControlsView.frame.minY - editorTop - 80.0)
+      height: min(220.0, editorControlsGlassView.frame.minY - paddleY - 20.0)
     )
 
-    colorToggleButton.frame = CGRect(x: 8.0, y: 6.0, width: 36.0, height: 36.0)
-    fontCycleButton.frame = CGRect(x: 52.0, y: 6.0, width: 90.0, height: 36.0)
-    alignCycleButton.frame = CGRect(x: editorControlsView.bounds.width - 44.0, y: 6.0, width: 36.0, height: 36.0)
+    colorToggleButton.frame = CGRect(x: 6.0, y: 6.0, width: 36.0, height: 36.0)
+    fontCycleButton.frame = CGRect(x: 48.0, y: 6.0, width: 86.0, height: 36.0)
+    alignCycleButton.frame = CGRect(x: editorControlsGlassView.bounds.width - 42.0, y: 6.0, width: 36.0, height: 36.0)
     colorsScrollView.frame = CGRect(
-      x: 8.0,
-      y: 50.0,
-      width: max(0.0, editorControlsView.bounds.width - 16.0),
-      height: editorShowsColorPicker ? 44.0 : 0.0
+      x: 6.0,
+      y: 46.0,
+      width: max(0.0, editorControlsGlassView.bounds.width - 12.0),
+      height: editorShowsColorPicker ? 42.0 : 0.0
     )
 
-    let colorButtonSize: CGFloat = 34.0
+    let colorButtonSize: CGFloat = 30.0
     for (index, button) in colorButtons.enumerated() {
       button.frame = CGRect(
-        x: CGFloat(index) * (colorButtonSize + 10.0),
-        y: 7.0,
+        x: CGFloat(index) * (colorButtonSize + 8.0),
+        y: 6.0,
         width: colorButtonSize,
         height: colorButtonSize
       )
     }
     colorsScrollView.contentSize = CGSize(
-      width: CGFloat(colorButtons.count) * (colorButtonSize + 10.0),
-      height: 48.0
+      width: CGFloat(colorButtons.count) * (colorButtonSize + 8.0),
+      height: 42.0
     )
 
     publishBackdropView.frame = bounds
-    let sheetHeight: CGFloat = 330.0 + safeBottom
-    publishSheetView.frame = CGRect(
+    let sheetHeight: CGFloat = 310.0 + safeBottom
+    publishSheetGlassView.frame = CGRect(
       x: 12.0,
-      y: bounds.height - sheetHeight - 10.0,
+      y: bounds.height - sheetHeight - 8.0,
       width: max(0.0, bounds.width - 24.0),
       height: sheetHeight
     )
-    publishTitleLabel.frame = CGRect(x: 20.0, y: 18.0, width: publishSheetView.bounds.width - 40.0, height: 24.0)
-    audienceStackView.frame = CGRect(x: 20.0, y: 56.0, width: publishSheetView.bounds.width - 40.0, height: 42.0)
-    durationTitleLabel.frame = CGRect(x: 20.0, y: audienceStackView.frame.maxY + 16.0, width: 140.0, height: 22.0)
-    durationStackView.frame = CGRect(x: 20.0, y: durationTitleLabel.frame.maxY + 10.0, width: publishSheetView.bounds.width - 40.0, height: 40.0)
+    publishTitleLabel.frame = CGRect(x: 18.0, y: 16.0, width: publishSheetGlassView.bounds.width - 36.0, height: 24.0)
+    audienceStackView.frame = CGRect(x: 18.0, y: 50.0, width: publishSheetGlassView.bounds.width - 36.0, height: 38.0)
+    durationTitleLabel.frame = CGRect(x: 18.0, y: audienceStackView.frame.maxY + 12.0, width: 140.0, height: 20.0)
+    durationStackView.frame = CGRect(x: 18.0, y: durationTitleLabel.frame.maxY + 8.0, width: publishSheetGlassView.bounds.width - 36.0, height: 36.0)
 
-    let switchRowY = durationStackView.frame.maxY + 22.0
-    allowScreenshotsLabel.frame = CGRect(x: 20.0, y: switchRowY, width: 200.0, height: 24.0)
+    let switchRowY = durationStackView.frame.maxY + 14.0
+    allowScreenshotsLabel.frame = CGRect(x: 18.0, y: switchRowY, width: 200.0, height: 24.0)
     allowScreenshotsSwitch.frame = CGRect(
-      x: publishSheetView.bounds.width - allowScreenshotsSwitch.bounds.width - 20.0,
+      x: publishSheetGlassView.bounds.width - allowScreenshotsSwitch.bounds.width - 18.0,
       y: switchRowY - 4.0,
       width: allowScreenshotsSwitch.bounds.width,
       height: allowScreenshotsSwitch.bounds.height
     )
-    postToProfileLabel.frame = CGRect(x: 20.0, y: switchRowY + 42.0, width: 200.0, height: 24.0)
+    postToProfileLabel.frame = CGRect(x: 18.0, y: switchRowY + 36.0, width: 200.0, height: 24.0)
     postToProfileSwitch.frame = CGRect(
-      x: publishSheetView.bounds.width - postToProfileSwitch.bounds.width - 20.0,
-      y: switchRowY + 38.0,
+      x: publishSheetGlassView.bounds.width - postToProfileSwitch.bounds.width - 18.0,
+      y: switchRowY + 32.0,
       width: postToProfileSwitch.bounds.width,
       height: postToProfileSwitch.bounds.height
     )
 
-    let actionY = publishSheetView.bounds.height - safeBottom - 56.0
-    let buttonWidth = floor((publishSheetView.bounds.width - 52.0) / 3.0)
-    publishCancelButton.frame = CGRect(x: 16.0, y: actionY, width: buttonWidth, height: 44.0)
-    saveDraftButton.frame = CGRect(x: publishCancelButton.frame.maxX + 10.0, y: actionY, width: buttonWidth, height: 44.0)
-    publishButton.frame = CGRect(x: saveDraftButton.frame.maxX + 10.0, y: actionY, width: buttonWidth, height: 44.0)
+    let actionY = publishSheetGlassView.bounds.height - safeBottom - 50.0
+    let buttonWidth = floor((publishSheetGlassView.bounds.width - 46.0) / 3.0)
+    publishCancelButton.frame = CGRect(x: 14.0, y: actionY, width: buttonWidth, height: 44.0)
+    saveDraftButton.frame = CGRect(x: publishCancelButton.frame.maxX + 9.0, y: actionY, width: buttonWidth, height: 44.0)
+    publishButton.frame = CGRect(x: saveDraftButton.frame.maxX + 9.0, y: actionY, width: buttonWidth, height: 44.0)
   }
 
   func setMediaUri(_ value: String?) {
@@ -656,13 +709,13 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
     alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
     alert.addAction(
       UIAlertAction(title: "Discard", style: .destructive) { [weak self] _ in
-        self?.onEvent?( ["type": "discard"])
+        self?.onEvent?(["type": "discard"])
       }
     )
     if let controller = presentingViewController() {
       controller.present(alert, animated: true)
     } else {
-      onEvent?( ["type": "discard"])
+      onEvent?(["type": "discard"])
     }
   }
 
@@ -795,7 +848,7 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
 
   @objc private func handleSaveDraftPress() {
     showPublishSheet(false)
-    onEvent?( ["type": "saveDraft"])
+    onEvent?(["type": "saveDraft"])
   }
 
   @objc private func handlePublishPress() {
@@ -816,11 +869,9 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
   }
 
   private func configureView() {
-    cardContainer.backgroundColor = UIColor(white: 0.06, alpha: 1.0)
-    cardContainer.layer.cornerRadius = 32.0
-    cardContainer.layer.cornerCurve = .continuous
-    cardContainer.layer.borderWidth = 1.0
-    cardContainer.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
+    cardContainer.backgroundColor = .black
+    cardContainer.layer.cornerRadius = 0.0
+    cardContainer.layer.borderWidth = 0.0
     cardContainer.clipsToBounds = true
     addSubview(cardContainer)
 
@@ -836,67 +887,69 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
     topBar.backgroundColor = .clear
     cardContainer.addSubview(topBar)
 
-    configureChromeButton(closeButton, symbol: "xmark")
-    closeButton.addTarget(self, action: #selector(handleClosePress), for: .touchUpInside)
-    topBar.addSubview(closeButton)
+    closeButtonGlassView = makeLiquidGlassView(cornerRadius: 22.0, capsule: true)
+    topBar.addSubview(closeButtonGlassView)
 
-    topActionsView.clipsToBounds = true
-    topActionsView.layer.cornerRadius = 22.0
-    topActionsView.layer.cornerCurve = .continuous
-    topActionsView.contentView.backgroundColor = UIColor.black.withAlphaComponent(0.15)
+    configureChromeButton(closeButton, glyph: .close)
+    closeButton.accessibilityLabel = "Close"
+    closeButton.backgroundColor = .clear
+    closeButton.layer.borderWidth = 0.0
+    closeButtonGlassView.contentView.addSubview(closeButton)
+
+    topActionsView = makeLiquidGlassView(cornerRadius: 20.0, capsule: true)
     topBar.addSubview(topActionsView)
 
-    configureTopActionButton(downloadButton, symbol: "arrow.down.circle")
+    configureTopActionButton(downloadButton, glyph: .download)
+    downloadButton.accessibilityLabel = "Save"
     downloadButton.addTarget(self, action: #selector(handleDownloadPress), for: .touchUpInside)
     topActionsView.contentView.addSubview(downloadButton)
 
-    configureTopActionButton(addTextButton, symbol: "textformat")
+    configureTopActionButton(addTextButton, glyph: .text)
+    addTextButton.accessibilityLabel = "Add Text"
     addTextButton.addTarget(self, action: #selector(handleAddTextPress), for: .touchUpInside)
     topActionsView.contentView.addSubview(addTextButton)
 
-    configureTopActionButton(emojiButton, symbol: "face.smiling")
+    configureTopActionButton(emojiButton, glyph: .emoji)
+    emojiButton.accessibilityLabel = "Add Emoji"
     emojiButton.addTarget(self, action: #selector(handleEmojiPress), for: .touchUpInside)
     topActionsView.contentView.addSubview(emojiButton)
 
-    configureTopActionButton(musicButton, symbol: "music.note")
+    configureTopActionButton(musicButton, glyph: .music)
+    musicButton.accessibilityLabel = "Add Music"
     musicButton.addTarget(self, action: #selector(handleMusicPress), for: .touchUpInside)
     topActionsView.contentView.addSubview(musicButton)
 
-    configureTopActionButton(settingsButton, symbol: "gearshape")
+    configureTopActionButton(settingsButton, glyph: .settings)
+    settingsButton.accessibilityLabel = "Story Settings"
     settingsButton.addTarget(self, action: #selector(handleSettingsPress), for: .touchUpInside)
     topActionsView.contentView.addSubview(settingsButton)
 
-    selectedActionBar.backgroundColor = UIColor.black.withAlphaComponent(0.42)
-    selectedActionBar.layer.cornerRadius = 18.0
-    selectedActionBar.layer.cornerCurve = .continuous
-    selectedActionBar.layer.borderWidth = 1.0
-    selectedActionBar.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
-    selectedActionBar.isHidden = true
-    cardContainer.addSubview(selectedActionBar)
+    selectedActionBarGlassView = makeLiquidGlassView(cornerRadius: 18.0, capsule: true)
+    selectedActionBarGlassView.isHidden = true
+    cardContainer.addSubview(selectedActionBarGlassView)
 
-    configureSmallActionButton(selectedEditButton, symbol: "pencil")
+    configureSmallActionButton(selectedEditButton, glyph: .edit)
+    selectedEditButton.accessibilityLabel = "Edit Text"
     selectedEditButton.addTarget(self, action: #selector(handleSelectedEditPress), for: .touchUpInside)
-    selectedActionBar.addSubview(selectedEditButton)
+    selectedActionBarGlassView.contentView.addSubview(selectedEditButton)
 
-    configureSmallActionButton(selectedDeleteButton, symbol: "trash")
+    configureSmallActionButton(selectedDeleteButton, glyph: .delete)
+    selectedDeleteButton.accessibilityLabel = "Delete Text"
     selectedDeleteButton.tintColor = UIColor(red: 1.0, green: 0.36, blue: 0.32, alpha: 1.0)
     selectedDeleteButton.addTarget(self, action: #selector(handleSelectedDeletePress), for: .touchUpInside)
-    selectedActionBar.addSubview(selectedDeleteButton)
+    selectedActionBarGlassView.contentView.addSubview(selectedDeleteButton)
 
     bottomBar.backgroundColor = .clear
     addSubview(bottomBar)
 
-    promptChromeView.clipsToBounds = true
-    promptChromeView.layer.cornerRadius = 28.0
-    promptChromeView.layer.cornerCurve = .continuous
-    promptChromeView.contentView.backgroundColor = UIColor.black.withAlphaComponent(0.14)
+    promptChromeView = makeLiquidGlassView(cornerRadius: 24.0, capsule: true)
     bottomBar.addSubview(promptChromeView)
 
     promptTextView.backgroundColor = .clear
     promptTextView.textColor = .white
     promptTextView.tintColor = .white
-    promptTextView.font = .systemFont(ofSize: 16.0, weight: .medium)
-    promptTextView.textContainerInset = UIEdgeInsets(top: 10.0, left: 0.0, bottom: 10.0, right: 0.0)
+    promptTextView.font = .systemFont(ofSize: 15.0, weight: .medium)
+    promptTextView.textContainerInset = UIEdgeInsets(top: 8.0, left: 0.0, bottom: 8.0, right: 0.0)
     promptTextView.textContainer.lineFragmentPadding = 0.0
     promptTextView.returnKeyType = .send
     promptTextView.autocorrectionType = .yes
@@ -905,46 +958,49 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
 
     promptPlaceholderLabel.text = "Ask AI to edit..."
     promptPlaceholderLabel.textColor = UIColor.white.withAlphaComponent(0.55)
-    promptPlaceholderLabel.font = .systemFont(ofSize: 16.0, weight: .medium)
+    promptPlaceholderLabel.font = .systemFont(ofSize: 15.0, weight: .medium)
     promptChromeView.contentView.addSubview(promptPlaceholderLabel)
 
-    promptSendButton.layer.cornerRadius = 19.0
+    promptSendButton.layer.cornerRadius = 18.0
     promptSendButton.layer.cornerCurve = .continuous
     promptSendButton.tintColor = .white
-    promptSendButton.setImage(
-      UIImage(
-        systemName: "arrow.up",
-        withConfiguration: UIImage.SymbolConfiguration(pointSize: 15.0, weight: .bold)
-      ),
-      for: .normal
-    )
+    promptSendButton.setImage(UIImage.appStoryGlyph(.send, pointSize: 14.0), for: .normal)
+    promptSendButton.accessibilityLabel = "Send Edit Prompt"
     promptSendButton.addTarget(self, action: #selector(handlePromptSendPress), for: .touchUpInside)
     promptChromeView.contentView.addSubview(promptSendButton)
 
-    nextButton.backgroundColor = UIColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.92)
-    nextButton.layer.cornerRadius = 28.0
-    nextButton.layer.cornerCurve = .continuous
+    nextButtonGlassView = makeLiquidGlassView(
+      cornerRadius: 24.0,
+      capsule: true,
+      tintColor: UIColor.systemBlue.withAlphaComponent(0.42)
+    )
+    nextButton.backgroundColor = .clear
     nextButton.setTitle("Next", for: .normal)
     nextButton.titleLabel?.font = .systemFont(ofSize: 15.0, weight: .semibold)
     nextButton.setTitleColor(.white, for: .normal)
     nextButton.addTarget(self, action: #selector(handleNextPress), for: .touchUpInside)
-    bottomBar.addSubview(nextButton)
+    nextButtonGlassView.contentView.addSubview(nextButton)
+    bottomBar.addSubview(nextButtonGlassView)
 
-    editorOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.3)
+    editorOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.11)
     editorOverlay.isHidden = true
     addSubview(editorOverlay)
 
+    editorCancelGlassView = makeLiquidGlassView(cornerRadius: 22.0, capsule: true)
+    editorOverlay.addSubview(editorCancelGlassView)
     editorCancelButton.setTitle("Cancel", for: .normal)
     editorCancelButton.setTitleColor(.white, for: .normal)
-    editorCancelButton.titleLabel?.font = .systemFont(ofSize: 17.0, weight: .medium)
+    editorCancelButton.titleLabel?.font = .systemFont(ofSize: 16.0, weight: .medium)
     editorCancelButton.addTarget(self, action: #selector(handleEditorCancelPress), for: .touchUpInside)
-    editorOverlay.addSubview(editorCancelButton)
+    editorCancelGlassView.contentView.addSubview(editorCancelButton)
 
+    editorDoneGlassView = makeLiquidGlassView(cornerRadius: 22.0, capsule: true)
+    editorOverlay.addSubview(editorDoneGlassView)
     editorDoneButton.setTitle("Done", for: .normal)
     editorDoneButton.setTitleColor(.white, for: .normal)
-    editorDoneButton.titleLabel?.font = .systemFont(ofSize: 17.0, weight: .semibold)
+    editorDoneButton.titleLabel?.font = .systemFont(ofSize: 16.0, weight: .semibold)
     editorDoneButton.addTarget(self, action: #selector(handleEditorDonePress), for: .touchUpInside)
-    editorOverlay.addSubview(editorDoneButton)
+    editorDoneGlassView.contentView.addSubview(editorDoneButton)
 
     editorTextView.backgroundColor = .clear
     editorTextView.textColor = .white
@@ -957,43 +1013,44 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
     editorTextView.delegate = self
     editorOverlay.addSubview(editorTextView)
 
+    editorSliderGlassView = makeLiquidGlassView(cornerRadius: 16.0, capsule: true)
+    editorOverlay.addSubview(editorSliderGlassView)
+
     editorSliderContainer.backgroundColor = .clear
     let sliderPanGesture = UIPanGestureRecognizer(target: self, action: #selector(handleEditorSliderPan(_:)))
     editorSliderContainer.addGestureRecognizer(sliderPanGesture)
-    editorOverlay.addSubview(editorSliderContainer)
+    editorSliderGlassView.contentView.addSubview(editorSliderContainer)
 
     editorSliderContainer.addSubview(editorSliderTrackView)
 
     editorSliderHandleView.backgroundColor = .white
-    editorSliderHandleView.layer.cornerRadius = 18.0
+    editorSliderHandleView.layer.cornerRadius = 12.0
     editorSliderHandleView.layer.cornerCurve = .continuous
     editorSliderHandleView.layer.shadowColor = UIColor.black.cgColor
     editorSliderHandleView.layer.shadowOpacity = 0.2
-    editorSliderHandleView.layer.shadowRadius = 8.0
+    editorSliderHandleView.layer.shadowRadius = 6.0
     editorSliderHandleView.layer.shadowOffset = CGSize(width: 0.0, height: 2.0)
     editorSliderContainer.addSubview(editorSliderHandleView)
 
-    editorControlsView.backgroundColor = UIColor.black.withAlphaComponent(0.42)
-    editorControlsView.layer.cornerRadius = 22.0
-    editorControlsView.layer.cornerCurve = .continuous
-    editorControlsView.layer.borderWidth = 1.0
-    editorControlsView.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
-    editorOverlay.addSubview(editorControlsView)
+    editorControlsGlassView = makeLiquidGlassView(cornerRadius: 22.0)
+    editorOverlay.addSubview(editorControlsGlassView)
 
-    configureRoundSymbolButton(colorToggleButton, symbol: "circle.fill")
+    configureRoundSymbolButton(colorToggleButton, glyph: .color)
+    colorToggleButton.accessibilityLabel = "Text Color"
     colorToggleButton.addTarget(self, action: #selector(handleColorTogglePress), for: .touchUpInside)
-    editorControlsView.addSubview(colorToggleButton)
+    editorControlsGlassView.contentView.addSubview(colorToggleButton)
 
     configureRoundButton(fontCycleButton, title: editorFont.title)
     fontCycleButton.addTarget(self, action: #selector(handleFontCyclePress), for: .touchUpInside)
-    editorControlsView.addSubview(fontCycleButton)
+    editorControlsGlassView.contentView.addSubview(fontCycleButton)
 
-    configureRoundSymbolButton(alignCycleButton, symbol: "text.aligncenter")
+    configureRoundSymbolButton(alignCycleButton, glyph: .alignCenter)
+    alignCycleButton.accessibilityLabel = "Text Alignment"
     alignCycleButton.addTarget(self, action: #selector(handleAlignCyclePress), for: .touchUpInside)
-    editorControlsView.addSubview(alignCycleButton)
+    editorControlsGlassView.contentView.addSubview(alignCycleButton)
 
     colorsScrollView.showsHorizontalScrollIndicator = false
-    editorControlsView.addSubview(colorsScrollView)
+    editorControlsGlassView.contentView.addSubview(colorsScrollView)
     configureColorButtons()
 
     publishBackdropView.backgroundColor = UIColor.black.withAlphaComponent(0.48)
@@ -1003,109 +1060,88 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
     publishBackdropView.addGestureRecognizer(publishTap)
     addSubview(publishBackdropView)
 
-    publishSheetView.backgroundColor = UIColor(white: 0.09, alpha: 0.98)
-    publishSheetView.layer.cornerRadius = 28.0
-    publishSheetView.layer.cornerCurve = .continuous
-    publishSheetView.layer.borderWidth = 1.0
-    publishSheetView.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
-    publishSheetView.alpha = 0.0
-    publishSheetView.transform = CGAffineTransform(translationX: 0.0, y: 40.0)
-    publishSheetView.isHidden = true
-    addSubview(publishSheetView)
+    publishSheetGlassView = makeLiquidGlassView(cornerRadius: 28.0)
+    publishSheetGlassView.contentView.backgroundColor = .clear
+    publishSheetGlassView.alpha = 0.0
+    publishSheetGlassView.transform = CGAffineTransform(translationX: 0.0, y: 40.0)
+    publishSheetGlassView.isHidden = true
+    addSubview(publishSheetGlassView)
 
     publishTitleLabel.text = "Publish Story"
     publishTitleLabel.textColor = .white
     publishTitleLabel.font = .systemFont(ofSize: 20.0, weight: .semibold)
-    publishSheetView.addSubview(publishTitleLabel)
+    publishSheetGlassView.contentView.addSubview(publishTitleLabel)
 
     audienceStackView.axis = .horizontal
     audienceStackView.alignment = .fill
     audienceStackView.distribution = .fillEqually
     audienceStackView.spacing = 10.0
-    publishSheetView.addSubview(audienceStackView)
+    publishSheetGlassView.contentView.addSubview(audienceStackView)
     configureAudienceButtons()
 
     durationTitleLabel.text = "Duration"
     durationTitleLabel.textColor = UIColor.white.withAlphaComponent(0.8)
     durationTitleLabel.font = .systemFont(ofSize: 14.0, weight: .medium)
-    publishSheetView.addSubview(durationTitleLabel)
+    publishSheetGlassView.contentView.addSubview(durationTitleLabel)
 
     durationStackView.axis = .horizontal
     durationStackView.alignment = .fill
     durationStackView.distribution = .fillEqually
     durationStackView.spacing = 10.0
-    publishSheetView.addSubview(durationStackView)
+    publishSheetGlassView.contentView.addSubview(durationStackView)
     configureDurationButtons()
 
     allowScreenshotsLabel.text = "Allow Screenshots"
     allowScreenshotsLabel.textColor = .white
     allowScreenshotsLabel.font = .systemFont(ofSize: 16.0, weight: .medium)
-    publishSheetView.addSubview(allowScreenshotsLabel)
+    publishSheetGlassView.contentView.addSubview(allowScreenshotsLabel)
 
     allowScreenshotsSwitch.isOn = true
-    publishSheetView.addSubview(allowScreenshotsSwitch)
+    publishSheetGlassView.contentView.addSubview(allowScreenshotsSwitch)
 
     postToProfileLabel.text = "Post To Profile"
     postToProfileLabel.textColor = .white
     postToProfileLabel.font = .systemFont(ofSize: 16.0, weight: .medium)
-    publishSheetView.addSubview(postToProfileLabel)
+    publishSheetGlassView.contentView.addSubview(postToProfileLabel)
 
     postToProfileSwitch.isOn = true
-    publishSheetView.addSubview(postToProfileSwitch)
+    publishSheetGlassView.contentView.addSubview(postToProfileSwitch)
 
     configureSheetActionButton(publishCancelButton, title: "Cancel", fillColor: UIColor.white.withAlphaComponent(0.12))
     publishCancelButton.addTarget(self, action: #selector(handlePublishCancelPress), for: .touchUpInside)
-    publishSheetView.addSubview(publishCancelButton)
+    publishSheetGlassView.contentView.addSubview(publishCancelButton)
 
     configureSheetActionButton(saveDraftButton, title: "Draft", fillColor: UIColor.white.withAlphaComponent(0.16))
     saveDraftButton.addTarget(self, action: #selector(handleSaveDraftPress), for: .touchUpInside)
-    publishSheetView.addSubview(saveDraftButton)
+    publishSheetGlassView.contentView.addSubview(saveDraftButton)
 
     configureSheetActionButton(publishButton, title: "Publish", fillColor: UIColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 0.92))
     publishButton.addTarget(self, action: #selector(handlePublishPress), for: .touchUpInside)
-    publishSheetView.addSubview(publishButton)
+    publishSheetGlassView.contentView.addSubview(publishButton)
 
     updateEditorControls()
     updateAudienceButtons()
     updateDurationButtons()
   }
 
-  private func configureChromeButton(_ button: UIButton, symbol: String) {
+  private func configureChromeButton(_ button: UIButton, glyph: AppStoryVectorGlyph) {
     button.backgroundColor = UIColor.black.withAlphaComponent(0.28)
     button.layer.cornerRadius = 22.0
     button.layer.cornerCurve = .continuous
     button.layer.borderWidth = 1.0
     button.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
     button.tintColor = .white
-    button.setImage(
-      UIImage(
-        systemName: symbol,
-        withConfiguration: UIImage.SymbolConfiguration(pointSize: 18.0, weight: .semibold)
-      ),
-      for: .normal
-    )
+    button.setImage(UIImage.appStoryGlyph(glyph, pointSize: 18.0), for: .normal)
   }
 
-  private func configureTopActionButton(_ button: UIButton, symbol: String) {
+  private func configureTopActionButton(_ button: UIButton, glyph: AppStoryVectorGlyph) {
     button.tintColor = .white
-    button.setImage(
-      UIImage(
-        systemName: symbol,
-        withConfiguration: UIImage.SymbolConfiguration(pointSize: 18.0, weight: .semibold)
-      ),
-      for: .normal
-    )
+    button.setImage(UIImage.appStoryGlyph(glyph, pointSize: 18.0), for: .normal)
   }
 
-  private func configureSmallActionButton(_ button: UIButton, symbol: String) {
+  private func configureSmallActionButton(_ button: UIButton, glyph: AppStoryVectorGlyph) {
     button.tintColor = .white
-    button.setImage(
-      UIImage(
-        systemName: symbol,
-        withConfiguration: UIImage.SymbolConfiguration(pointSize: 15.0, weight: .semibold)
-      ),
-      for: .normal
-    )
+    button.setImage(UIImage.appStoryGlyph(glyph, pointSize: 15.0), for: .normal)
   }
 
   private func configureRoundButton(_ button: UIButton, title: String) {
@@ -1117,18 +1153,12 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
     button.titleLabel?.font = .systemFont(ofSize: 13.0, weight: .semibold)
   }
 
-  private func configureRoundSymbolButton(_ button: UIButton, symbol: String) {
+  private func configureRoundSymbolButton(_ button: UIButton, glyph: AppStoryVectorGlyph) {
     button.backgroundColor = UIColor.white.withAlphaComponent(0.12)
     button.layer.cornerRadius = 18.0
     button.layer.cornerCurve = .continuous
     button.tintColor = .white
-    button.setImage(
-      UIImage(
-        systemName: symbol,
-        withConfiguration: UIImage.SymbolConfiguration(pointSize: 15.0, weight: .medium)
-      ),
-      for: .normal
-    )
+    button.setImage(UIImage.appStoryGlyph(glyph, pointSize: 15.0), for: .normal)
   }
 
   private func configureColorButtons() {
@@ -1136,7 +1166,7 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
     colorButtons.removeAll()
     for hex in composerColors {
       let button = UIButton(type: .custom)
-      button.layer.cornerRadius = 17.0
+      button.layer.cornerRadius = 15.0
       button.layer.cornerCurve = .continuous
       button.backgroundColor = UIColor.nativeStoryComposerColor(from: hex)
       button.layer.borderWidth = 2.0
@@ -1260,29 +1290,11 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
     alignCycleButton.tintColor = .white
     switch editorAlignment {
     case .left:
-      alignCycleButton.setImage(
-        UIImage(
-          systemName: "text.alignleft",
-          withConfiguration: UIImage.SymbolConfiguration(pointSize: 15.0, weight: .medium)
-        ),
-        for: .normal
-      )
+      alignCycleButton.setImage(UIImage.appStoryGlyph(.alignLeft, pointSize: 15.0), for: .normal)
     case .center:
-      alignCycleButton.setImage(
-        UIImage(
-          systemName: "text.aligncenter",
-          withConfiguration: UIImage.SymbolConfiguration(pointSize: 15.0, weight: .medium)
-        ),
-        for: .normal
-      )
+      alignCycleButton.setImage(UIImage.appStoryGlyph(.alignCenter, pointSize: 15.0), for: .normal)
     case .right:
-      alignCycleButton.setImage(
-        UIImage(
-          systemName: "text.alignright",
-          withConfiguration: UIImage.SymbolConfiguration(pointSize: 15.0, weight: .medium)
-        ),
-        for: .normal
-      )
+      alignCycleButton.setImage(UIImage.appStoryGlyph(.alignRight, pointSize: 15.0), for: .normal)
     default:
       break
     }
@@ -1358,14 +1370,18 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
   }
 
   private func sliderHandleY(for fontSize: CGFloat) -> CGFloat {
+    let handleSize: CGFloat = 24.0
+    let trackHeight = max(1.0, editorSliderContainer.bounds.height - handleSize)
     let clamped = max(10.0, min(100.0, fontSize))
     let progress = 1.0 - ((clamped - 10.0) / 90.0)
-    return min(204.0, max(0.0, progress * 204.0))
+    return max(0.0, min(trackHeight, progress * trackHeight))
   }
 
   private func updateEditorFontSize(fromSliderY y: CGFloat) {
-    let clampedY = min(max(0.0, y), 240.0)
-    let progress = 1.0 - (clampedY / 240.0)
+    let handleSize: CGFloat = 24.0
+    let trackHeight = max(1.0, editorSliderContainer.bounds.height - handleSize)
+    let clampedY = max(0.0, min(trackHeight, y - (handleSize * 0.5)))
+    let progress = 1.0 - (clampedY / trackHeight)
     editorFontSize = max(10.0, min(100.0, 10.0 + (progress * 90.0)))
     updateEditorControls()
     setNeedsLayout()
@@ -1496,7 +1512,8 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
     guard mediaType == .image, bounds.width > 1, bounds.height > 1 else { return nil }
     let renderer = UIGraphicsImageRenderer(bounds: cardContainer.bounds)
     let image = renderer.image { context in
-      cardContainer.drawHierarchy(in: cardContainer.bounds, afterScreenUpdates: true)
+      mediaView.drawHierarchy(in: cardContainer.bounds, afterScreenUpdates: true)
+      overlaysContainer.drawHierarchy(in: cardContainer.bounds, afterScreenUpdates: true)
       context.cgContext.flush()
     }
     guard let data = image.jpegData(compressionQuality: 0.92) else { return nil }
@@ -1521,24 +1538,24 @@ final class AppNativeStoryComposerView: UIView, UITextViewDelegate {
   private func showPublishSheet(_ visible: Bool) {
     if visible {
       publishBackdropView.isHidden = false
-      publishSheetView.isHidden = false
+      publishSheetGlassView.isHidden = false
       bringSubviewToFront(publishBackdropView)
-      bringSubviewToFront(publishSheetView)
+      bringSubviewToFront(publishSheetGlassView)
       UIView.animate(withDuration: 0.22) {
         self.publishBackdropView.alpha = 1.0
-        self.publishSheetView.alpha = 1.0
-        self.publishSheetView.transform = .identity
+        self.publishSheetGlassView.alpha = 1.0
+        self.publishSheetGlassView.transform = .identity
       }
       return
     }
 
     UIView.animate(withDuration: 0.18) {
       self.publishBackdropView.alpha = 0.0
-      self.publishSheetView.alpha = 0.0
-      self.publishSheetView.transform = CGAffineTransform(translationX: 0.0, y: 40.0)
+      self.publishSheetGlassView.alpha = 0.0
+      self.publishSheetGlassView.transform = CGAffineTransform(translationX: 0.0, y: 40.0)
     } completion: { _ in
       self.publishBackdropView.isHidden = true
-      self.publishSheetView.isHidden = true
+      self.publishSheetGlassView.isHidden = true
     }
   }
 

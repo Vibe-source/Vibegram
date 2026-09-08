@@ -116,9 +116,7 @@ defmodule VibeWeb.SubscriptionController do
     end
   end
 
-  # ============================================
   # Lemon Squeezy API Helpers
-  # ============================================
 
   defp create_lemon_squeezy_checkout(plan, user) do
     api_key = Application.get_env(:vibe, :lemon_squeezy)[:api_key]

@@ -1,0 +1,18 @@
+{
+  "id": 60,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Reaction chip overlaps the timestamp because both are anchored to the bubble BOTTOM. ChatListCell.layoutSubviews inline-meta arm (ios/ChatModule/ChatListViewCells.swift:12754) puts metaContainerView at bubbleFrame.maxY - 5 - bubbleMetaHeight; reactionBadgeFrame (:16315) puts the strip at bubbleFrame.minX + 8, bubbleFrame.maxY - 6 - height. measureMessageBubbleLayout DOES grow bubbleHeight by reactionStripHeightOffset (:5692,:5702) but contentWidth (:5671) is only max(desiredContentWidth, reactionSize.width) — it never reserves reactionSize.width + reactionChipGap + meta.total. On a narrow bubble ('As') meta spans [maxY-19,maxY-5] and the strip [maxY-30,maxY-6]: they collide vertically AND horizontally. The bottom-meta arm (:12712, RTL column / rich text / link preview) does not collide — meta sits a line above the strip there.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787760803,
+  "updated_at": 1787760803
+}

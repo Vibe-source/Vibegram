@@ -1,29 +1,37 @@
 defmodule Vibe.AI.Tools.Search do
   @moduledoc """
-  Web search tool using Gemini with Google Search grounding.
-
-  Uses Gemini 2.0 Flash with built-in Google Search capability for real-time web results.
-  Falls back to direct search APIs if Gemini fails.
+  Gemini-grounded web search — now the FALLBACK path, not the primary one.
   """
 
   require Logger
 
-  @gemini_api "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent"
+  # `gemini-3.0-flash` was retired and every web lookup 404'd ("is not found.
+  @default_gemini_model "gemini-2.5-flash"
 
   @doc """
-  Search the web using Gemini with Google Search grounding and return structured results.
+  Web search.
   """
-  def google(%{"query" => query}) do
-    case search_with_gemini(query) do
-      {:ok, results} -> results
-      {:error, reason} ->
-        Logger.warning("[Search] Gemini search failed: #{reason}")
-        %{error: "Search failed", query: query}
-    end
-  end
-
-  # Handle missing query parameter
+  def google(params) when is_map(params), do: Vibe.AI.Tools.Research.search(params)
   def google(_params), do: %{error: "Missing search query"}
+
+  @doc """
+  Raw Gemini-grounded search. `{:ok, result} | {:error, reason}`.
+  """
+  def gemini(query) when is_binary(query), do: search_with_gemini(query)
+  def gemini(_query), do: {:error, "Missing search query"}
+
+  defp gemini_endpoint do
+    model =
+      case System.get_env("GEMINI_SEARCH_MODEL") do
+        value when is_binary(value) ->
+          if String.trim(value) == "", do: @default_gemini_model, else: String.trim(value)
+
+        _ ->
+          @default_gemini_model
+      end
+
+    "https://generativelanguage.googleapis.com/v1beta/models/#{model}:generateContent"
+  end
 
   defp search_with_gemini(query) do
     api_key = System.get_env("GEMINI_API_KEY")
@@ -31,7 +39,7 @@ defmodule Vibe.AI.Tools.Search do
     if is_nil(api_key) do
       {:error, "No Gemini API key configured"}
     else
-      url = "#{@gemini_api}?key=#{api_key}"
+      url = "#{gemini_endpoint()}?key=#{api_key}"
 
       body = Jason.encode!(%{
         contents: [
@@ -85,11 +93,9 @@ defmodule Vibe.AI.Tools.Search do
   defp parse_gemini_response(body, query) do
     case Jason.decode(body) do
       {:ok, %{"candidates" => [%{"content" => %{"parts" => parts}} | _]}} ->
-        # Extract text and grounding metadata
         text_parts = Enum.filter(parts, &Map.has_key?(&1, "text"))
         text = Enum.map_join(text_parts, "", & &1["text"])
 
-        # Try to parse JSON results from text
         case extract_json_results(text) do
           {:ok, results} ->
             {:ok, %{
@@ -100,7 +106,6 @@ defmodule Vibe.AI.Tools.Search do
             }}
 
           {:error, _} ->
-            # If no JSON, return the text as a single result summary
             {:ok, %{
               source: "gemini",
               count: 1,
@@ -110,7 +115,6 @@ defmodule Vibe.AI.Tools.Search do
         end
 
       {:ok, %{"candidates" => [%{"groundingMetadata" => metadata} | _]}} ->
-        # Handle grounding metadata format
         chunks = Map.get(metadata, "groundingChunks", [])
         results = Enum.map(chunks, fn chunk ->
           web = Map.get(chunk, "web", %{})
@@ -138,10 +142,8 @@ defmodule Vibe.AI.Tools.Search do
   end
 
   defp extract_json_results(text) do
-    # Try to find and parse JSON array in the response
     trimmed = String.trim(text)
 
-    # Remove markdown code blocks if present
     cleaned = trimmed
     |> String.replace(~r/^```json\s*/, "")
     |> String.replace(~r/^```\s*/, "")

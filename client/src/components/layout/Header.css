@@ -4,26 +4,23 @@
    ============================================================ */
 
 .vl-nav {
-    --nav-ink: #e9f4f1;
-    --nav-dim: #93aaa6;
-    --nav-teal: #63e2d9;
+    /* Local --nav-* aliases (not renamed to --vl-* directly, to avoid
+       touching every var(--nav-*) usage below) point at the shared
+       ../../theme/site-tokens.css tokens — do not hardcode a fourth
+       copy of these values here. */
+    --nav-ink: var(--vl-ink);
+    --nav-dim: var(--vl-dim);
+    --nav-teal: var(--vl-teal);
     --nav-glass: rgba(8, 13, 12, 0.62);
-    --nav-line: rgba(147, 197, 190, 0.16);
+    --nav-line: var(--vl-line);
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
     z-index: 100;
     color: var(--nav-ink);
-    font-family: 'Space Grotesk Variable', 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    font-family: var(--vl-font-display) !important;
     pointer-events: none;
-}
-
-.vl-nav--docs {
-    --nav-ink: #101413;
-    --nav-dim: #5a6663;
-    --nav-glass: rgba(255, 255, 255, 0.72);
-    --nav-line: rgba(16, 20, 19, 0.12);
 }
 
 .vl-nav-shell {
@@ -84,10 +81,6 @@
     flex: 0 0 auto;
 }
 
-.vl-nav--docs .vl-brand-glyph {
-    color: #0f9e93;
-}
-
 .vl-brand-word {
     font-size: 19px;
     font-weight: 600;
@@ -134,7 +127,7 @@
 }
 
 .vl-nav-link-index {
-    font-family: 'JetBrains Mono Variable', ui-monospace, monospace !important;
+    font-family: var(--vl-font-mono) !important;
     font-size: 8.5px;
     letter-spacing: 0.08em;
     color: var(--nav-teal);
@@ -176,7 +169,7 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    background: linear-gradient(135deg, #7deee4 0%, #46c9bd 100%);
+    background: var(--vl-btn-gradient);
     color: #04211e;
     border: none;
     cursor: pointer;
@@ -198,10 +191,6 @@
 
 .vl-nav-cta:active {
     transform: translateY(0);
-}
-
-.vl-nav--docs .vl-nav-cta {
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 8px 20px -10px rgba(15, 158, 147, 0.5);
 }
 
 @media (max-width: 620px) {
@@ -321,7 +310,7 @@
 .vl-nav.is-open .vl-nav-overlay-links > button:nth-child(6) { transition-delay: 0.32s; }
 
 .vl-nav-overlay-links > button > span {
-    font-family: 'JetBrains Mono Variable', ui-monospace, monospace !important;
+    font-family: var(--vl-font-mono) !important;
     font-size: 11px;
     letter-spacing: 0.15em;
     color: var(--nav-teal);
@@ -338,7 +327,7 @@
     gap: 10px 24px;
     border-top: 1px solid var(--nav-line);
     padding-top: 20px;
-    font-family: 'JetBrains Mono Variable', ui-monospace, monospace !important;
+    font-family: var(--vl-font-mono) !important;
     font-size: 10px;
     letter-spacing: 0.18em;
     color: var(--nav-dim);

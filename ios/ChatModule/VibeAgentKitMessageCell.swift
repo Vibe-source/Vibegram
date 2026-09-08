@@ -237,10 +237,12 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
     let normalizedLeadingText = leadingText?.trimmingCharacters(in: .whitespacesAndNewlines)
     let hasLeadingText = normalizedLeadingText?.isEmpty == false
     guard expanded, hasLeadingText || !items.isEmpty else { return }
-    stepsStack.spacing = streaming ? 7.0 : 11.0
+    stepsStack.spacing = streaming ? 9.0 : 11.0
+    // Shell already supplies agent-turn bubble padding — keep stack margins minimal
+    // so prose isn't double-indented and hugs the same edge as plain them-bubbles.
     stepsStack.layoutMargins = streaming
-      ? UIEdgeInsets(top: 2.0, left: 6.0, bottom: 4.0, right: 0.0)
-      : UIEdgeInsets(top: 3.0, left: 6.0, bottom: 4.0, right: 0.0)
+      ? UIEdgeInsets(top: 2.0, left: 2.0, bottom: 4.0, right: 2.0)
+      : UIEdgeInsets(top: 2.0, left: 2.0, bottom: 4.0, right: 2.0)
     if let leadingText, hasLeadingText {
       stepsStack.addArrangedSubview(
         narrationWorkLogView(
@@ -262,6 +264,15 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
         continue
       }
       let nodeId = item.nodeId ?? item.label
+      // Supervisor team worker: avatar + name + status row, tap → worker detail.
+      if item.itemType == "teamworker" {
+        let workerRow = VibeAgentKitTeamWorkerRowView()
+        workerRow.translatesAutoresizingMaskIntoConstraints = false
+        workerRow.configure(item: item, appearance: appearance)
+        workerRow.onTap = { [weak self] in self?.onOpenSubagent?(nodeId) }
+        stepsStack.addArrangedSubview(workerRow)
+        continue
+      }
       // A subagent (Claude Task tool) node renders as a compact, always-tappable row
       // that opens the read-only subagent view — never an inline expand. Its own
       // Read/Edit/Run steps live only in that view (subagentChildren).
@@ -318,8 +329,10 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
     }
     guard !renderable.isEmpty else { clearStepsList(); return }
 
-    stepsStack.spacing = 9.0
-    stepsStack.layoutMargins = UIEdgeInsets(top: 4.0, left: 8.0, bottom: 5.0, right: 0.0)
+    // Structured streaming feed: a little more vertical air between narration blocks
+    // and tool rows so long answers don't read as one dense column.
+    stepsStack.spacing = 11.0
+    stepsStack.layoutMargins = UIEdgeInsets(top: 2.0, left: 2.0, bottom: 4.0, right: 2.0)
 
     let font = UIFont.systemFont(ofSize: 16.0, weight: .regular)
     let lineHeight: CGFloat = 24.0
@@ -363,6 +376,23 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
       }
 
       let nodeId = item.nodeId ?? item.label
+      // Supervisor team worker: reuse the SAME row view across stream frames (keyed by
+      // node id) so only the status text mutates — no per-frame view churn.
+      if item.itemType == "teamworker" {
+        let key = "teamworker#\(nodeId)"
+        orderedKeys.append(key)
+        let workerRow: VibeAgentKitTeamWorkerRowView
+        if let existing = liveFeedViewsByKey[key] as? VibeAgentKitTeamWorkerRowView {
+          workerRow = existing
+        } else {
+          workerRow = VibeAgentKitTeamWorkerRowView()
+          workerRow.translatesAutoresizingMaskIntoConstraints = false
+          liveFeedViewsByKey[key] = workerRow
+        }
+        workerRow.configure(item: item, appearance: appearance)
+        workerRow.onTap = { [weak self] in self?.onOpenSubagent?(nodeId) }
+        continue
+      }
       // isRealSubagent: synthetic task-kind placeholders (no subagentType) render
       // as plain step rows, never as a phantom "Subagent" row.
       if item.isRealSubagent {
@@ -455,11 +485,9 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
     stack.axis = .vertical
     stack.alignment = .fill
     stack.distribution = .fill
-    stack.spacing = 9.0
+    stack.spacing = 10.0
     stack.isLayoutMarginsRelativeArrangement = true
-    stack.layoutMargins = streaming
-      ? UIEdgeInsets(top: 0.0, left: 0.0, bottom: 0.0, right: 0.0)
-      : UIEdgeInsets(top: 0.0, left: 0.0, bottom: 2.0, right: 0.0)
+    stack.layoutMargins = UIEdgeInsets(top: 0.0, left: 0.0, bottom: 2.0, right: 0.0)
 
     let font = UIFont.systemFont(ofSize: 16.0, weight: .regular)
     let color = appearance.text
@@ -529,6 +557,10 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
   /// expanded work card reads like a diff summary (Claude/Codex style), while the verb
   /// + target stay in the muted base color. The minus is U+2212 (the formatter emits
   /// it, not an ASCII hyphen).
+  /// Compiled once. Building it per step row blocked main 0.47s in a device export.
+  fileprivate static let stepDiffCountRegex = try? NSRegularExpression(
+    pattern: "[+\u{2212}]\\d[\\d,]*")
+
   fileprivate static func styledStepLabel(
     _ string: String,
     font: UIFont,
@@ -540,9 +572,7 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
       attributes: [.font: font, .foregroundColor: baseColor, .paragraphStyle: paragraph]
     )
     let full = string as NSString
-    guard let regex = try? NSRegularExpression(pattern: "[+\u{2212}]\\d[\\d,]*") else {
-      return attributed
-    }
+    guard let regex = Self.stepDiffCountRegex else { return attributed }
     for match in regex.matches(in: string, range: NSRange(location: 0, length: full.length)) {
       let isAdd = full.substring(with: match.range).hasPrefix("+")
       attributed.addAttribute(
@@ -595,10 +625,27 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
     let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
     let hasDisplayText = !trimmedText.isEmpty
     let hasToolProgressItems = progressItems.contains { $0.itemType != "text" }
+    // A PLAIN-PROSE live turn (the built-in "Vibe AI" conversational agent) streams its
+    // answer AS THE MESSAGE BODY — no tool steps, no runtime card, no progress feed. The
+    // interleaved-feed machinery below assumes live prose rides as "text" progressItems
+    // (true for Claude/Codex) and SUPPRESSES the body while streaming; but this agent has
+    // no such nodes, so that path hides the whole answer behind a fixed-size "Thinking"
+    // shimmer until the turn settles — the "empty cell, no growth with the stream, then a
+    // height jump at settle" bug. Detect it and let the body stream + grow directly: the
+    // SAME renderer and SAME hug width are used live and settled, so nothing shifts when
+    // the turn finishes. CLI-agent rows (bridge-/stream-/lan- ids, or any turn that
+    // carries progress items / a runtime) never qualify — they keep the interleaved feed
+    // even on a momentarily-empty first frame. Because `measuredHeight` reuses this exact
+    // `configure`, the height measurement follows the body automatically (symmetry), so
+    // the per-chunk heightReload path fires and the row grows token-by-token.
+    let isPlainProseLiveTurn =
+      isStreaming && hasDisplayText && progressItems.isEmpty && runtime == nil
+      && !messageId.hasPrefix("bridge-") && !messageId.hasPrefix("stream-")
+      && !messageId.hasPrefix("lan-")
     // A live turn stays one interleaved feed even after its first prose arrives.
     // Using hasFinalResponseText here switched to the settled layout mid-stream,
     // rendering the same assistant text once as a progress node and again as body.
-    let showsLoader = isStreaming
+    let showsLoader = isStreaming && !isPlainProseLiveTurn
     let runningStatuses: Set<String> = [
       "active", "in-progress", "in_progress", "pending", "queued", "running", "streaming", "working",
     ]
@@ -625,15 +672,49 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
     loaderView.applyAppearance(appearance)
     loaderView.onTap = onLoaderTap
 
-    let shouldShowLoader = showsLoaderView && (showsLoader || canShowCompletedWork)
-    // Only a finished turn can expand its step list inline; a live turn shows the
-    // shimmer, not a static list. Never expand steps while the bubble is tall-collapsed
-    // (the cap is too short for a multi-block feed — crushing it overlaps glass cards).
-    let stepsExpanded = isProgressExpanded && canShowCompletedWork && !isContentCollapsed
+    // GPT-style settled follow-up: answer body first, steps under it — no "Worked"
+    // header on top. Bridge CLI turns keep the Worked summary.
+    let isNativeToolFollowUp =
+      !isStreaming && hasDisplayText && hasToolProgressItems && runtime == nil
+      && !messageId.hasPrefix("bridge-") && !messageId.hasPrefix("stream-")
+      && !messageId.hasPrefix("lan-")
+
+    // Live tool turns always stream the interleaved feed under the shimmer. Settled
+    // native follow-ups keep steps expanded under the answer body. Never expand
+    // while tall-collapsed.
+    let stepsExpanded =
+      !isContentCollapsed
+      && (
+        (isStreaming && hasToolProgressItems)
+          || (isProgressExpanded && canShowCompletedWork)
+          || isNativeToolFollowUp
+      )
+
+    let shouldShowLoader =
+      showsLoaderView
+      && (showsLoader || (canShowCompletedWork && !isNativeToolFollowUp))
 
     if shouldShowLoader {
       let loaderText: String
-      if showsLoader {
+      let teamWorkerItems = progressItems.filter { $0.itemType == "teamworker" }
+      if !teamWorkerItems.isEmpty {
+        // Supervisor team run: the header states the TEAM's condition, not the last
+        // tool step (the worker rows below carry the per-agent detail).
+        let doneCount = teamWorkerItems.filter {
+          let s = ($0.status ?? "").lowercased()
+          return s == "done" || s == "completed" || s == "failed" || s == "skipped"
+        }.count
+        if showsLoader {
+          loaderText =
+            doneCount > 0
+            ? "Team running · \(doneCount)/\(teamWorkerItems.count) done"
+            : "Team running"
+        } else if let ms = runtime?.durationMs, ms > 0 {
+          loaderText = "Team finished · \(ChatListRow.TeamWorkerStatus.formatDuration(ms))"
+        } else {
+          loaderText = "Team finished"
+        }
+      } else if showsLoader {
         // Live turn: shimmer the tool action in flight ("Edit chat.ex", "Run …"). Prefer
         // the last NON-text node so the shimmer never echoes the narration prose that is
         // already rendered (in full) inline in the interleaved feed below; fall back to a
@@ -743,7 +824,7 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
       }
       // Keep the work feed visible so the row never looks frozen; it owns the live
       // narration + tool steps until the turn finishes.
-      positionSummaryViews(belowText: false)
+      positionSummaryViews()
       return
     }
 
@@ -796,7 +877,7 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
         blockHeightConstraints[0].constant = height
       }
       _ = previewBlocks
-      positionSummaryViews(belowText: false)
+      positionSummaryViews()
       return
     }
 
@@ -889,9 +970,12 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
       }
     }
 
-    // The work wrapper stays at the top; when expanded, its own stack owns the
-    // progress/timeline. The answer body below is only for finished/non-live text.
-    positionSummaryViews(belowText: false)
+    // Chronological, always: the intent line and the steps the agent ran come FIRST, the
+    // answer settles underneath — the same order the user watched it stream, and the same
+    // order the bridge CLIs use. Putting the body on top (the old "GPT-style" native
+    // follow-up layout) read as scrambled: the summary appeared above the "I'll check…"
+    // intent that produced it, with the reasoning row trailing at the bottom.
+    positionSummaryViews()
   }
 
   /// Plain preview for tall-collapsed agent bubbles: drop fenced code (it needs a
@@ -921,27 +1005,25 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
     return joined
   }
 
-  /// Place the loader/work log at the top. For live turns, `stepsStack` owns the
-  /// streamed answer text plus progress rows; for completed turns it owns the expanded
-  /// work details. The diff/runtime summary always stays last.
-  private func positionSummaryViews(belowText: Bool) {
+  /// Place the loader/work log above the answer body: header, work feed, then the response
+  /// blocks, with the runtime summary always last. One order for every provider and for both
+  /// the live and settled rendering of the same turn.
+  private func positionSummaryViews() {
     guard stackView.arrangedSubviews.contains(runtimeSummaryView) else { return }
-    if belowText {
-      for view in [loaderView, stepsStack] {
+    // Detach both so re-insert order is deterministic.
+    for view in [loaderView, stepsStack] {
+      if stackView.arrangedSubviews.contains(view) {
         stackView.removeArrangedSubview(view)
-        stackView.insertArrangedSubview(view, at: max(0, stackView.arrangedSubviews.count - 1))
+        view.removeFromSuperview()
       }
-    } else {
-      stackView.removeArrangedSubview(loaderView)
-      stackView.insertArrangedSubview(loaderView, at: 0)
-      stackView.removeArrangedSubview(stepsStack)
-      stackView.insertArrangedSubview(stepsStack, at: 1)
     }
+    stackView.insertArrangedSubview(loaderView, at: 0)
+    stackView.insertArrangedSubview(stepsStack, at: 1)
     // Spacing follows each view across reordering and is ignored while a view is
     // hidden. Keep gaps tight so the live text/progress timeline reads as one
     // continuous shape under the Working header.
-    stackView.setCustomSpacing(isLiveTurn ? 6.0 : 8.0, after: loaderView)
-    stackView.setCustomSpacing(isLiveTurn ? 6.0 : 8.0, after: stepsStack)
+    stackView.setCustomSpacing(isLiveTurn ? 6.0 : 10.0, after: loaderView)
+    stackView.setCustomSpacing(isLiveTurn ? 6.0 : 10.0, after: stepsStack)
   }
 
   // Completed-turn summary line. Matches the Claude Code / Codex "Worked for Xs"
@@ -1051,29 +1133,13 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
     runtime: ChatListRow.AgentRuntimeSummary?,
     appearance: VibeAgentKitChatAppearance
   ) {
-    guard let runtime,
-      runtime.teamRunId != nil || runtime.teamMode?.lowercased() == "group_team"
-    else {
-      teamHeaderLabel.text = nil
-      teamHeaderLabel.isHidden = true
-      return
-    }
-
-    let worker = (runtime.teamWorker ?? runtime.provider ?? "Agent").capitalized
-    var parts = ["TEAM", worker]
-    if let index = runtime.teamWorkers.firstIndex(where: {
-      $0.caseInsensitiveCompare(runtime.teamWorker ?? runtime.provider ?? "") == .orderedSame
-    }), runtime.teamWorkers.count > 1 {
-      parts.append("\(index + 1) of \(runtime.teamWorkers.count)")
-    }
-    if let computer = runtime.computerLabel, !computer.isEmpty {
-      parts.append(computer)
-    }
-    teamHeaderLabel.text = parts.joined(separator: "  ·  ")
-    teamHeaderLabel.font = UIFont.systemFont(ofSize: 11.5, weight: .bold)
-    teamHeaderLabel.textColor = vibeAgentKitColorWithAlpha(appearance.primary, 0.92)
-    teamHeaderLabel.accessibilityLabel = "Team run, \(worker)"
-    teamHeaderLabel.isHidden = false
+    // The brown "TEAM · Codex · N of M · <device>" footer was noisy clutter in the
+    // list — the avatar + per-worker rows already identify the run and its members.
+    // Suppress it entirely (kept as a no-op so the call sites stay put).
+    _ = runtime
+    _ = appearance
+    teamHeaderLabel.text = nil
+    teamHeaderLabel.isHidden = true
   }
 
   var onToggleRuntimeExpand: (() -> Void)?
@@ -1120,6 +1186,271 @@ final class VibeAgentKitAssistantMessageBodyView: UIView {
 // and the file slice it read (fallback "Reading…"); everything else → its output.
 // All rows self-size (no explicit heights) so the table's automaticDimension grows
 // the cell as a row opens.
+// One worker of a supervisor team run, rendered inside the lead bubble's feed: the
+// agent's avatar (same resolver as the floating group avatars), its name, a live
+// status line ("working…", the last step label, "done · 2m"), a spinner while it
+// runs, and a chevron. Always tappable — opens that worker's read-only detail view.
+// The status label mutates in place across stream frames (single line, fixed row
+// height), so worker progress is visible without re-flowing the cell.
+private final class VibeAgentKitTeamWorkerRowView: UIView {
+  private let header = UIControl()
+  private let avatarView = SenderRunAvatarView()
+  private let nameLabel = UILabel()
+  private let statusLabel = UILabel()
+  // A running worker shows a shimmer sweep across its status text instead of a
+  // spinner — the status label mutates in place, so a swept highlight reads as
+  // "live" without a busy indicator. The mask keeps text ≥35% visible.
+  private let statusShimmerMask = CAGradientLayer()
+  private var isShimmering = false
+  private let doneCheck = UIImageView()
+  private let chevron = UIImageView()
+  var onTap: (() -> Void)?
+
+  // Live elapsed clock. `runningStartedAtMs` is the server-stamped start (epoch ms),
+  // non-nil only while a live worker should tick; the 1Hz timer re-renders the status
+  // label ("editing X · 4m 12s") without any stream frame. `terminated` latches a
+  // settled worker so a late out-of-order "running" frame can't restart the clock.
+  private var elapsedTimer: Timer?
+  private var runningStartedAtMs: Int64?
+  private var baseStatusText: String = ""
+  private var statusTextAttributes: [NSAttributedString.Key: Any] = [:]
+  private var terminated = false
+  private var latchedStartedAtMs: Int64?
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    setup()
+  }
+
+  required init?(coder: NSCoder) { return nil }
+
+  deinit { elapsedTimer?.invalidate() }
+
+  private func setup() {
+    backgroundColor = .clear
+    header.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(header)
+    NSLayoutConstraint.activate([
+      header.topAnchor.constraint(equalTo: topAnchor),
+      header.leadingAnchor.constraint(equalTo: leadingAnchor),
+      header.trailingAnchor.constraint(equalTo: trailingAnchor),
+      header.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
+
+    let stack = UIStackView()
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .horizontal
+    stack.alignment = .center
+    stack.spacing = 8.0
+    stack.isUserInteractionEnabled = false
+    header.addSubview(stack)
+
+    avatarView.translatesAutoresizingMaskIntoConstraints = false
+
+    nameLabel.translatesAutoresizingMaskIntoConstraints = false
+    nameLabel.numberOfLines = 1
+    nameLabel.setContentHuggingPriority(.required, for: .horizontal)
+    nameLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+    statusLabel.translatesAutoresizingMaskIntoConstraints = false
+    statusLabel.numberOfLines = 1
+    statusLabel.lineBreakMode = .byTruncatingTail
+    statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+    statusShimmerMask.startPoint = CGPoint(x: 0, y: 0.5)
+    statusShimmerMask.endPoint = CGPoint(x: 1, y: 0.5)
+    statusShimmerMask.colors = [
+      UIColor(white: 1.0, alpha: 0.35).cgColor,
+      UIColor(white: 1.0, alpha: 1.0).cgColor,
+      UIColor(white: 1.0, alpha: 0.35).cgColor,
+    ]
+    statusShimmerMask.locations = [0.0, 0.5, 1.0]
+
+    doneCheck.translatesAutoresizingMaskIntoConstraints = false
+    doneCheck.contentMode = .scaleAspectFit
+    doneCheck.image = UIImage(systemName: "checkmark.circle.fill")?
+      .withRenderingMode(.alwaysTemplate)
+    doneCheck.setContentHuggingPriority(.required, for: .horizontal)
+
+    chevron.translatesAutoresizingMaskIntoConstraints = false
+    chevron.contentMode = .scaleAspectFit
+    chevron.image = UIImage(systemName: "chevron.right")?.withRenderingMode(.alwaysTemplate)
+    chevron.setContentHuggingPriority(.required, for: .horizontal)
+    chevron.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+    // Avatar-only identity: the avatar alone names the worker (no "Claude/Grok/Agy"
+    // text). The status label carries the live narration ("editing X"); the avatar
+    // carries who. nameLabel is kept as a field for a11y but not shown in the row.
+    stack.addArrangedSubview(avatarView)
+    stack.addArrangedSubview(statusLabel)
+    stack.addArrangedSubview(doneCheck)
+    stack.addArrangedSubview(chevron)
+
+    NSLayoutConstraint.activate([
+      stack.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+      stack.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+      stack.topAnchor.constraint(equalTo: header.topAnchor, constant: 5.0),
+      stack.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -5.0),
+      avatarView.widthAnchor.constraint(equalToConstant: 22.0),
+      avatarView.heightAnchor.constraint(equalToConstant: 22.0),
+      doneCheck.widthAnchor.constraint(equalToConstant: 15.0),
+      doneCheck.heightAnchor.constraint(equalToConstant: 15.0),
+      chevron.widthAnchor.constraint(equalToConstant: 10.0),
+      chevron.heightAnchor.constraint(equalToConstant: 12.0),
+    ])
+
+    header.addAction(UIAction { [weak self] _ in self?.onTap?() }, for: .touchUpInside)
+  }
+
+  func configure(item: VibeAgentKitProgressItem, appearance: VibeAgentKitChatAppearance) {
+    let worker = item.subagentType ?? ""
+    let name = item.label.isEmpty ? worker.capitalized : item.label
+    avatarView.configure(
+      name: name,
+      avatarUrl: SenderRunAvatarView.agentAvatarURL(for: worker),
+      tint: appearance.primary,
+      provider: worker)
+    nameLabel.attributedText = NSAttributedString(
+      string: name,
+      attributes: [
+        .font: UIFont.systemFont(ofSize: 14.0, weight: .semibold),
+        .foregroundColor: appearance.text,
+      ])
+    let s = (item.status ?? "").lowercased()
+    let running = vibeAgentKitRunningStepStatuses.contains(s) || s == "starting"
+    let done = s == "done" || s == "completed"
+    let failed = s == "failed" || s == "error"
+    let rawStatus = item.messagePreview ?? ""
+    // Never blank: a stopped/settled worker reads a real state, not an empty row.
+    let statusText: String =
+      !rawStatus.isEmpty
+      ? rawStatus
+      : done ? "done" : failed ? "failed" : s == "skipped" ? "skipped"
+        : running ? "working…" : "stopped"
+
+    // Live elapsed clock — tick from the server-stamped spawn moment while running.
+    // Terminal latch: once done/failed, never re-arm on a late frame; a genuinely new
+    // run (different startedAt) for the same reused row clears the latch.
+    if done || failed {
+      terminated = true
+    } else if running, item.startedAtMs != latchedStartedAtMs {
+      terminated = false
+      latchedStartedAtMs = item.startedAtMs
+    }
+    runningStartedAtMs = (running && !terminated) ? item.startedAtMs : nil
+
+    baseStatusText = statusText
+    // Tabular figures so the ticking seconds never jitter the single-line row width
+    // (no re-measure): only the text updates, height is fixed.
+    statusTextAttributes = [
+      .font: UIFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .regular),
+      .foregroundColor: vibeAgentKitColorWithAlpha(appearance.textSecondary, 0.78),
+    ]
+    renderStatusText()
+    updateElapsedTimerState()
+    // Shimmer only while genuinely working (running AND with a real live status).
+    // A blank "starting" with no progress, a barrier "waiting" row, or a terminal
+    // row is static — the shimmer must mean "actively working", nothing else.
+    if running && !rawStatus.isEmpty { startStatusShimmer() } else { stopStatusShimmer() }
+    doneCheck.isHidden = !(done || failed)
+    doneCheck.tintColor =
+      failed
+      ? UIColor.systemRed.withAlphaComponent(0.85)
+      : UIColor.systemGreen.withAlphaComponent(0.85)
+    if failed {
+      doneCheck.image = UIImage(systemName: "xmark.circle.fill")?
+        .withRenderingMode(.alwaysTemplate)
+    } else if done {
+      doneCheck.image = UIImage(systemName: "checkmark.circle.fill")?
+        .withRenderingMode(.alwaysTemplate)
+    }
+    // Arrow only when the row can actually open something — a finished worker (its
+    // steps/summary), or one that is genuinely working right now. A settled "stopped"
+    // / "waiting" / bare row has nothing to reveal, so no chevron and no tap target.
+    let tappable = done || failed || (running && !rawStatus.isEmpty)
+    chevron.isHidden = !tappable
+    header.isUserInteractionEnabled = tappable
+    chevron.tintColor = vibeAgentKitColorWithAlpha(appearance.textSecondary, 0.6)
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    if isShimmering { statusShimmerMask.frame = statusLabel.bounds }
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    // A windowless row (offscreen sizing template, or a reused cell scrolled away)
+    // must never tick — that was the prewarm-timer leak class. Re-arms on return.
+    updateElapsedTimerState()
+  }
+
+  // Re-render the status label as base text + live elapsed suffix. Recomputed from the
+  // absolute start each tick (never an incrementing counter), so it self-corrects after
+  // the app is backgrounded and clamps a device/server clock skew to ≥ 0.
+  private func renderStatusText() {
+    var text = baseStatusText
+    if let started = runningStartedAtMs {
+      let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+      let suffix = Self.liveElapsed(Int(max(0, nowMs - started)))
+      text = baseStatusText.isEmpty ? suffix : "\(baseStatusText) · \(suffix)"
+    }
+    statusLabel.attributedText = NSAttributedString(string: text, attributes: statusTextAttributes)
+    if isShimmering { statusShimmerMask.frame = statusLabel.bounds }
+  }
+
+  private func updateElapsedTimerState() {
+    let shouldTick = runningStartedAtMs != nil && window != nil
+    if shouldTick {
+      guard elapsedTimer == nil else { return }  // never stack across stream frames
+      let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+        self?.renderStatusText()
+      }
+      timer.tolerance = 0.2
+      // .common so the clock keeps ticking while the chat list is being scrolled.
+      RunLoop.main.add(timer, forMode: .common)
+      elapsedTimer = timer
+    } else if let timer = elapsedTimer {
+      timer.invalidate()
+      elapsedTimer = nil
+    }
+  }
+
+  // Always shows seconds under an hour so the clock visibly ticks every second, and
+  // stays in the "Xm Ys" family the settled row uses ("done · 4m 30s").
+  static func liveElapsed(_ ms: Int) -> String {
+    let total = max(0, ms / 1000)
+    if total < 60 { return "\(total)s" }
+    let m = total / 60
+    let sec = total % 60
+    if m < 60 { return String(format: "%dm %02ds", m, sec) }
+    let h = m / 60
+    let rm = m % 60
+    return String(format: "%dh %02dm", h, rm)
+  }
+
+  private func startStatusShimmer() {
+    if isShimmering { return }
+    isShimmering = true
+    statusLabel.layer.mask = statusShimmerMask
+    statusShimmerMask.frame = statusLabel.bounds
+    let anim = CABasicAnimation(keyPath: "locations")
+    anim.fromValue = [-0.6, -0.3, 0.0]
+    anim.toValue = [1.0, 1.3, 1.6]
+    anim.duration = 1.15
+    anim.repeatCount = .infinity
+    statusShimmerMask.add(anim, forKey: "vibe.worker.shimmer")
+  }
+
+  private func stopStatusShimmer() {
+    if !isShimmering { return }
+    isShimmering = false
+    statusShimmerMask.removeAnimation(forKey: "vibe.worker.shimmer")
+    statusLabel.layer.mask = nil
+  }
+}
+
 // A compact, always-tappable row for a Claude subagent (Task tool). Shows the
 // subagent flavor ("Subagent · explore"), a live spinner while it runs, the step
 // count, and a chevron. Tapping opens the read-only subagent view; it never expands
@@ -1333,7 +1664,7 @@ private final class VibeAgentKitStepRowView: UIView {
       para.lineBreakMode = .byTruncatingTail
       titleLabel.attributedText = VibeAgentKitAssistantMessageBodyView.styledStepLabel(
         labelText,
-        font: UIFont.systemFont(ofSize: streaming ? 13.4 : 14.75, weight: .regular),
+        font: UIFont.systemFont(ofSize: streaming ? 14.5 : 15.5, weight: .regular),
         baseColor: previewTextColor,
         paragraph: para
       )
@@ -2434,9 +2765,6 @@ final class VibeAgentKitMessageCell: UITableViewCell {
     appearance.userBubbleText
   }
 
-  private func userBubbleBorderColor(for appearance: VibeAgentKitChatAppearance) -> UIColor {
-    appearance.userBubbleBorder
-  }
 
   private func applyCurrentBubbleShape() {
     if currentIsUser {
@@ -2774,8 +3102,10 @@ final class VibeAgentKitStepDetailViewController: UIViewController {
     case "thinking": return "Thinking"
     case "compacting": return "Compacting"
     case "mcp":
-      if let tool = item.fileName, !tool.isEmpty { return "MCP · \(tool)" }
-      return item.label.isEmpty ? "MCP tool" : item.label
+      if let tool = item.fileName, !tool.isEmpty {
+        return chatAgentPrettyMcpLabel("MCP · \(tool)")
+      }
+      return item.label.isEmpty ? "MCP tool" : chatAgentPrettyMcpLabel(item.label)
     case "tool": return item.label.isEmpty ? "Tool" : item.label
     default: return item.label.isEmpty ? "Step" : item.label
     }

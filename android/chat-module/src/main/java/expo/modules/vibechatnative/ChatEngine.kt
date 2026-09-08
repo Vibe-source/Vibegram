@@ -1599,18 +1599,23 @@ internal object ChatEngine {
           }
         }
 
+        // A 1:1 DM with a peer key is the one path whose encryptedContent is real
+        // ciphertext, so a cleartext copy beside it was a leak. iOS omits it there too.
+        val isRealE2EDM = !isGroup && friendPublicKey != null
         val wirePayload = linkedMapOf<String, Any?>(
           "id" to messageId,
           "fromId" to userId,
           "encryptedContent" to encryptedContent,
           "timestamp" to timestampMs,
           "type" to type,
-          "pushPreview" to pushPreview,
+          // Content-free stand-in: lets the server shape a push without reading the text.
+          "pushKind" to type,
           "mediaUrl" to null,
           "fileName" to null,
           "latitude" to null,
           "longitude" to null,
         )
+        if (!isRealE2EDM) wirePayload["pushPreview"] = pushPreview
         if ((payload["agentMention"] as? Boolean) == true) {
           wirePayload["agentMention"] = true
           (payload["agentText"] as? String)?.takeIf { it.isNotBlank() }?.let {

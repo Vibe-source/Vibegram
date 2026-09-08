@@ -1,0 +1,45 @@
+{
+  "session": "01a04235-75c4-7bd3-a321-d9d76dbd346f",
+  "task": "please fix the handle send cell and rtl text cu…",
+  "steps": [
+    {
+      "what": "Add free-float motion to MetalKeyMaskView particle shader",
+      "id": "1",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Rewrite view-once cover: blurred image + particle shader + small 1/2 badge",
+      "id": "2",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Hide sharp media/tail/video under sealed view-once cells",
+      "id": "3",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Build Vibe scheme and fix compile errors",
+      "id": "4",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787817967
+}

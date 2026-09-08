@@ -1,17 +1,10 @@
 defmodule Vibe.AI.Tools.Vision do
   @moduledoc """
   Image analysis tool using Claude's vision capabilities.
-
-  Claude can:
-  - Describe images in detail
-  - Read text (OCR)
-  - Identify objects, people, places
-  - Answer questions about images
-
-  This is FREE - included with Claude API calls.
   """
 
   require Logger
+  alias Vibe.Net.SafeURL
 
   @claude_api "https://api.anthropic.com/v1/messages"
   @claude_model "claude-sonnet-4-20250514"
@@ -48,7 +41,6 @@ defmodule Vibe.AI.Tools.Vision do
     unless api_key do
       %{error: "ANTHROPIC_API_KEY not configured"}
     else
-      # Download and convert image to base64 if needed
       case prepare_image(image_url) do
         {:ok, image_content} ->
           body = Jason.encode!(%{
@@ -101,7 +93,6 @@ defmodule Vibe.AI.Tools.Vision do
 
   defp prepare_image(url) when is_binary(url) do
     cond do
-      # Direct URL - Claude can handle these
       String.starts_with?(url, "http") ->
         {:ok, %{
           type: "image",
@@ -111,9 +102,7 @@ defmodule Vibe.AI.Tools.Vision do
           }
         }}
 
-      # Base64 data URL
       String.starts_with?(url, "data:image/") ->
-        # Extract media type and base64 data
         [header, data] = String.split(url, ",", parts: 2)
         media_type = header
           |> String.replace("data:", "")
@@ -138,8 +127,9 @@ defmodule Vibe.AI.Tools.Vision do
   Useful for images that Claude can't access directly.
   """
   def fetch_and_encode(url) do
-    case Finch.build(:get, url) |> Finch.request(Vibe.Finch) do
-      {:ok, %{status: 200, body: body, headers: headers}} ->
+    with {:ok, _uri} <- SafeURL.validate(url),
+         {:ok, %{status: 200, body: body, headers: headers}} <-
+           Finch.build(:get, url) |> Finch.request(Vibe.Finch) do
         content_type = Enum.find_value(headers, "image/jpeg", fn
           {"content-type", ct} -> ct
           _ -> nil
@@ -147,9 +137,8 @@ defmodule Vibe.AI.Tools.Vision do
 
         base64 = Base.encode64(body)
         {:ok, "data:#{content_type};base64,#{base64}"}
-
-      _ ->
-        {:error, "Failed to download image"}
+    else
+      _ -> {:error, "Failed to download image"}
     end
   end
 end

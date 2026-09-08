@@ -1,0 +1,23 @@
+[Unit]
+Description=Cloudflare Tunnel
+# Credentials are unsealed into tmpfs by vibe-env.service, so it has to win the race.
+After=network-online.target vibe-env.service
+Wants=network-online.target
+Requires=vibe-env.service
+
+[Service]
+TimeoutStartSec=0
+Type=notify
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

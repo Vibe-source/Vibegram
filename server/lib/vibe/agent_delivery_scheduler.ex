@@ -5,6 +5,7 @@ defmodule Vibe.AgentDeliveryScheduler do
   require Logger
 
   alias Vibe.Agents
+  alias Vibe.Net.SafeURL
 
   @poll_interval_ms 15_000
   @max_attempts 3
@@ -24,6 +25,8 @@ defmodule Vibe.AgentDeliveryScheduler do
     Agents.due_delivery_events()
     |> Enum.each(&deliver_event/1)
 
+    _ = Vibe.AI.AgentDecisions.expire_due_tasks()
+
     Process.send_after(self(), :poll, @poll_interval_ms)
     {:noreply, state}
   end
@@ -32,7 +35,8 @@ defmodule Vibe.AgentDeliveryScheduler do
     body = Jason.encode!(event.request_body || %{})
     timestamp = Integer.to_string(System.system_time(:second))
     
-    with {:ok, secret} <- Agents.callback_signing_secret(event.agent) do
+    with {:ok, _uri} <- SafeURL.validate(event.target_url),
+         {:ok, secret} <- Agents.callback_signing_secret(event.agent) do
       signature =
         :crypto.mac(:hmac, :sha256, secret, "#{timestamp}.#{body}")
         |> Base.encode16(case: :lower)
@@ -62,6 +66,10 @@ defmodule Vibe.AgentDeliveryScheduler do
           handle_failure(event, nil, inspect(reason))
       end
     else
+      {:error, reason}
+      when reason in [:invalid_scheme, :missing_host, :invalid_url, :host_not_found, :blocked_address] ->
+        handle_failure(event, nil, "Unsafe callback URL: #{inspect(reason)}")
+
       {:error, :missing_encrypted_secret} ->
         handle_failure(event, nil, "Missing callback signing secret. Rotate the agent secret to re-enable signed callbacks.")
 

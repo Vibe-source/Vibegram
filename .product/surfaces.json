@@ -1,0 +1,123 @@
+[
+  {
+    "id": "home",
+    "title": "Home",
+    "because": "every product has an entry point",
+    "obligations": [
+      "DESIGN-001"
+    ],
+    "required": true
+  },
+  {
+    "id": "privacy-policy",
+    "title": "Privacy policy",
+    "because": "brand.collects = [account identifiers, profile and contact data, message and media metadata, group and channel content, device push tokens, network and security logs, AI prompts and tool data]",
+    "obligations": [
+      "DATA-RETENTION"
+    ],
+    "required": true
+  },
+  {
+    "id": "data-export",
+    "title": "Export my data",
+    "because": "brand.collects = [account identifiers, profile and contact data, message and media metadata, group and channel content, device push tokens, network and security logs, AI prompts and tool data]",
+    "obligations": [
+      "DATA-EXPORT-COMPLETE"
+    ],
+    "required": true
+  },
+  {
+    "id": "account-deletion",
+    "title": "Delete my account",
+    "because": "brand.collects = [account identifiers, profile and contact data, message and media metadata, group and channel content, device push tokens, network and security logs, AI prompts and tool data]; profile.class = mobile holds per-customer state",
+    "obligations": [
+      "DELETE-REALLY-DELETES"
+    ],
+    "required": true
+  },
+  {
+    "id": "admin-vibe-operations",
+    "title": "Admin — Vibe operations",
+    "because": "brand.operators includes \"Vibe operations\"",
+    "obligations": [
+      "ADMIN-SEPARATE-AUTHN",
+      "ADMIN-ACTIONS-AUDITED"
+    ],
+    "required": true
+  },
+  {
+    "id": "admin-vibe-support",
+    "title": "Admin — Vibe support",
+    "because": "brand.operators includes \"Vibe support\"",
+    "obligations": [
+      "ADMIN-SEPARATE-AUTHN",
+      "ADMIN-ACTIONS-AUDITED"
+    ],
+    "required": true
+  },
+  {
+    "id": "admin-vibe-security",
+    "title": "Admin — Vibe security",
+    "because": "brand.operators includes \"Vibe security\"",
+    "obligations": [
+      "ADMIN-SEPARATE-AUTHN",
+      "ADMIN-ACTIONS-AUDITED"
+    ],
+    "required": true
+  },
+  {
+    "id": "signup",
+    "title": "Sign up",
+    "because": "profile.class = mobile holds per-customer state",
+    "obligations": [],
+    "required": true
+  },
+  {
+    "id": "login",
+    "title": "Sign in",
+    "because": "profile.class = mobile holds per-customer state",
+    "obligations": [
+      "AUTH-001"
+    ],
+    "required": true
+  },
+  {
+    "id": "account-recovery",
+    "title": "Recover account",
+    "because": "profile.class = mobile holds per-customer state",
+    "obligations": [
+      "AUTH-RECOVERY-NO-TAKEOVER"
+    ],
+    "required": true
+  },
+  {
+    "id": "session-revocation",
+    "title": "Sign out everywhere",
+    "because": "profile.class = mobile holds per-customer state",
+    "obligations": [
+      "AUTH-SESSION-REVOKE"
+    ],
+    "required": true
+  },
+  {
+    "id": "consent",
+    "title": "Cookies and consent",
+    "because": "profile.compliance = [GDPR]",
+    "obligations": [],
+    "required": true
+  },
+  {
+    "id": "dpa",
+    "title": "Data processing agreement",
+    "because": "profile.compliance = [GDPR]",
+    "obligations": [],
+    "required": false
+  },
+  {
+    "id": "subprocessors",
+    "title": "Subprocessors",
+    "because": "profile.compliance = [GDPR]",
+    "obligations": [],
+    "required": false
+  }
+]

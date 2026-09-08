@@ -1,0 +1,18 @@
+{
+  "id": 10,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "An outgoing media row can only read as failed via status=='error' (isDeliveryFailed is never set by ChatEngine, only ChatAgentView). For media that means a NON-retryable uploadLocalMediaLocked reason, all of which fire before a single byte moves: invalid_local_media_uri, media_file_missing, media_file_read_failed, media_encrypt_failed, invalid_upload_url. Retryable reasons already hold the row at 'pending' and queue a draft. Added invalid_upload_url to the retryable set and a 0.5s re-check on media_file_missing.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787742349,
+  "updated_at": 1787742349
+}

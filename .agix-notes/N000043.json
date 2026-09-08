@@ -1,0 +1,18 @@
+{
+  "id": 43,
+  "status": "open",
+  "priority": 1,
+  "kind": "todo",
+  "body": "Ordered commit fan-out contract is docs/mls-commit-fanout.md. Not coded. Existing members never receive Commits; open() rejects them; adding a 3rd member splits the group permanently. Next coding: mls_commits + epoch lock, then FFI apply_commit, then iOS post/apply. Stay out of ChatListView/ChatInputBar.",
+  "selector": "core/vibe_secure/src/session.rs::VibeSecureSession::open",
+  "path": "core/vibe_secure/src/session.rs",
+  "fqn": "VibeSecureSession::open",
+  "line": 344,
+  "anchor_hash": "010fb3d479081174e9867b8d0d4d7932ff1b9481246a04b64a9faf25a3ba0d18",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787751678,
+  "updated_at": 1787751678
+}

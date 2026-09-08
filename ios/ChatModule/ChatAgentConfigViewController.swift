@@ -680,7 +680,7 @@ final class ChatAgentConfigViewController: UIViewController {
        request.setValue(authHeader, forHTTPHeaderField: "Authorization")
     }
     
-    let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+    let task = VibeHTTP.shared.dataTask(with: request) { [weak self] data, response, error in
        DispatchQueue.main.async {
           UIView.animate(withDuration: 0.2, animations: { overlay.alpha = 0.0 }) { _ in overlay.removeFromSuperview() }
           guard let self = self, let data = data, let text = String(data: data, encoding: .utf8) else {

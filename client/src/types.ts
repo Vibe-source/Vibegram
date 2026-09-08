@@ -3,7 +3,7 @@ export interface Message {
     id: string;
     fromId: string;
     encryptedContent: string;
-    type: 'text' | 'image' | 'voice' | 'call' | 'gif';
+    type: 'text' | 'image' | 'voice' | 'call' | 'gif' | 'file';
     mediaUrl?: string;
     timestamp: number;
     status?: 'sending' | 'pending' | 'sent' | 'delivered' | 'read' | 'error';
@@ -12,6 +12,19 @@ export interface Message {
     replyToId?: string;
     plaintext?: string; // Optional for decrypted cache
     extra?: string; // For encrypted captions
+    metadata?: {
+        isAgentMessage?: boolean;
+        fileName?: string;
+        mimeType?: string;
+        caption?: string;
+        attachment?: {
+            type?: string;
+            name?: string;
+            mimeType?: string;
+            caption?: string;
+        };
+        [key: string]: unknown;
+    };
 }
 
 export interface Chat {

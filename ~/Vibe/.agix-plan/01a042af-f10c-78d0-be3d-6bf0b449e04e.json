@@ -1,0 +1,45 @@
+{
+  "session": "01a042af-f10c-78d0-be3d-6bf0b449e04e",
+  "task": "there is issue for media i sent a media for use…",
+  "steps": [
+    {
+      "what": "Diagnose receiver media download/decrypt failure from logs",
+      "id": "1",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Trace media key delivery (sender → receiver) and local integrity checks",
+      "id": "2",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Fix the root cause so receiver can decrypt/open sent media",
+      "id": "3",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Build iOS and verify compile; append memory",
+      "id": "4",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787826532
+}

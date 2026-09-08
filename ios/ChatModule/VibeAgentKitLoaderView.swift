@@ -677,59 +677,6 @@ final class VibeAgentKitAgentLoaderView: UIControl {
     activityIconView.isHidden = false
   }
 
-  private func activityIconKind(for item: VibeAgentKitProgressItem?) -> VibeAgentKitChatVectorIcon.Kind {
-    guard let item else {
-      return .sparkles
-    }
-
-    let joined = [
-      item.platform,
-      item.tool,
-      item.itemType,
-      item.label,
-      item.eventType,
-    ]
-    .compactMap { $0?.lowercased() }
-    .joined(separator: " ")
-
-    if joined.contains("web") || joined.contains("search") || joined.contains("scrape") {
-      return .web
-    }
-    if joined.contains("telegram") {
-      return .platform
-    }
-    if joined.contains("whatsapp") || joined.contains("sms") || joined.contains("message") {
-      return .message
-    }
-    if joined.contains("instagram") {
-      return .platform
-    }
-    if joined.contains("email") || joined.contains("gmail") || joined.contains("outlook") {
-      return .email
-    }
-    if joined.contains("voice") || joined.contains("call") || joined.contains("phone") {
-      return .phone
-    }
-    if joined.contains("flight") || joined.contains("air") || joined.contains("travel") {
-      return .travel
-    }
-    if joined.contains("hotel") {
-      return .hotel
-    }
-    if joined.contains("shopping") || joined.contains("deal") || joined.contains("product")
-      || joined.contains("marketplace")
-    {
-      return .shopping
-    }
-    if joined.contains("document") || joined.contains("doc") {
-      return .document
-    }
-    if joined.contains("task") || joined.contains("schedule") {
-      return .task
-    }
-
-    return .sparkles
-  }
 
   private func startAnimating() {
     stopAnimating()

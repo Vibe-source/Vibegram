@@ -1,0 +1,82 @@
+# Supply-chain policy for the Rust core.
+#
+# This file is the thing that makes non-claim 10.2.5 in
+# ../docs/production-timeline-core-refactor.md retractable: without it, "the
+# dependency set is not audited" is simply true. It is a go/no-go gate before
+# P2 links the core into the app.
+#
+#   cargo deny check advisories bans licenses sources
+#
+# Run it on every core change, alongside the fmt/clippy/test gates in §11.1.
+
+[graph]
+# The core ships to iOS and Android. A dependency that only builds on a desktop
+# target is still a dependency we would be shipping, so no target filtering.
+all-features = true
+
+[advisories]
+version = 2
+# No ignores. An advisory against a crate embedded in a messaging client is a
+# stop-the-line event, not something to annotate away. If one lands, either the
+# dependency moves or the exception is argued in the doc with a date.
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses only. Anything reciprocal (GPL/AGPL/LGPL/MPL) is refused
+# outright rather than reviewed case by case: this crate is statically linked
+# into a closed-source app, so a copyleft dependency is not a licensing
+# question, it is a redistribution problem.
+#
+# This list is exactly what the current graph resolves to — cargo-deny reports
+# an unused allowance as an error, so an entry here is evidence something in the
+# tree needs it, not aspiration. Note `r-efi` is offered as
+# `LGPL-2.1-or-later OR MIT OR Apache-2.0`; we take it under MIT, which is why
+# no copyleft entry appears below.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.93
+
+# `vibe_core` carries `license = "UNLICENSED"`, which is not valid SPDX. It is
+# first-party and `publish = false`, so it is not a supply-chain input.
+private = { ignore = true }
+
+[bans]
+# `deny` for a duplicate version, not `warn`. Two copies of an AEAD or a base64
+# decoder in a security boundary is exactly the situation where a fix lands in
+# one and not the other.
+multiple-versions = "deny"
+wildcards = "deny"
+# `syn` resolves to both 2.x (via zeroize_derive) and 3.x (via serde_derive).
+# Skipped rather than denied because `syn` is a proc-macro dependency: it runs
+# at build time and no version of it is linked into the shipped binary. The
+# rationale for denying duplicates above is about two copies of a *runtime*
+# security primitive, which this is not.
+skip = [{ crate = "syn" }]
+# Nothing in this crate should ever pull in networking, a TLS stack, an async
+# runtime, or a time-zone database. Each of those would contradict a stated
+# property of the core (no I/O, no network, bounded binary size), so they are
+# refused at the dependency graph rather than caught in review.
+deny = [
+    { name = "tokio" },
+    { name = "async-std" },
+    { name = "reqwest" },
+    { name = "hyper" },
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "native-tls" },
+    { name = "chrono-tz" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# crates.io only. A git dependency in a shipped security boundary has no
+# reviewable version identity.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

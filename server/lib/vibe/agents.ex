@@ -15,6 +15,7 @@ defmodule Vibe.Agents do
   alias Vibe.AgentInvocation
   alias Vibe.AgentRun
   alias Vibe.AgentRunbook
+  alias Vibe.AI.ModelRegistry
   alias Vibe.Chat.Participant
   alias Vibe.Chat.Room
   alias Vibe.Subscriptions
@@ -33,15 +34,21 @@ defmodule Vibe.Agents do
 
   def quota_for_user(user_id) do
     used =
-      Repo.one(
-        from a in Agent,
-          where: a.owner_user_id == ^user_id and a.status != "archived",
-          select: count(a.id)
-      ) || 0
+      if is_nil(user_id) do
+        0
+      else
+        Repo.one(
+          from a in Agent,
+            where: a.owner_user_id == ^user_id and a.status != "archived",
+            select: count(a.id)
+        ) || 0
+      end
 
     limit = agent_limit_for_user(user_id)
     %{used: used, limit: limit, remaining: max(limit - used, 0)}
   end
+
+  def list_agents(nil), do: []
 
   def list_agents(owner_user_id) do
     Repo.all(
@@ -96,7 +103,8 @@ defmodule Vibe.Agents do
   end
 
   def create_agent(owner_user_id, attrs \\ %{}) do
-    with :ok <- ensure_quota(owner_user_id),
+    with {:ok, model_selection} <- ModelRegistry.resolve_selection(attrs),
+         :ok <- ensure_quota(owner_user_id),
          {:ok, secret_tuple} <- generate_secret_tuple(),
          {:ok, shadow_user} <- create_shadow_user(owner_user_id, attrs),
          {:ok, agent} <-
@@ -106,6 +114,8 @@ defmodule Vibe.Agents do
              agent_user_id: shadow_user.id,
              status: "draft",
              display_name: display_name_from_attrs(attrs),
+             model_provider: model_selection.provider,
+             model_id: model_selection.model_id,
              system_prompt: string_attr(attrs, "system_prompt") || "",
              prompt_variables: Vibe.AI.PromptVariables.normalize(attrs["prompt_variables"] || attrs[:prompt_variables]),
              persona: string_attr(attrs, "persona"),
@@ -127,43 +137,76 @@ defmodule Vibe.Agents do
              secret_hint: secret_tuple.hint
            })
            |> Repo.insert() do
+      agent = ensure_default_destination_chat(agent)
       {:ok, Repo.preload(agent, :agent_user), secret_tuple.secret}
     end
   end
+
+  defp ensure_default_destination_chat(%Agent{default_destination_chat_id: nil} = agent) do
+    with {:ok, chat_id, _status} <-
+           Vibe.Chat.ensure_dm_chat(agent.owner_user_id, agent.agent_user_id),
+         {:ok, updated} <-
+           agent
+           |> Ecto.Changeset.change(default_destination_chat_id: chat_id)
+           |> Repo.update() do
+      updated
+    else
+      _ -> agent
+    end
+  end
+
+  defp ensure_default_destination_chat(%Agent{} = agent), do: agent
 
   def update_agent(%Agent{} = agent, attrs, owner_user_id) do
     if agent.owner_user_id != owner_user_id do
       {:error, :forbidden}
     else
-      Repo.transaction(fn ->
-        maybe_update_shadow_user!(agent, attrs)
+      with {:ok, model_selection} <-
+             ModelRegistry.resolve_selection(attrs, %{
+               provider: agent.model_provider,
+               model_id: agent.model_id
+             }) do
+        Repo.transaction(fn ->
+          maybe_update_shadow_user!(agent, attrs)
 
-        agent
-        |> Agent.changeset(%{
-          display_name: display_name_from_attrs(attrs, agent.display_name),
-          system_prompt: Map.get(attrs, "system_prompt", Map.get(attrs, :system_prompt, agent.system_prompt || "")),
-          prompt_variables: update_prompt_variables(agent, attrs),
-          persona: map_get(attrs, "persona", agent.persona),
-          avatar_url: map_get(attrs, "avatar_url", agent.avatar_url),
-          welcome_message: map_get(attrs, "welcome_message", agent.welcome_message),
-          enabled_tools: normalize_enabled_tools(Map.get(attrs, "enabled_tools", Map.get(attrs, :enabled_tools, agent.enabled_tools))),
-          output_modes: normalize_output_modes(Map.get(attrs, "output_modes", Map.get(attrs, :output_modes, agent.output_modes))),
-          voice_provider: map_get(attrs, "voice_provider", agent.voice_provider),
-          voice_profile: map_get(attrs, "voice_profile", agent.voice_profile),
-          callback_url: normalize_callback_url(Map.get(attrs, "callback_url", Map.get(attrs, :callback_url, agent.callback_url))),
-          autonomy_mode: normalize_autonomy_mode(Map.get(attrs, "autonomy_mode", Map.get(attrs, :autonomy_mode, agent.autonomy_mode))),
-          default_destination_chat_id: string_or_existing(agent.default_destination_chat_id, attrs, "default_destination_chat_id"),
-          event_types_enabled: normalize_optional_string_list(Map.get(attrs, "event_types_enabled", Map.get(attrs, :event_types_enabled, agent.event_types_enabled))),
-          cost_budget_daily: integer_or_existing(agent.cost_budget_daily, attrs, "cost_budget_daily"),
-          cost_budget_monthly: integer_or_existing(agent.cost_budget_monthly, attrs, "cost_budget_monthly"),
-          approval_rules: map_or_existing(agent.approval_rules || %{}, attrs, "approval_rules"),
-          status: normalize_status_update(agent, attrs)
-        })
-        |> Repo.update!()
-      end)
-      |> case do
-        {:ok, updated} -> {:ok, Repo.preload(updated, :agent_user)}
-        {:error, reason} -> {:error, reason}
+          updated =
+            agent
+            |> Agent.owner_changeset(%{
+              display_name: display_name_from_attrs(attrs, agent.display_name),
+              model_provider: model_selection.provider,
+              model_id: model_selection.model_id,
+              system_prompt: Map.get(attrs, "system_prompt", Map.get(attrs, :system_prompt, agent.system_prompt || "")),
+              prompt_variables: update_prompt_variables(agent, attrs),
+              persona: map_get(attrs, "persona", agent.persona),
+              avatar_url: map_get(attrs, "avatar_url", agent.avatar_url),
+              welcome_message: map_get(attrs, "welcome_message", agent.welcome_message),
+              enabled_tools: normalize_enabled_tools(Map.get(attrs, "enabled_tools", Map.get(attrs, :enabled_tools, agent.enabled_tools))),
+              output_modes: normalize_output_modes(Map.get(attrs, "output_modes", Map.get(attrs, :output_modes, agent.output_modes))),
+              voice_provider: map_get(attrs, "voice_provider", agent.voice_provider),
+              voice_profile: map_get(attrs, "voice_profile", agent.voice_profile),
+              callback_url: normalize_callback_url(Map.get(attrs, "callback_url", Map.get(attrs, :callback_url, agent.callback_url))),
+              autonomy_mode: normalize_autonomy_mode(Map.get(attrs, "autonomy_mode", Map.get(attrs, :autonomy_mode, agent.autonomy_mode))),
+              default_destination_chat_id: string_or_existing(agent.default_destination_chat_id, attrs, "default_destination_chat_id"),
+              event_types_enabled: normalize_optional_string_list(Map.get(attrs, "event_types_enabled", Map.get(attrs, :event_types_enabled, agent.event_types_enabled))),
+              cost_budget_daily: integer_or_existing(agent.cost_budget_daily, attrs, "cost_budget_daily"),
+              cost_budget_monthly: integer_or_existing(agent.cost_budget_monthly, attrs, "cost_budget_monthly"),
+              approval_rules: map_or_existing(agent.approval_rules || %{}, attrs, "approval_rules"),
+              execution_mode: map_get(attrs, "execution_mode", agent.execution_mode)
+            })
+            |> Repo.update!()
+
+          updated
+          |> Agent.changeset(%{status: normalize_status_update(updated, attrs)})
+          |> Repo.update!()
+        end)
+        |> case do
+          {:ok, updated} ->
+            Vibe.Chat.JoinCache.invalidate_all()
+            {:ok, Repo.preload(updated, :agent_user)}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     end
   end
@@ -194,23 +237,63 @@ defmodule Vibe.Agents do
     end
   end
 
-  def rotate_secret(%Agent{} = agent, owner_user_id) do
+  @max_secret_grace_hours 168
+
+  @doc """
+  Issues a new agent secret.
+  """
+  def rotate_secret(%Agent{} = agent, owner_user_id, opts \\ []) do
     if agent.owner_user_id != owner_user_id do
       {:error, :forbidden}
     else
-      with {:ok, secret_tuple} <- generate_secret_tuple(),
+      with {:ok, grace_hours} <- normalize_grace_hours(Keyword.get(opts, :grace_hours)),
+           {:ok, secret_tuple} <- generate_secret_tuple(),
            {:ok, updated} <-
              agent
-             |> Agent.changeset(%{
-               webhook_secret_hash: secret_tuple.hash,
-               webhook_secret_encrypted: secret_tuple.encrypted,
-               secret_hint: secret_tuple.hint
-             })
+             |> Agent.changeset(
+               Map.merge(
+                 %{
+                   webhook_secret_hash: secret_tuple.hash,
+                   webhook_secret_encrypted: secret_tuple.encrypted,
+                   secret_hint: secret_tuple.hint
+                 },
+                 previous_secret_attrs(agent, grace_hours)
+               )
+             )
              |> Repo.update() do
         {:ok, Repo.preload(updated, :agent_user), secret_tuple.secret}
       end
     end
   end
+
+  defp previous_secret_attrs(_agent, nil),
+    do: %{previous_secret_hash: nil, previous_secret_expires_at: nil}
+
+  defp previous_secret_attrs(%Agent{webhook_secret_hash: nil}, _hours),
+    do: %{previous_secret_hash: nil, previous_secret_expires_at: nil}
+
+  defp previous_secret_attrs(%Agent{webhook_secret_hash: hash}, hours) do
+    %{
+      previous_secret_hash: hash,
+      previous_secret_expires_at:
+        DateTime.utc_now() |> DateTime.add(hours * 3600, :second) |> DateTime.truncate(:second)
+    }
+  end
+
+  defp normalize_grace_hours(nil), do: {:ok, nil}
+  defp normalize_grace_hours(0), do: {:ok, nil}
+
+  defp normalize_grace_hours(hours) when is_integer(hours) and hours > 0,
+    do: {:ok, min(hours, @max_secret_grace_hours)}
+
+  defp normalize_grace_hours(hours) when is_binary(hours) do
+    case Integer.parse(String.trim(hours)) do
+      {parsed, ""} -> normalize_grace_hours(parsed)
+      _ -> {:error, :invalid_grace_hours}
+    end
+  end
+
+  defp normalize_grace_hours(_), do: {:error, :invalid_grace_hours}
 
   def archive_agent(%Agent{} = agent, owner_user_id) do
     if agent.owner_user_id != owner_user_id do
@@ -257,10 +340,39 @@ defmodule Vibe.Agents do
 
   def verify_secret(%Agent{} = agent, secret) when is_binary(secret) do
     expected = hash_secret(secret)
-    secure_compare(expected, agent.webhook_secret_hash || "")
+
+    secure_compare(expected, agent.webhook_secret_hash || "") or
+      previous_secret_valid?(agent, expected)
   end
 
   def verify_secret(_agent, _secret), do: false
+
+  defp previous_secret_valid?(%Agent{previous_secret_hash: hash} = agent, expected)
+       when is_binary(hash) and hash != "" do
+    case agent.previous_secret_expires_at do
+      %DateTime{} = expires_at ->
+        DateTime.compare(DateTime.utc_now(), expires_at) == :lt and
+          secure_compare(expected, hash)
+
+      _ ->
+        false
+    end
+  end
+
+  defp previous_secret_valid?(_agent, _expected), do: false
+
+  defp previous_secret_window(%Agent{previous_secret_hash: hash} = agent)
+       when is_binary(hash) and hash != "" do
+    case agent.previous_secret_expires_at do
+      %DateTime{} = expires_at ->
+        if DateTime.compare(DateTime.utc_now(), expires_at) == :lt, do: expires_at, else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  defp previous_secret_window(_agent), do: nil
 
   def callback_signing_secret(%Agent{webhook_secret_encrypted: encrypted}) when is_binary(encrypted) do
     decrypt_secret(encrypted)
@@ -365,6 +477,9 @@ defmodule Vibe.Agents do
     cond do
       target_url == "" ->
         {:error, :missing_callback}
+
+      match?({:error, _}, Vibe.Net.SafeURL.validate(target_url)) ->
+        {:error, :invalid_callback_url}
 
       true ->
         %AgentDeliveryEvent{}
@@ -653,8 +768,11 @@ defmodule Vibe.Agents do
       id: agent.id,
       userId: agent.agent_user_id,
       username: agent.agent_user && agent.agent_user.username,
+      publicLink: Vibe.Links.agent_url(agent.agent_user && agent.agent_user.username),
       displayName: agent.display_name,
       status: agent.status,
+      modelProvider: agent.model_provider,
+      modelId: agent.model_id,
       systemPrompt: agent.system_prompt,
       promptVariables: Vibe.AI.PromptVariables.definitions(agent),
       persona: agent.persona,
@@ -663,6 +781,7 @@ defmodule Vibe.Agents do
       enabledTools: agent.enabled_tools || [],
       outputModes: agent.output_modes || [],
       autonomyMode: agent.autonomy_mode,
+      executionMode: agent.execution_mode,
       defaultDestinationChatId: agent.default_destination_chat_id,
       eventTypesEnabled: agent.event_types_enabled || [],
       costBudgetDaily: agent.cost_budget_daily,
@@ -673,6 +792,7 @@ defmodule Vibe.Agents do
       voiceProfile: agent.voice_profile,
       callbackUrl: agent.callback_url,
       secretHint: agent.secret_hint,
+      previousSecretExpiresAt: previous_secret_window(agent),
       publishedAt: agent.published_at,
       lastInvokedAt: agent.last_invoked_at,
       attachedChats: attached_chats(agent),
@@ -723,13 +843,8 @@ defmodule Vibe.Agents do
   def normalize_username(_), do: ""
 
   @doc """
-  Checks whether `username` can be assigned to the given agent (or, when
-  `agent` is nil, to a brand-new agent). Mirrors the validation used by
-  `ensure_valid_username!/1` but returns a tagged result instead of raising.
-
-  Returns `{:ok, normalized}` when available, or `{:error, reason}` where
-  reason is one of `:invalid_username`, `:reserved_username`, `:username_taken`,
-  or `:username_locked_after_publish`.
+  Checks whether `username` can be assigned to the given agent (or, when `agent` is nil, to a
+  brand-new agent).
   """
   def username_availability(username, agent \\ nil)
 
@@ -928,7 +1043,12 @@ defmodule Vibe.Agents do
       status: task.status,
       decisionNote: task.decision_note,
       decidedAt: task.decided_at,
-      approvedByUserId: task.approved_by_user_id
+      approvedByUserId: task.approved_by_user_id,
+      actionMode: task.action_mode || "single",
+      expiresAt: task.expires_at,
+      messageId: task.message_id,
+      chosenActionId: task.chosen_action_id,
+      source: task.source || "runbook"
     }
   end
 
@@ -964,7 +1084,34 @@ defmodule Vibe.Agents do
 
   defp create_shadow_user(_owner_user_id, attrs) do
     display_name = display_name_from_attrs(attrs)
-    username = requested_or_generated_username(display_name, attrs)
+
+    with {:ok, username} <- resolve_shadow_username(display_name, attrs) do
+      insert_shadow_user(display_name, username, attrs)
+    end
+  end
+
+  defp resolve_shadow_username(display_name, attrs) do
+    case Map.get(attrs, "username") || Map.get(attrs, :username) do
+      value when is_binary(value) ->
+        if String.trim(value) == "" do
+          derive_username(display_name)
+        else
+          username_availability(value, nil)
+        end
+
+      _ ->
+        derive_username(display_name)
+    end
+  end
+
+  defp derive_username(display_name) do
+    case username_base(display_name) do
+      nil -> {:error, :invalid_username}
+      base -> username_availability(base, nil)
+    end
+  end
+
+  defp insert_shadow_user(display_name, username, attrs) do
     user_id = UUID.uuid4()
 
     Accounts.create_user(%{
@@ -1012,22 +1159,6 @@ defmodule Vibe.Agents do
     end
   end
 
-  defp requested_or_generated_username(display_name, attrs) do
-    requested = Map.get(attrs, "username") || Map.get(attrs, :username)
-
-    case requested do
-      value when is_binary(value) ->
-        if String.trim(value) == "" do
-          generate_available_username(display_name)
-        else
-          ensure_valid_username!(value)
-        end
-
-      _ ->
-        generate_available_username(display_name)
-    end
-  end
-
   defp ensure_valid_username!(username) do
     normalized = normalize_username(username)
 
@@ -1041,35 +1172,40 @@ defmodule Vibe.Agents do
     end
   end
 
-  defp generate_available_username(display_name) do
-    base =
-      display_name
-      |> to_string()
-      |> String.downcase()
-      |> String.replace(~r/[^a-z0-9_]+/, "_")
-      |> String.trim("_")
-      |> case do
-        "" -> "agent"
-        value -> value
-      end
-      |> String.slice(0, 18)
+  @doc """
+  Clean handle candidates derived from a display name, filtered to the ones that are actually
+  free.
+  """
+  def suggest_usernames(display_name, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 4)
+    base = username_base(display_name) || "agent"
 
-    Stream.iterate(1, &(&1 + 1))
-    |> Enum.find_value(fn attempt ->
-      suffix = Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)
-      candidate = "#{base}_#{suffix}" |> String.slice(0, 30)
-
+    ([base] ++
+       Enum.map(~w[ai bot hq agent live], &"#{base}_#{&1}") ++
+       Enum.map(~w[ask my the], &"#{&1}_#{base}"))
+    |> Enum.uniq()
+    |> Enum.reduce_while([], fn candidate, acc ->
       cond do
-        reserved_username?(candidate) ->
-          nil
-
-        Accounts.username_exists?(candidate) ->
-          nil
-
-        true ->
-          candidate
+        length(acc) >= limit -> {:halt, acc}
+        match?({:ok, _}, username_availability(candidate, nil)) -> {:cont, acc ++ [candidate]}
+        true -> {:cont, acc}
       end
     end)
+  end
+
+  @doc false
+  def username_base(display_name) do
+    display_name
+    |> to_string()
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9_]+/, "_")
+    |> String.replace(~r/_+/, "_")
+    |> String.trim("_")
+    |> String.slice(0, 24)
+    |> case do
+      "" -> nil
+      value -> value
+    end
   end
 
   defp generate_secret_tuple do

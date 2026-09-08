@@ -44,6 +44,22 @@ final class SecureKeyStore {
     }
   }
 
+  /// Whether the item exists at all. Attributes stay readable when the data does not
+  /// (locked device), so this separates "nothing stored" from "cannot read it now".
+  func hasSecret(key: String) -> Bool {
+    queue.sync {
+      let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: service,
+        kSecAttrAccount as String: key,
+        kSecReturnAttributes as String: true,
+        kSecMatchLimit as String: kSecMatchLimitOne,
+      ]
+      var result: AnyObject?
+      return SecItemCopyMatching(query as CFDictionary, &result) != errSecItemNotFound
+    }
+  }
+
   func deleteSecret(key: String) {
     queue.sync {
       deleteSecretLocked(key: key)

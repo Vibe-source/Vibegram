@@ -1,0 +1,18 @@
+{
+  "id": 87,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Profile hero opens as a banner when a real photo exists (autoExpandHeroIfPhoto, one-shot). Fallback initials never morph. Scroll past +90 compacts back to the avatar; both directions snap the real scroll to top.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787832224,
+  "updated_at": 1787832224
+}

@@ -1,0 +1,18 @@
+{
+  "id": 71,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Reaction list changes always bust liveHeightStore and force height reload. didSelect no-ops while the context menu overlay is open.",
+  "selector": "ios/ChatModule/ChatListView.swift::ChatListView.collectionView",
+  "path": "ios/ChatModule/ChatListView.swift",
+  "fqn": "ChatListView.collectionView",
+  "line": 14010,
+  "anchor_hash": "ff26d5e8af893d599ed9e21e0e4fe8af8ac4919890e1aa4c81a7ec40e67b0486",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787764535,
+  "updated_at": 1787764535
+}

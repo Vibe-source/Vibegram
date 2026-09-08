@@ -1,0 +1,18 @@
+{
+  "id": 97,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Profile hero: the top gap was frozen pull compensation. profileHeroScrollBand now pins to the screen top with the LIVE overscroll (max(0,minY)*p) for both offset and stretch, so the banner can never decouple while the finger keeps pulling. morphCapturedPull/morphLaunchOffset no longer touch the band.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787847763,
+  "updated_at": 1787847763
+}

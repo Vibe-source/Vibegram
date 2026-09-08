@@ -1,0 +1,18 @@
+{
+  "id": 56,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Outgoing gallery/camera picks write to VibeMediaVault not tmp. Remote-key seed is synchronous. Cell paints on-disk full image before blur. Watchdog tag [MediaWatchdog].",
+  "selector": "ios/ChatModule/VibeMediaVault.swift::VibeMediaVault.persistOutgoingPick",
+  "path": "ios/ChatModule/VibeMediaVault.swift",
+  "fqn": "VibeMediaVault.persistOutgoingPick",
+  "line": 385,
+  "anchor_hash": "e2c65aeaf9b55e6d27897631e1f133715a31d6d6c05361535c7e34eea51f5357",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787759122,
+  "updated_at": 1787759122
+}

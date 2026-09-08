@@ -1,0 +1,18 @@
+{
+  "id": 32,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — the allowance ran out mid-task",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "claude",
+  "author": "Vibe Team",
+  "created_at": 1787750706,
+  "updated_at": 1787751065
+}

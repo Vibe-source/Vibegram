@@ -3,6 +3,11 @@ import UIKit
 private let chatNativeAgentBoldRegex = try! NSRegularExpression(pattern: "\\*\\*(.+?)\\*\\*")
 private let chatNativeAgentMarkdownLinkRegex = try! NSRegularExpression(pattern: "\\[([^\\]]+)\\]\\((https?://[^)]+)\\)")
 private let chatNativeAgentInlineCodeRegex = try! NSRegularExpression(pattern: "`([^`]+)`")
+/// Bare `@username` mentions (person/agent handles). Length matches server
+/// `validate_username_string` (3…30, `[a-z0-9_]`). Lookbehind skips emails (`a@b.com`).
+private let chatNativeAgentMentionRegex = try! NSRegularExpression(
+  pattern: #"(?<![A-Za-z0-9_])@([A-Za-z0-9_]{3,30})\b"#
+)
 
 protocol ChatNativeStreamingTextLabelDelegate: AnyObject {
   func streamingTextLabel(_ label: ChatNativeStreamingTextLabel, didTap url: URL)
@@ -56,25 +61,38 @@ enum ChatNativeAgentTextRenderer {
     lineHeight: CGFloat? = nil
   ) -> NSAttributedString {
     let isRtl = isRTL(text)
-    let paragraphStyle = NSMutableParagraphStyle()
-    paragraphStyle.alignment = isRtl ? .right : .natural
-    paragraphStyle.baseWritingDirection = isRtl ? .rightToLeft : .leftToRight
-    paragraphStyle.lineBreakMode = .byWordWrapping
-    if let lineHeight {
-      paragraphStyle.minimumLineHeight = lineHeight
-      paragraphStyle.maximumLineHeight = lineHeight
-    }
+    // Prefer lineSpacing over min/max lineHeight locks — fixed line boxes make long
+    // agent answers look cramped and uneven next to headings/lists. Default to a
+    // WhatsApp-like ~1.35× body line when callers omit an explicit target.
+    let resolvedLineHeight = lineHeight ?? max(font.lineHeight + 4.0, font.pointSize * 1.35)
+    let lineSpacing = max(0.0, resolvedLineHeight - font.lineHeight)
+    return applyLineMarkdown(
+      text,
+      font: font,
+      textColor: textColor,
+      isRtl: isRtl,
+      lineSpacing: lineSpacing
+    )
+  }
 
-    var baseAttrs: [NSAttributedString.Key: Any] = [
-      .font: font,
-      .foregroundColor: textColor,
-      .paragraphStyle: paragraphStyle,
-    ]
-    if let lineHeight {
-      baseAttrs[.baselineOffset] = (lineHeight - font.lineHeight) * 0.25
-    }
-
-    return applyLineMarkdown(text, baseAttrs: baseAttrs, font: font, textColor: textColor)
+  /// Shared paragraph style for one rendered line/paragraph. `spacingBefore` separates
+  /// sections; `firstLineHeadIndent`/`headIndent` hang list markers and nested levels.
+  private static func makeParagraphStyle(
+    isRtl: Bool,
+    lineSpacing: CGFloat,
+    spacingBefore: CGFloat,
+    firstLineHeadIndent: CGFloat = 0.0,
+    headIndent: CGFloat = 0.0
+  ) -> NSMutableParagraphStyle {
+    let style = NSMutableParagraphStyle()
+    style.alignment = isRtl ? .right : .natural
+    style.baseWritingDirection = isRtl ? .rightToLeft : .leftToRight
+    style.lineBreakMode = .byWordWrapping
+    style.lineSpacing = lineSpacing
+    style.paragraphSpacingBefore = spacingBefore
+    style.firstLineHeadIndent = firstLineHeadIndent
+    style.headIndent = headIndent
+    return style
   }
 
   // MARK: - Block parsing
@@ -206,37 +224,115 @@ enum ChatNativeAgentTextRenderer {
 
   // MARK: - Line-level markdown
 
-  // MARK: - Line-level helpers
-
-  /// Processes a normal-text block line by line, handling headings and table
-  /// separator rows, then applying inline formatting to each regular line.
+  /// Processes a normal-text block line by line. Blank source lines become paragraph
+  /// gaps (not empty rows); lists hang under their markers; nested bullets indent
+  /// with hollow markers so long agent answers read like WhatsApp Meta AI cards.
   private static func applyLineMarkdown(
     _ text: String,
-    baseAttrs: [NSAttributedString.Key: Any],
     font: UIFont,
-    textColor: UIColor
+    textColor: UIColor,
+    isRtl: Bool,
+    lineSpacing: CGFloat
   ) -> NSAttributedString {
     let result = NSMutableAttributedString()
-    var addedAny = false
 
-    for line in text.components(separatedBy: "\n") {
-      // Skip table separator rows like |---|---|
-      if isTableSeparatorLine(line) { continue }
+    // Spacing scales with body font. Blank lines → inter-paragraph gap; headings
+    // get a larger gap above + a small gap into their body.
+    let paragraphGap = max(10.0, (font.pointSize * 0.72).rounded())
+    let headingGap = max(14.0, (font.pointSize * 1.0).rounded())
+    let headingBodyGap = max(4.0, (font.pointSize * 0.28).rounded())
+    let listItemGap = max(4.0, (font.pointSize * 0.28).rounded())
+    let listNestStep = max(14.0, (font.pointSize * 0.95).rounded())
 
-      if addedAny {
-        result.append(NSAttributedString(string: "\n", attributes: baseAttrs))
-      }
+    var emittedContent = false
+    var pendingBlank = false
+    var previousWasHeading = false
+    var previousWasListItem = false
 
-      // Heading lines: # / ## / ###
-      if let (level, headingText) = parseHeadingLine(line) {
-        result.append(renderHeadingLine(headingText, level: level, baseFont: font, textColor: textColor, baseAttrs: baseAttrs))
-        addedAny = true
+    for rawLine in text.components(separatedBy: "\n") {
+      if isTableSeparatorLine(rawLine) { continue }
+
+      if rawLine.trimmingCharacters(in: .whitespaces).isEmpty {
+        if emittedContent { pendingBlank = true }
         continue
       }
 
-      // Regular line with inline formatting (bold, links, code, URLs).
-      result.append(applyInlineFormatting(line, baseAttrs: baseAttrs, font: font))
-      addedAny = true
+      let heading = parseHeadingLine(rawLine)
+      let bullet = heading == nil ? parseBulletListLine(rawLine) : nil
+      let numbered = (heading == nil && bullet == nil) ? parseNumberedListLine(rawLine) : nil
+      let isListItem = bullet != nil || numbered != nil
+
+      var spacingBefore: CGFloat = 0.0
+      if emittedContent {
+        if heading != nil {
+          spacingBefore = headingGap
+        } else if previousWasHeading {
+          spacingBefore = headingBodyGap
+        } else if pendingBlank {
+          spacingBefore = (isListItem && previousWasListItem) ? listItemGap : paragraphGap
+        } else if isListItem && previousWasListItem {
+          spacingBefore = listItemGap
+        }
+        result.append(NSAttributedString(string: "\n", attributes: [.font: font]))
+      }
+
+      if let (level, headingText) = heading {
+        result.append(
+          renderHeadingLine(
+            headingText,
+            level: level,
+            baseFont: font,
+            textColor: textColor,
+            isRtl: isRtl,
+            lineSpacing: lineSpacing,
+            spacingBefore: spacingBefore
+          )
+        )
+      } else if let (nestLevel, listText) = bullet {
+        result.append(
+          renderBulletListItem(
+            listText,
+            nestLevel: nestLevel,
+            nestStep: listNestStep,
+            font: font,
+            textColor: textColor,
+            isRtl: isRtl,
+            lineSpacing: lineSpacing,
+            spacingBefore: spacingBefore
+          )
+        )
+      } else if let (nestLevel, prefix, listText) = numbered {
+        result.append(
+          renderNumberedListItem(
+            prefix,
+            text: listText,
+            nestLevel: nestLevel,
+            nestStep: listNestStep,
+            font: font,
+            textColor: textColor,
+            isRtl: isRtl,
+            lineSpacing: lineSpacing,
+            spacingBefore: spacingBefore
+          )
+        )
+      } else {
+        let style = makeParagraphStyle(
+          isRtl: isRtl,
+          lineSpacing: lineSpacing,
+          spacingBefore: spacingBefore
+        )
+        let attributes: [NSAttributedString.Key: Any] = [
+          .font: font,
+          .foregroundColor: textColor,
+          .paragraphStyle: style,
+        ]
+        result.append(applyInlineFormatting(rawLine, baseAttrs: attributes, font: font))
+      }
+
+      emittedContent = true
+      pendingBlank = false
+      previousWasHeading = heading != nil
+      previousWasListItem = isListItem
     }
 
     return result
@@ -262,31 +358,147 @@ enum ChatNativeAgentTextRenderer {
     return content.isEmpty ? nil : (level, content)
   }
 
+  /// Leading whitespace → nest level (2 spaces or 1 tab per level). Returns
+  /// `(nestLevel, body)` for `-` / `*` / `+` / `•` markers.
+  private static func parseBulletListLine(_ line: String) -> (Int, String)? {
+    let (nestLevel, trimmed) = listNestLevel(line)
+    for marker in ["- ", "* ", "+ ", "• ", "○ ", "◦ ", "▪ "] {
+      if trimmed.hasPrefix(marker) {
+        let text = String(trimmed.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)
+        return text.isEmpty ? nil : (nestLevel, text)
+      }
+    }
+    return nil
+  }
+
+  private static func parseNumberedListLine(_ line: String) -> (Int, String, String)? {
+    let (nestLevel, trimmed) = listNestLevel(line)
+    var idx = trimmed.startIndex
+    while idx < trimmed.endIndex, trimmed[idx].isNumber {
+      idx = trimmed.index(after: idx)
+    }
+    guard idx > trimmed.startIndex else { return nil }
+    let rest = String(trimmed[idx...])
+    guard rest.hasPrefix(". ") else { return nil }
+    let prefix = String(trimmed[..<idx]) + "."
+    let text = String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+    return text.isEmpty ? nil : (nestLevel, prefix, text)
+  }
+
+  private static func listNestLevel(_ line: String) -> (Int, String) {
+    var spaces = 0
+    var idx = line.startIndex
+    while idx < line.endIndex {
+      let ch = line[idx]
+      if ch == " " {
+        spaces += 1
+      } else if ch == "\t" {
+        spaces += 2
+      } else {
+        break
+      }
+      idx = line.index(after: idx)
+    }
+    let nest = min(4, spaces / 2)
+    return (nest, String(line[idx...]))
+  }
+
+  private static func bulletMarker(for nestLevel: Int) -> String {
+    switch nestLevel {
+    case 0: return "•  "
+    case 1: return "○  "
+    default: return "▪  "
+    }
+  }
+
+  private static func renderBulletListItem(
+    _ text: String,
+    nestLevel: Int,
+    nestStep: CGFloat,
+    font: UIFont,
+    textColor: UIColor,
+    isRtl: Bool,
+    lineSpacing: CGFloat,
+    spacingBefore: CGFloat
+  ) -> NSAttributedString {
+    let marker = bulletMarker(for: nestLevel)
+    let baseIndent = CGFloat(nestLevel) * nestStep
+    let markerWidth = (marker as NSString).size(withAttributes: [.font: font]).width
+    let style = makeParagraphStyle(
+      isRtl: isRtl,
+      lineSpacing: lineSpacing,
+      spacingBefore: spacingBefore,
+      firstLineHeadIndent: baseIndent,
+      headIndent: baseIndent + markerWidth
+    )
+    let base: [NSAttributedString.Key: Any] = [
+      .font: font,
+      .foregroundColor: textColor,
+      .paragraphStyle: style,
+    ]
+    let result = NSMutableAttributedString(string: marker, attributes: base)
+    result.append(applyInlineFormatting(text, baseAttrs: base, font: font))
+    return result
+  }
+
+  private static func renderNumberedListItem(
+    _ prefix: String,
+    text: String,
+    nestLevel: Int,
+    nestStep: CGFloat,
+    font: UIFont,
+    textColor: UIColor,
+    isRtl: Bool,
+    lineSpacing: CGFloat,
+    spacingBefore: CGFloat
+  ) -> NSAttributedString {
+    let marker = "\(prefix) "
+    let baseIndent = CGFloat(nestLevel) * nestStep
+    let markerWidth = (marker as NSString).size(withAttributes: [.font: font]).width
+    let style = makeParagraphStyle(
+      isRtl: isRtl,
+      lineSpacing: lineSpacing,
+      spacingBefore: spacingBefore,
+      firstLineHeadIndent: baseIndent,
+      headIndent: baseIndent + markerWidth
+    )
+    let base: [NSAttributedString.Key: Any] = [
+      .font: font,
+      .foregroundColor: textColor,
+      .paragraphStyle: style,
+    ]
+    let result = NSMutableAttributedString(string: marker, attributes: base)
+    result.append(applyInlineFormatting(text, baseAttrs: base, font: font))
+    return result
+  }
+
   private static func renderHeadingLine(
     _ text: String,
     level: Int,
     baseFont: UIFont,
     textColor: UIColor,
-    baseAttrs: [NSAttributedString.Key: Any]
+    isRtl: Bool,
+    lineSpacing: CGFloat,
+    spacingBefore: CGFloat
   ) -> NSAttributedString {
-    let scale: CGFloat = level == 1 ? 1.22 : level == 2 ? 1.10 : 1.0
+    let scale: CGFloat = level == 1 ? 1.18 : level == 2 ? 1.10 : 1.04
     let headingFont: UIFont = {
       if let d = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
         return UIFont(descriptor: d, size: round(baseFont.pointSize * scale))
       }
       return UIFont.boldSystemFont(ofSize: round(baseFont.pointSize * scale))
     }()
-    // Build a fresh paragraph style without the tight line-height lock.
-    let ps = NSMutableParagraphStyle()
-    if let existing = baseAttrs[.paragraphStyle] as? NSParagraphStyle { ps.setParagraphStyle(existing) }
-    ps.minimumLineHeight = 0
-    ps.maximumLineHeight = 0
-    var attrs = baseAttrs
-    attrs[.font] = headingFont
-    attrs[.foregroundColor] = textColor
-    attrs[.paragraphStyle] = ps
-    attrs.removeValue(forKey: .baselineOffset)
-    return NSAttributedString(string: text, attributes: attrs)
+    let style = makeParagraphStyle(
+      isRtl: isRtl,
+      lineSpacing: lineSpacing,
+      spacingBefore: spacingBefore
+    )
+    let attrs: [NSAttributedString.Key: Any] = [
+      .font: headingFont,
+      .foregroundColor: textColor,
+      .paragraphStyle: style,
+    ]
+    return applyInlineFormatting(text, baseAttrs: attrs, font: headingFont)
   }
 
   private static func applyInlineFormatting(
@@ -295,6 +507,7 @@ enum ChatNativeAgentTextRenderer {
     font: UIFont
   ) -> NSAttributedString {
     let mutable = NSMutableAttributedString(string: text, attributes: baseAttrs)
+    let linkColor = (baseAttrs[.foregroundColor] as? UIColor) ?? .label
 
     // 1) Markdown links [label](url) — replace first to preserve offsets.
     let linkMatches = chatNativeAgentMarkdownLinkRegex.matches(
@@ -312,7 +525,11 @@ enum ChatNativeAgentTextRenderer {
       let replacedRange = NSRange(location: match.range.location, length: (label as NSString).length)
       if let url = URL(string: urlString) {
         mutable.addAttribute(.link, value: url, range: replacedRange)
-        mutable.addAttribute(.foregroundColor, value: UIColor.systemBlue, range: replacedRange)
+        // Match body text color (not system blue) — Telegram-style white-on-bubble links.
+        mutable.addAttribute(.foregroundColor, value: linkColor, range: replacedRange)
+        mutable.addAttribute(
+          .underlineStyle, value: NSUnderlineStyle.single.rawValue, range: replacedRange
+        )
       }
     }
 
@@ -346,7 +563,7 @@ enum ChatNativeAgentTextRenderer {
       mutable.replaceCharacters(in: match.range, with: NSAttributedString(string: codeText, attributes: codeAttrs))
     }
 
-    // 4) Auto-detect bare URLs — show clean hostname+path instead of raw URL.
+    // 4) Auto-detect bare URLs while preserving their exact visible text.
     if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
       let urlMatches = detector.matches(
         in: mutable.string,
@@ -360,20 +577,64 @@ enum ChatNativeAgentTextRenderer {
           if value != nil { hasLink = true; stop.pointee = true }
         }
         if !hasLink {
-          let display = cleanURLDisplay(url)
-          var linkAttrs = baseAttrs
-          linkAttrs[.link] = url
-          linkAttrs[.foregroundColor] = UIColor.systemBlue
-          // Modern compact look without underline
-          mutable.replaceCharacters(
-            in: m.range,
-            with: NSAttributedString(string: display, attributes: linkAttrs)
+          mutable.addAttribute(.link, value: url, range: m.range)
+          // Preserve the exact source URL; shortening can remove path identifiers.
+          mutable.addAttribute(.foregroundColor, value: linkColor, range: m.range)
+          mutable.addAttribute(
+            .underlineStyle, value: NSUnderlineStyle.single.rawValue, range: m.range
           )
         }
       }
     }
 
+    // 5) Auto-link @username — keep visible `@handle` text, attach a routeable
+    // `vibe://u?handle=` so a tap can push the DM/agent chat immediately.
+    applyMentionLinks(to: mutable, baseAttrs: baseAttrs, linkColor: linkColor)
+
     return mutable
+  }
+
+  /// Marks bare `@username` spans as tappable handle links. Skips ranges that
+  /// already carry a `.link` (markdown/URL) and skips reserved non-profile tokens
+  /// that the share router would refuse (`api`, `settings`, …).
+  private static func applyMentionLinks(
+    to mutable: NSMutableAttributedString,
+    baseAttrs: [NSAttributedString.Key: Any],
+    linkColor: UIColor
+  ) {
+    let fullRange = NSRange(mutable.string.startIndex..., in: mutable.string)
+    let matches = chatNativeAgentMentionRegex.matches(in: mutable.string, range: fullRange)
+    guard !matches.isEmpty else { return }
+
+    for match in matches.reversed() {
+      guard match.numberOfRanges > 1,
+        let handleSwiftRange = Range(match.range(at: 1), in: mutable.string)
+      else { continue }
+      let handle = String(mutable.string[handleSwiftRange])
+      let linkRange = match.range
+      guard linkRange.location != NSNotFound, linkRange.length > 0 else { continue }
+
+      // Condition: already a link (e.g. markdown label that happens to contain @x).
+      var hasLink = false
+      mutable.enumerateAttribute(.link, in: linkRange, options: []) { value, _, stop in
+        if value != nil {
+          hasLink = true
+          stop.pointee = true
+        }
+      }
+      if hasLink { continue }
+
+      // Condition: reserved SPA paths are not people/agents — leave as plain text.
+      if VibeShareLinks.isReservedHandle(handle) { continue }
+
+      guard let url = URL(string: "vibe://u?handle=\(handle.lowercased())") else { continue }
+      var linkAttrs = baseAttrs
+      linkAttrs[.link] = url
+      linkAttrs[.foregroundColor] = linkColor
+      linkAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+      // Keep the original `@username` glyphs; only attach route + underline.
+      mutable.addAttributes(linkAttrs, range: linkRange)
+    }
   }
 
   private static func cleanURLDisplay(_ url: URL) -> String {
@@ -512,6 +773,7 @@ final class AgentRuntimeSummaryView: UIView {
   private let commandLabel = UILabel()
   private let dirtyLabel = UILabel()
   private let moreLabel = UILabel()
+  private let teamStripLabel = UILabel()
   private var fileRows: [FileRowView] = []
   private var runtime: ChatListRow.AgentRuntimeSummary?
   private var textColor: UIColor = .label
@@ -532,10 +794,13 @@ final class AgentRuntimeSummaryView: UIView {
     backgroundView.layer.borderColor = UIColor.separator.withAlphaComponent(0.25).cgColor
     addSubview(backgroundView)
 
-    [headerContainer, separatorView, commandLabel, dirtyLabel, moreLabel].forEach {
+    [headerContainer, separatorView, commandLabel, dirtyLabel, moreLabel, teamStripLabel].forEach {
       $0.backgroundColor = .clear
       addSubview($0)
     }
+    teamStripLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+    teamStripLabel.numberOfLines = 2
+    teamStripLabel.lineBreakMode = .byTruncatingTail
     
     [titleLabel, titleStatsLabel, chevronImageView, reviewContainer].forEach {
       $0.backgroundColor = .clear
@@ -583,11 +848,13 @@ final class AgentRuntimeSummaryView: UIView {
 
   static func measuredHeight(runtime: ChatListRow.AgentRuntimeSummary, availableWidth: CGFloat, isExpanded: Bool) -> CGFloat {
     _ = availableWidth
+    let teamStripExtra: CGFloat =
+      (runtime.teamProgressStrip?.isEmpty == false) ? 28 : 0
     if !isExpanded {
-      return 12 + 36 + 12
+      return 12 + 36 + teamStripExtra + 12
     }
     let files = runtime.diff?.files ?? []
-    var height: CGFloat = 12 + 36 + 1 + 9
+    var height: CGFloat = 12 + 36 + teamStripExtra + 1 + 9
     height += CGFloat(min(files.count, 4)) * 32
     height += 3
     
@@ -617,7 +884,18 @@ final class AgentRuntimeSummaryView: UIView {
     let diff = runtime.diff
     let filesChanged = diff?.filesChanged ?? 0
     
-    titleLabel.text = filesChanged == 1 ? "1 file changed" : "\(filesChanged) files changed"
+    if let strip = runtime.teamProgressStrip, !strip.isEmpty {
+      titleLabel.text =
+        runtime.status == "running"
+        ? (runtime.teamPhaseLabel ?? "Team working") : "Team finished"
+      teamStripLabel.text = strip
+      teamStripLabel.isHidden = false
+      teamStripLabel.textColor = textColor.withAlphaComponent(0.72)
+    } else {
+      titleLabel.text = filesChanged == 1 ? "1 file changed" : "\(filesChanged) files changed"
+      teamStripLabel.text = nil
+      teamStripLabel.isHidden = true
+    }
     titleLabel.textColor = textColor.withAlphaComponent(0.8)
     
     let font = UIFont.systemFont(ofSize: 14, weight: .regular)
@@ -709,6 +987,15 @@ final class AgentRuntimeSummaryView: UIView {
     reviewLabel.frame = CGRect(x: reviewIcon.frame.maxX + 6, y: 0, width: reviewLabel.frame.width, height: reviewH)
     
     y += 36
+
+    if !teamStripLabel.isHidden {
+      let stripH = teamStripLabel.sizeThatFits(CGSize(width: width, height: 40)).height
+      let h = max(18, min(36, stripH))
+      teamStripLabel.frame = CGRect(x: inset, y: y + 2, width: width, height: h)
+      y += h + 6
+    } else {
+      teamStripLabel.frame = .zero
+    }
     
     if !isExpanded { return }
     
@@ -969,6 +1256,12 @@ final class AgentRuntimeTaskViewController: UITabBarController {
     ]
     if let taskId = runtime.taskId, !taskId.isEmpty {
       payload["taskId"] = taskId
+    }
+    // Supervisor team: cancel the whole run (lead + under-hood workers).
+    if let teamRunId = runtime.teamRunId, !teamRunId.isEmpty,
+      action == "cancel" || action == "stop"
+    {
+      payload["teamRunId"] = teamRunId
     }
     let result = ChatEngine.shared.sendAgentBridgeControl(payload)
     if (result["accepted"] as? Bool) == true {
@@ -1856,8 +2149,17 @@ final class AgentBridgeFileViewerController: UIViewController {
 // MARK: - AgentIntegrationPackView
 
 final class AgentIntegrationPackView: UIControl, UIGestureRecognizerDelegate {
+  /// Same rule as `AgentCodeBlockView`: reachable from a measurement pass, so it is
+  /// guarded even though `measuredHeight` is a constant today and does not read it.
   private static var expandedStorageKeys = Set<String>()
+  private static let expandedStorageKeysLock = NSLock()
   private static let collapsedHeight: CGFloat = 72.0
+
+  private static func isStorageKeyExpanded(_ key: String) -> Bool {
+    expandedStorageKeysLock.lock()
+    defer { expandedStorageKeysLock.unlock() }
+    return expandedStorageKeys.contains(key)
+  }
 
   private let cardView = UIView()
   private let iconView = UIImageView()
@@ -1880,7 +2182,7 @@ final class AgentIntegrationPackView: UIControl, UIGestureRecognizerDelegate {
   private var isExpanded = false
 
   static func isExpanded(pack: AgentIntegrationPack, storageKey: String? = nil) -> Bool {
-    expandedStorageKeys.contains(resolvedStorageKey(pack: pack, storageKey: storageKey))
+    isStorageKeyExpanded(resolvedStorageKey(pack: pack, storageKey: storageKey))
   }
 
   static func measuredHeight(
@@ -1981,7 +2283,7 @@ final class AgentIntegrationPackView: UIControl, UIGestureRecognizerDelegate {
     currentAvailableWidth = availableWidth
     currentTextColor = textColor
     currentStorageKey = Self.resolvedStorageKey(pack: pack, storageKey: storageKey)
-    isExpanded = Self.expandedStorageKeys.contains(currentStorageKey)
+    isExpanded = Self.isStorageKeyExpanded(currentStorageKey)
 
     let accent = UIColor.systemTeal
     cardView.backgroundColor = textColor.withAlphaComponent(0.055)
@@ -2127,7 +2429,28 @@ final class AgentIntegrationPackView: UIControl, UIGestureRecognizerDelegate {
 
 final class AgentCodeBlockView: UIView {
   private static let collapsedLineLimit = 12
+  /// Read by `measureBubbleCodeBlockHeight`, which runs off the main thread once a
+  /// transcript is measured before it is pushed — while a tap on main can be writing
+  /// it. An unguarded `Set` across those two is a data race, and the symptom would be
+  /// a corrupt height rather than a crash, i.e. a shift nobody can reproduce.
   private static var expandedStorageKeys = Set<String>()
+  private static let expandedStorageKeysLock = NSLock()
+
+  private static func isStorageKeyExpanded(_ key: String) -> Bool {
+    expandedStorageKeysLock.lock()
+    defer { expandedStorageKeysLock.unlock() }
+    return expandedStorageKeys.contains(key)
+  }
+
+  private static func setStorageKey(_ key: String, expanded: Bool) {
+    expandedStorageKeysLock.lock()
+    defer { expandedStorageKeysLock.unlock() }
+    if expanded {
+      expandedStorageKeys.insert(key)
+    } else {
+      expandedStorageKeys.remove(key)
+    }
+  }
 
   private let cardView = UIView()
   private let topBarView = UIView()
@@ -2158,7 +2481,7 @@ final class AgentCodeBlockView: UIView {
   }
 
   static func isExpanded(code: String, language: String? = nil, storageKey: String? = nil) -> Bool {
-    expandedStorageKeys.contains(Self.storageKey(code: code, language: language, override: storageKey))
+    isStorageKeyExpanded(Self.storageKey(code: code, language: language, override: storageKey))
   }
 
   override init(frame: CGRect) {
@@ -2245,7 +2568,7 @@ final class AgentCodeBlockView: UIView {
     currentAvailableWidth = availableWidth
     originalBaseFont = baseFont
     expansionStorageKey = Self.storageKey(code: code, language: language, override: storageKey)
-    isExpanded = Self.expandedStorageKeys.contains(expansionStorageKey)
+    isExpanded = Self.isStorageKeyExpanded(expansionStorageKey)
     codeFont = UIFont.monospacedSystemFont(ofSize: max(12.5, baseFont.pointSize - 2.5), weight: .regular)
 
     let outerH: CGFloat = 0.0
@@ -2379,11 +2702,7 @@ final class AgentCodeBlockView: UIView {
 
   @objc private func handleExpand() {
     isExpanded.toggle()
-    if isExpanded {
-      Self.expandedStorageKeys.insert(expansionStorageKey)
-    } else {
-      Self.expandedStorageKeys.remove(expansionStorageKey)
-    }
+    Self.setStorageKey(expansionStorageKey, expanded: isExpanded)
     _ = configure(
       code: codeContent,
       language: codeLang,
@@ -2477,12 +2796,49 @@ final class ChatNativeStreamingTextLabel: UITextView {
     return nil
   }
 
+  /// TextKit 1, deliberately, and this is the most expensive line in the message list.
+  ///
+  /// Every bubble in every chat owns one of these, and a device census put its
+  /// construction at 517us — against 40us for the bubble plate, 46us for the tail and 6us
+  /// for a `UILabel`. It is 20% of the whole cell, paid on every mount, because
+  /// `UITextView()` on iOS 16+ builds a TextKit 2 `NSTextLayoutManager` stack: viewport
+  /// layout, element providers, the lot. None of which this view uses — it renders one
+  /// attributed string into a fixed width and never scrolls.
+  ///
+  /// `usingTextLayoutManager: false` asks for the TextKit 1 `NSLayoutManager` path
+  /// instead, which is the older and much cheaper object graph and is exactly what this
+  /// class was written against (`textContainer.widthTracksTextView`, the `layoutManager`
+  /// glyph enumeration in the reveal code). Keeping the TextKit 2 stack was never a
+  /// decision — it is what the plain initializer started returning.
+  ///
+  /// If this ever needs to move back to TextKit 2, the reveal path's layout-manager use
+  /// has to be ported first; `[CellCost] AgentStreamingLabel` is the number to watch.
   convenience init() {
-    self.init(frame: .zero, textContainer: nil)
+    // Build the TextKit 1 stack by hand and hand it to the designated initializer.
+    //
+    // `UITextView(usingTextLayoutManager: false)` expresses the same intent in one line
+    // and crashed the app on the first cell mount (SIGSEGV during `seed-mount`): that
+    // initializer is not overridden here, so delegating to it from a subclass convenience
+    // init re-enters this very initializer and overflows the stack. Supplying a container
+    // that already has an `NSLayoutManager` is the documented way to ask for TextKit 1 and
+    // goes through `init(frame:textContainer:)`, which this class does override.
+    let storage = NSTextStorage()
+    let layoutManager = NSLayoutManager()
+    let container = NSTextContainer(
+      size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+    layoutManager.addTextContainer(container)
+    storage.addLayoutManager(layoutManager)
+    self.init(frame: .zero, textContainer: container)
   }
 
   override init(frame: CGRect, textContainer: NSTextContainer?) {
     super.init(frame: frame, textContainer: textContainer)
+    configureForBubbleRendering()
+  }
+
+  /// Shared by both initializers. The TextKit-1 path above cannot call
+  /// `init(frame:textContainer:)`, so this is the setup both must run.
+  private func configureForBubbleRendering() {
     isEditable = false
     isScrollEnabled = false
     isSelectable = false
@@ -2491,6 +2847,11 @@ final class ChatNativeStreamingTextLabel: UITextView {
     self.textContainer.widthTracksTextView = true
     backgroundColor = .clear
     isUserInteractionEnabled = true
+    // Telegram-style: links use bubble body color (not system blue).
+    linkTextAttributes = [
+      .foregroundColor: UIColor.label,
+      .underlineStyle: NSUnderlineStyle.single.rawValue,
+    ]
     let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
     tap.cancelsTouchesInView = false
     addGestureRecognizer(tap)
@@ -2515,6 +2876,15 @@ final class ChatNativeStreamingTextLabel: UITextView {
 
   func applyStreamingText(_ attributedText: NSAttributedString, rawText: String, isStreaming: Bool) {
     _ = rawText
+    // UITextView forces system-blue links via linkTextAttributes unless overridden.
+    let bodyColor =
+      (attributedText.length > 0
+        ? attributedText.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? UIColor
+        : nil) ?? textColor ?? .label
+    linkTextAttributes = [
+      .foregroundColor: bodyColor,
+      .underlineStyle: NSUnderlineStyle.single.rawValue,
+    ]
     let previousTargetText = fullAttributedValue?.string ?? self.attributedText?.string ?? ""
     let previousTargetLength = fullAttributedValue?.length ?? self.attributedText?.length ?? 0
     let currentRenderedString = self.attributedText?.string ?? ""
@@ -2920,14 +3290,13 @@ final class ChatNativeStreamingTextLabel: UITextView {
   }
 
   private func handleTappedURL(_ url: URL) {
-    // If link looks like an internal Vibe chat URL, post a notification to let
-    // the app route to the chat; otherwise present an in-app browser modal.
-    if let chatId = extractChatId(from: url) {
-      NotificationCenter.default.post(
-        name: Notification.Name("ChatNative.OpenChat"),
-        object: nil,
-        userInfo: ["chatId": chatId, "url": url.absoluteString]
-      )
+    // Internal routes (vibe://u?handle=@username, share-host handles, room links,
+    // chatId UUIDs) push a chat immediately via the shared share-link router.
+    // External http(s) still open the in-app browser.
+    if let target = Self.routeTarget(for: url) {
+      Task { @MainActor in
+        VibeRoomLinkRouter.shared.handle(target: target)
+      }
       return
     }
 
@@ -2936,14 +3305,27 @@ final class ChatNativeStreamingTextLabel: UITextView {
     }
   }
 
-  private func extractChatId(from url: URL) -> String? {
+  /// Maps a tapped URL onto a `VibeShareLinkTarget` when the app can open it as a
+  /// chat/profile/room. Returns nil for ordinary web links.
+  private static func routeTarget(for url: URL) -> VibeShareLinkTarget? {
+    if let target = VibeRoomLinkRouter.target(from: url) {
+      return target
+    }
+    // Legacy vibegram paths that embed a chat UUID but weren't classified above.
+    if let chatId = extractChatId(from: url) {
+      return .chat(chatId)
+    }
+    return nil
+  }
+
+  private static func extractChatId(from url: URL) -> String? {
     // Heuristic: host contains vibe / vibegram and a UUID appears in the path or query
     let host = url.host?.lowercased() ?? ""
     if host.contains("vibe") || host.contains("vibegram") || url.scheme == "vibe" {
       let path = url.path
       let ns = path as NSString
       let range = NSRange(location: 0, length: ns.length)
-      if let m = Self.uuidRegex.firstMatch(in: path, range: range) {
+      if let m = uuidRegex.firstMatch(in: path, range: range) {
         return (ns.substring(with: m.range) as String)
       }
       if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false), let items = comps.queryItems {
@@ -2955,5 +3337,99 @@ final class ChatNativeStreamingTextLabel: UITextView {
       }
     }
     return nil
+  }
+}
+
+/// One-line "what the agent's computer is doing" band under an agent turn — browser host
+/// + page, or terminal + command. Fixed height; see docs/row-height-formulas.md §1.5.
+final class AgentComputerBandView: UIControl {
+  private let plateView = UIView()
+  private let glyphView = UIImageView()
+  private let primaryLabel = UILabel()
+  private let secondaryLabel = UILabel()
+  private let controlChip = UILabel()
+  private let liveDot = UIView()
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    plateView.layer.cornerRadius = 8.0
+    plateView.layer.borderWidth = 1.0
+    plateView.isUserInteractionEnabled = false
+    plateView.clipsToBounds = true
+    addSubview(plateView)
+
+    glyphView.image = UIImage(systemName: "display")
+    glyphView.contentMode = .scaleAspectFit
+    plateView.addSubview(glyphView)
+
+    primaryLabel.font = .systemFont(ofSize: 12.0, weight: .semibold)
+    primaryLabel.lineBreakMode = .byTruncatingTail
+    plateView.addSubview(primaryLabel)
+
+    secondaryLabel.font = .systemFont(ofSize: 12.0, weight: .regular)
+    secondaryLabel.lineBreakMode = .byTruncatingTail
+    plateView.addSubview(secondaryLabel)
+
+    controlChip.font = .systemFont(ofSize: 10.0, weight: .semibold)
+    controlChip.text = "Take control"
+    controlChip.textAlignment = .center
+    controlChip.layer.cornerRadius = 8.0
+    controlChip.clipsToBounds = true
+    plateView.addSubview(controlChip)
+
+    liveDot.layer.cornerRadius = 3.0
+    liveDot.backgroundColor = UIColor(red: 0.16, green: 0.78, blue: 0.45, alpha: 1.0)
+    plateView.addSubview(liveDot)
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  func configure(
+    isShell: Bool, primary: String, secondary: String, live: Bool, showsTakeControl: Bool,
+    appearance: VibeAgentKitChatAppearance
+  ) {
+    plateView.backgroundColor = appearance.surfaceElevated
+    plateView.layer.borderColor = appearance.border.cgColor
+    glyphView.image = UIImage(systemName: isShell ? "terminal" : "globe")
+    glyphView.tintColor = appearance.textSecondary
+    primaryLabel.textColor = appearance.text
+    primaryLabel.text = primary
+    secondaryLabel.textColor = appearance.textTertiary
+    secondaryLabel.text = secondary
+    secondaryLabel.isHidden = secondary.isEmpty
+    controlChip.isHidden = !showsTakeControl
+    controlChip.textColor = appearance.primary
+    controlChip.backgroundColor = vibeAgentKitColorWithAlpha(appearance.primary, 0.16)
+    liveDot.isHidden = !live
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    plateView.frame = bounds
+    let inset: CGFloat = 8.0
+    let glyphSide: CGFloat = 13.0
+    let midY = bounds.height / 2.0
+    glyphView.frame = CGRect(
+      x: inset, y: midY - glyphSide / 2.0, width: glyphSide, height: glyphSide)
+    var trailing = bounds.width - inset
+    if !liveDot.isHidden {
+      liveDot.frame = CGRect(x: trailing - 6.0, y: midY - 3.0, width: 6.0, height: 6.0)
+      trailing = liveDot.frame.minX - 6.0
+    }
+    if controlChip.isHidden {
+      controlChip.frame = .zero
+    } else {
+      let chipWidth = ceil(controlChip.intrinsicContentSize.width) + 12.0
+      controlChip.frame = CGRect(
+        x: trailing - chipWidth, y: midY - 8.0, width: chipWidth, height: 16.0)
+      trailing = controlChip.frame.minX - 6.0
+    }
+    var x = glyphView.frame.maxX + 6.0
+    let primaryWidth = min(
+      ceil(primaryLabel.intrinsicContentSize.width), max(0.0, trailing - x))
+    primaryLabel.frame = CGRect(x: x, y: 0.0, width: primaryWidth, height: bounds.height)
+    x = primaryLabel.frame.maxX + 6.0
+    secondaryLabel.frame = CGRect(
+      x: x, y: 0.0, width: max(0.0, trailing - x), height: bounds.height)
   }
 }

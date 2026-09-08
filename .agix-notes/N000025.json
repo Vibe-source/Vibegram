@@ -1,0 +1,18 @@
+{
+  "id": 25,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Video-note tap scale was computed 215→263 but ChatTimelineLayout heightByIdentity reused the old 215; a bare invalidateLayout() does not drop that memo. reloadAgentTurnStateRow now calls invalidateLayoutHeights. Also ignore DidPlayToEndTime for 0.5s after expand so leftover loop-end does not collapse immediately.",
+  "selector": "ios/ChatModule/ChatListView.swift::ChatListView.reloadAgentTurnStateRow",
+  "path": "ios/ChatModule/ChatListView.swift",
+  "fqn": "ChatListView.reloadAgentTurnStateRow",
+  "line": 14451,
+  "anchor_hash": "47191d63839af2e5ad9c48d408b6ddc36db6f78d37681e57a13b7e9ec60b38b7",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787746616,
+  "updated_at": 1787746616
+}

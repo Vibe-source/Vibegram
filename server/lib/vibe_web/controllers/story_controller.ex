@@ -6,12 +6,10 @@ defmodule VibeWeb.StoryController do
   use VibeWeb, :controller
 
   alias Vibe.Stories
-  alias Vibe.SupabaseStorage
+  alias Vibe.Storage
 
   @doc """
   Creates a new story.
-  POST /api/stories
-  Body: { user_id, media_url, media_type, caption?, visibility?, visible_to?, hidden_from?, original_media_url? }
   """
   def create(conn, params) do
     user_id = conn.assigns.current_user.id
@@ -99,7 +97,6 @@ defmodule VibeWeb.StoryController do
     viewer_id = conn.assigns.current_user.id
     stories = Stories.get_user_stories(target_user_id)
 
-    # Filter by visibility
     visible_stories =
       if params["viewer_id"] && params["viewer_id"] != viewer_id do
         []
@@ -115,8 +112,6 @@ defmodule VibeWeb.StoryController do
 
   @doc """
   Marks a story as viewed.
-  POST /api/stories/:story_id/view
-  Body: { viewer_id }
   """
   def view(conn, %{"story_id" => story_id} = params) do
     viewer_id = conn.assigns.current_user.id
@@ -177,8 +172,6 @@ defmodule VibeWeb.StoryController do
 
   @doc """
   Updates story visibility.
-  PUT /api/stories/:story_id/visibility
-  Body: { user_id, visibility, visible_to?, hidden_from? }
   """
   def update_visibility(conn, %{"story_id" => story_id} = params) do
     user_id = conn.assigns.current_user.id
@@ -206,11 +199,11 @@ defmodule VibeWeb.StoryController do
     %{
       id: story.id,
       user_id: story.user_id,
-      media_url: SupabaseStorage.rewrite_public_url(story.media_url),
+      media_url: Storage.rewrite_public_url(story.media_url),
       media_type: story.media_type,
       caption: story.caption,
       duration: story.duration,
-      original_media_url: SupabaseStorage.rewrite_public_url(story.original_media_url),
+      original_media_url: Storage.rewrite_public_url(story.original_media_url),
       visibility: story.visibility,
       view_count: Map.get(story, :view_count, 0),
       expires_at: format_datetime(story.expires_at),

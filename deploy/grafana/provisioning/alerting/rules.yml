@@ -1,0 +1,333 @@
+apiVersion: 1
+
+# Every rule is query -> reduce -> threshold. Thresholds are set where a human
+# would act, not where a number looks bad, so a firing alert always means work.
+groups:
+  - orgId: 1
+    name: vibe-critical
+    folder: Vibe
+    interval: 1m
+    rules:
+      - uid: vibe-target-down
+        title: Service not being scraped
+        condition: C
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} has stopped reporting metrics"
+          runbook: "agent-ops.sh status; agent-ops.sh logs <svc>"
+        noDataState: Alerting
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: vibe-prom
+            model: { refId: A, expr: "up", instant: true }
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: lt, params: [1] } }]
+
+      - uid: vibe-postgres-down
+        title: PostgreSQL exporter reports database down
+        condition: C
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "PostgreSQL is not accepting exporter connections"
+        noDataState: Alerting
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: vibe-prom
+            model: { refId: A, expr: "pg_up", instant: true }
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model: { refId: C, type: threshold, expression: B, conditions: [{ evaluator: { type: lt, params: [1] } }] }
+
+      - uid: vibe-postgres-archiver-failing
+        title: PostgreSQL WAL archiving is failing
+        condition: C
+        labels: { severity: critical }
+        annotations:
+          summary: "PostgreSQL reported a failed WAL archive operation"
+        noDataState: Alerting
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: vibe-prom
+            model: { refId: A, expr: "increase(pg_stat_archiver_failed_count[15m])", instant: true }
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model: { refId: C, type: threshold, expression: B, conditions: [{ evaluator: { type: gt, params: [0] } }] }
+
+      - uid: vibe-postgres-connections-high
+        title: PostgreSQL connections high
+        condition: C
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "More than 150 PostgreSQL connections are active"
+        noDataState: Alerting
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: vibe-prom
+            model: { refId: A, expr: "sum(pg_stat_activity_count)", instant: true }
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model: { refId: C, type: threshold, expression: B, conditions: [{ evaluator: { type: gt, params: [150] } }] }
+
+      - uid: vibe-postgres-deadlocks
+        title: PostgreSQL deadlock detected
+        condition: C
+        labels: { severity: critical }
+        annotations:
+          summary: "PostgreSQL reported a deadlock in the last 10 minutes"
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: vibe-prom
+            model: { refId: A, expr: "increase(pg_stat_database_deadlocks[10m])", instant: true }
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model: { refId: C, type: threshold, expression: B, conditions: [{ evaluator: { type: gt, params: [0] } }] }
+
+      - uid: vibe-disk-low
+        title: Disk almost full
+        condition: C
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "Root filesystem below 15% free — postgres and the journal stop cleanly at 0"
+        noDataState: NoData
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: vibe-prom
+            model:
+              refId: A
+              instant: true
+              expr: 'node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}'
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: lt, params: [0.15] } }]
+
+      - uid: vibe-memory-low
+        title: Memory headroom gone
+        condition: C
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "Under 800MB available — the next container spike gets OOM-killed"
+        noDataState: NoData
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: vibe-prom
+            model: { refId: A, instant: true, expr: "node_memory_MemAvailable_bytes" }
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: lt, params: [838860800] } }]
+
+      - uid: vibe-error-log-spike
+        title: Error log spike
+        condition: C
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Sustained fatal/crash/panic lines — open the Live logs panel"
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: vibe-loki
+            model:
+              refId: A
+              expr: 'sum(rate({job="journal"} |~ "(?i)(fatal|crash|panic|\\[error\\])" [5m]))'
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: max }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [1] } }]
+
+  - orgId: 1
+    name: vibe-warning
+    folder: Vibe
+    interval: 1m
+    rules:
+      - uid: vibe-http-latency
+        title: HTTP p95 latency high
+        condition: C
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 over 2s for 10 minutes on {{ $labels.job }}"
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: vibe-prom
+            model:
+              refId: A
+              expr: "histogram_quantile(0.95, sum by (le, job) (rate(phoenix_endpoint_stop_duration_milliseconds_bucket[5m])))"
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: mean }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [2000] } }]
+
+      - uid: vibe-db-slow
+        title: Database queries slow
+        condition: C
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Query p95 over 500ms — check pg_stat_statements and SHOW POOLS"
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: vibe-prom
+            model:
+              refId: A
+              expr: "histogram_quantile(0.95, sum by (le, job) (rate(vibe_repo_query_total_time_milliseconds_bucket[5m])))"
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: mean }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [500] } }]
+
+      - uid: vibe-cache-hit-ratio
+        title: Auth cache hit ratio collapsed
+        condition: C
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Token cache under 50% hits — every miss is a database round trip"
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: { from: 3600, to: 0 }
+            datasourceUid: vibe-prom
+            model:
+              refId: A
+              expr: 'sum(rate(vibe_cache_token_count{result="hit"}[10m])) / clamp_min(sum(rate(vibe_cache_token_count[10m])), 0.001)'
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: mean }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: lt, params: [0.5] } }]
+
+      - uid: vibe-cache-evictions
+        title: Valkey is evicting
+        condition: C
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "maxmemory reached — rate-limit counters are being dropped early; raise maxmemory or shard"
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: { from: 1800, to: 0 }
+            datasourceUid: vibe-prom
+            model: { refId: A, expr: "rate(redis_evicted_keys_total[10m])" }
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: mean }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+
+      - uid: vibe-rate-limit-spike
+        title: Rate-limit blocks spiking
+        condition: C
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Sustained blocks on {{ $labels.type }} — abuse, or a client in a retry loop"
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: vibe-prom
+            model: { refId: A, expr: "sum by (type) (rate(vibe_rate_limit_blocked_count[5m]))" }
+          - refId: B
+            datasourceUid: __expr__
+            model: { refId: B, type: reduce, expression: A, reducer: mean }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [2] } }]

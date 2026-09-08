@@ -1,0 +1,77 @@
+/* ============================================================
+   Vibe shared site footer — used on Home, Docs, Terms, Privacy.
+   ============================================================ */
+
+.vl-footer {
+    position: relative;
+    z-index: 1;
+    border-top: 1px solid var(--vl-line);
+    background: rgba(4, 7, 6, 0.72);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    padding: clamp(48px, 7vw, 90px) var(--vl-gutter) 36px;
+    overflow: hidden;
+    font-family: var(--vl-font-display) !important;
+    color: var(--vl-ink);
+}
+
+.vl-footer-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 36px;
+    max-width: 1080px;
+    margin: 0 auto clamp(48px, 6vw, 80px);
+}
+
+@media (max-width: 780px) {
+    .vl-footer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 30px; }
+}
+
+@media (max-width: 460px) {
+    .vl-footer-grid { grid-template-columns: 1fr; gap: 30px; }
+}
+
+.vl-footer-col {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.vl-footer-head {
+    font-family: var(--vl-font-mono) !important;
+    font-size: 10px;
+    letter-spacing: 0.26em;
+    color: var(--vl-teal);
+    margin-bottom: 6px;
+}
+
+.vl-footer-col a {
+    color: var(--vl-dim);
+    text-decoration: none;
+    font-size: 14px;
+    transition: color 0.18s ease;
+    width: fit-content;
+}
+
+.vl-footer-col a:hover { color: var(--vl-ink); }
+
+.vl-footer-bottom {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px 28px;
+    max-width: 1080px;
+    margin: 0 auto;
+    border-top: 1px solid var(--vl-line);
+    padding-top: 24px;
+    font-family: var(--vl-font-mono) !important;
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: var(--vl-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .vl-footer-col a {
+        transition: none;
+    }
+}

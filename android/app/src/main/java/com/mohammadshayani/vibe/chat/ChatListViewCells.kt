@@ -116,42 +116,169 @@ internal class MessageSelectionCircleView(context: Context) : View(context) {
     )
 }
 
-internal class BubbleTailView(context: Context) : View(context) {
-  companion object {
-    // Slightly softer than 25f on Android rasterization to avoid 1px seam artifacts.
-    private const val TAIL_ROTATION_DEGREES = 24f
+internal data class BubbleTailPoint(val x: Float, val y: Float)
+
+internal data class BubbleTailGeometry(
+  val outerStart: BubbleTailPoint,
+  val outerControl1: BubbleTailPoint,
+  val outerControl2: BubbleTailPoint,
+  val tip: BubbleTailPoint,
+  val innerControl1: BubbleTailPoint,
+  val innerControl2: BubbleTailPoint,
+  val notch: BubbleTailPoint,
+  val cornerControl1: BubbleTailPoint,
+  val cornerControl2: BubbleTailPoint,
+  val bottomJoin: BubbleTailPoint,
+)
+
+/** Exact radius-18 geometry from iOS TelegramReferenceTailGeometry. */
+internal object BubbleTailGeometrySource {
+  private const val COMPACT_SCALE = 0.58f
+  private const val REFERENCE_INSIDE_EXTENT = 14.7700f
+  private const val REFERENCE_OUTSIDE_EXTENT = 5.3793f
+  private const val REFERENCE_TOP_EXTENT = 7.9401f
+  private const val REFERENCE_BOTTOM_RESERVE = 0.5f
+  private const val FRAME_PADDING = 1f
+
+  private val referenceOuterStart = BubbleTailPoint(0.0967f, -7.9401f)
+  private val referenceOuterControl1 = BubbleTailPoint(0.0967f, -4.6557f)
+  private val referenceOuterControl2 = BubbleTailPoint(4.4885f, -2.5490f)
+  private val referenceTip = BubbleTailPoint(5.3793f, 0.0061f)
+  private val referenceInnerControl1 = BubbleTailPoint(0.6122f, 0.6143f)
+  private val referenceInnerControl2 = BubbleTailPoint(-3.9233f, -0.5402f)
+  private val referenceNotch = BubbleTailPoint(-7.0522f, -3.8821f)
+  private val referenceCornerControl1 = BubbleTailPoint(-9.0308f, -1.5103f)
+  private val referenceCornerControl2 = BubbleTailPoint(-12.1883f, 0.0061f)
+  private val referenceBottomJoin = BubbleTailPoint(-14.7700f, 0.0061f)
+
+  fun resolve(curvature: Float): BubbleTailGeometry {
+    val t = curvature.coerceIn(0f, 1f)
+    val straightOuterStart = compact(referenceOuterStart)
+    val straightTip = compact(referenceTip)
+    val straightNotch = compact(referenceNotch)
+    val straightBottomJoin = compact(referenceBottomJoin)
+    return BubbleTailGeometry(
+      outerStart = adjustable(straightOuterStart, referenceOuterStart, t),
+      outerControl1 = adjustable(chord(straightOuterStart, straightTip, 1f / 3f), referenceOuterControl1, t),
+      outerControl2 = adjustable(chord(straightOuterStart, straightTip, 2f / 3f), referenceOuterControl2, t),
+      tip = adjustable(straightTip, referenceTip, t),
+      innerControl1 = adjustable(chord(straightTip, straightNotch, 1f / 3f), referenceInnerControl1, t),
+      innerControl2 = adjustable(chord(straightTip, straightNotch, 2f / 3f), referenceInnerControl2, t),
+      notch = adjustable(straightNotch, referenceNotch, t),
+      cornerControl1 = adjustable(
+        chord(straightNotch, straightBottomJoin, 1f / 3f),
+        referenceCornerControl1,
+        t,
+      ),
+      cornerControl2 = adjustable(
+        chord(straightNotch, straightBottomJoin, 2f / 3f),
+        referenceCornerControl2,
+        t,
+      ),
+      bottomJoin = adjustable(straightBottomJoin, referenceBottomJoin, t),
+    )
   }
+
+  fun frameWidthDp(radiusDp: Float): Float =
+    (REFERENCE_INSIDE_EXTENT + REFERENCE_OUTSIDE_EXTENT) * scale(radiusDp) + (FRAME_PADDING * 2f)
+
+  fun frameHeightDp(radiusDp: Float): Float =
+    (REFERENCE_TOP_EXTENT + REFERENCE_BOTTOM_RESERVE) * scale(radiusDp) + (FRAME_PADDING * 2f)
+
+  fun bodyCornerFromLeftDp(radiusDp: Float, isMe: Boolean): Float =
+    (if (isMe) REFERENCE_INSIDE_EXTENT else REFERENCE_OUTSIDE_EXTENT) * scale(radiusDp) + FRAME_PADDING
+
+  fun bodyCornerFromTopDp(radiusDp: Float): Float =
+    REFERENCE_TOP_EXTENT * scale(radiusDp) + FRAME_PADDING
+
+  fun outsideOverhangDp(radiusDp: Float): Float =
+    REFERENCE_OUTSIDE_EXTENT * scale(radiusDp) + FRAME_PADDING
+
+  fun bottomOverhangDp(radiusDp: Float): Float =
+    REFERENCE_BOTTOM_RESERVE * scale(radiusDp) + FRAME_PADDING
+
+  private fun scale(radiusDp: Float): Float = radiusDp.coerceAtLeast(0f) / 18f
+
+  private fun compact(point: BubbleTailPoint): BubbleTailPoint =
+    BubbleTailPoint(point.x * COMPACT_SCALE, point.y * COMPACT_SCALE)
+
+  private fun chord(start: BubbleTailPoint, end: BubbleTailPoint, fraction: Float): BubbleTailPoint =
+    BubbleTailPoint(
+      start.x + (end.x - start.x) * fraction,
+      start.y + (end.y - start.y) * fraction,
+    )
+
+  private fun adjustable(
+    straight: BubbleTailPoint,
+    reference: BubbleTailPoint,
+    curvature: Float,
+  ): BubbleTailPoint {
+    if (curvature >= 0.999999f) return reference
+    return BubbleTailPoint(
+      straight.x + (reference.x - straight.x) * curvature,
+      straight.y + (reference.y - straight.y) * curvature,
+    )
+  }
+}
+
+internal class BubbleTailView(context: Context) : View(context) {
 
   private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     style = Paint.Style.FILL
     color = Color.argb(255, 106, 79, 207)
   }
   private val path = Path()
+  private var isMe = true
+  private var cornerRadiusDp = 18f
+  private var curvature = 1f
 
-  fun configure(isMe: Boolean, color: Int, visible: Boolean) {
+  fun configure(
+    isMe: Boolean,
+    color: Int,
+    visible: Boolean,
+    cornerRadiusDp: Float = 18f,
+    curvature: Float = 1f,
+  ) {
+    this.isMe = isMe
+    this.cornerRadiusDp = cornerRadiusDp.coerceAtLeast(0f)
+    this.curvature = curvature.coerceIn(0f, 1f)
     paint.color = color
-    rotation = if (isMe) TAIL_ROTATION_DEGREES else -TAIL_ROTATION_DEGREES
-    scaleX = if (isMe) 1f else -1f
+    rotation = 0f
+    scaleX = 1f
     visibility = if (visible) View.VISIBLE else View.GONE
     invalidate()
   }
 
   override fun onDraw(canvas: Canvas) {
     if (visibility != View.VISIBLE) return
-    path.reset()
-    path.moveTo(0f, 0f)
-    path.quadTo(-5f, 22f, 14f, 25f)
-    path.quadTo(10.5f, 29f, 0f, 29f)
-    path.close()
+    val geometry = BubbleTailGeometrySource.resolve(curvature)
+    val density = resources.displayMetrics.density
+    val pointScale = density * (cornerRadiusDp / 18f)
+    val originX = density * BubbleTailGeometrySource.bodyCornerFromLeftDp(cornerRadiusDp, isMe)
+    val originY = density * BubbleTailGeometrySource.bodyCornerFromTopDp(cornerRadiusDp)
+    val direction = if (isMe) 1f else -1f
+    fun x(point: BubbleTailPoint): Float = originX + direction * point.x * pointScale
+    fun y(point: BubbleTailPoint): Float = originY + point.y * pointScale
 
-    canvas.save()
-    val sx = width / 29f
-    val sy = height / 29f
-    canvas.scale(sx, sy)
-    // Match iOS tail masking bounds to avoid exposing tiny rotated-edge artifacts.
-    canvas.clipRect(-5f, 29f * 0.42f, 34f, 34f)
+    path.reset()
+    path.moveTo(x(geometry.outerStart), y(geometry.outerStart))
+    path.cubicTo(
+      x(geometry.outerControl1), y(geometry.outerControl1),
+      x(geometry.outerControl2), y(geometry.outerControl2),
+      x(geometry.tip), y(geometry.tip),
+    )
+    path.cubicTo(
+      x(geometry.innerControl1), y(geometry.innerControl1),
+      x(geometry.innerControl2), y(geometry.innerControl2),
+      x(geometry.notch), y(geometry.notch),
+    )
+    path.cubicTo(
+      x(geometry.cornerControl1), y(geometry.cornerControl1),
+      x(geometry.cornerControl2), y(geometry.cornerControl2),
+      x(geometry.bottomJoin), y(geometry.bottomJoin),
+    )
+    path.close()
     canvas.drawPath(path, paint)
-    canvas.restore()
   }
 }
 
@@ -1541,7 +1668,10 @@ internal fun createNativeMessageRowViewHolder(context: Context): NativeRowViewHo
   )
   root.addView(
     tail,
-    FrameLayout.LayoutParams(dp(29), dp(29)),
+    FrameLayout.LayoutParams(
+      dpF(BubbleTailGeometrySource.frameWidthDp(18f)).roundToInt(),
+      dpF(BubbleTailGeometrySource.frameHeightDp(18f)).roundToInt(),
+    ),
   )
   root.addView(bubble)
   root.addView(

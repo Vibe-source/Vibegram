@@ -1,0 +1,265 @@
+{
+  "uid": "vibe-overview",
+  "title": "Vibe — overview",
+  "tags": ["vibe"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "container",
+        "label": "container",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "vibe-loki" },
+        "query": "label_values(container)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Service health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Targets up",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+      "options": { "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        }
+      },
+      "targets": [
+        { "refId": "A", "expr": "up", "legendFormat": "{{job}}", "instant": true }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP requests / sec",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 5, "w": 9, "x": 6, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job) (rate(phoenix_endpoint_stop_duration_milliseconds_count[5m]))",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP latency p95 / p99",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 5, "w": 9, "x": 15, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, job) (rate(phoenix_endpoint_stop_duration_milliseconds_bucket[5m])))",
+          "legendFormat": "p95 {{job}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by (le, job) (rate(phoenix_endpoint_stop_duration_milliseconds_bucket[5m])))",
+          "legendFormat": "p99 {{job}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Database and BEAM",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Query time p95 (ms)",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, job) (rate(vibe_repo_query_total_time_milliseconds_bucket[5m])))",
+          "legendFormat": "p95 {{job}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "BEAM memory",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [
+        { "refId": "A", "expr": "vm_memory_total", "legendFormat": "{{job}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Run queue (scheduler backlog)",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 7 },
+      "targets": [
+        { "refId": "A", "expr": "vm_total_run_queue_lengths_total", "legendFormat": "total {{job}}" },
+        { "refId": "B", "expr": "vm_total_run_queue_lengths_io", "legendFormat": "io {{job}}" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Host capacity",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 }
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU used %",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "min": 0 } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+          "legendFormat": "cpu"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory available",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [
+        { "refId": "A", "expr": "node_memory_MemAvailable_bytes", "legendFormat": "available" },
+        { "refId": "B", "expr": "node_memory_SwapFree_bytes", "legendFormat": "swap free" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Disk free (/)",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 14 },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_filesystem_avail_bytes{mountpoint=\"/\"}",
+          "legendFormat": "free"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Load average",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 14 },
+      "targets": [
+        { "refId": "A", "expr": "node_load1", "legendFormat": "1m" },
+        { "refId": "B", "expr": "node_load15", "legendFormat": "15m" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Errors and abuse",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate-limit blocks / sec",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 21 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (type) (rate(vibe_rate_limit_blocked_count[5m]))",
+          "legendFormat": "{{type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Log lines matching error / sec",
+      "datasource": { "type": "loki", "uid": "vibe-loki" },
+      "gridPos": { "h": 6, "w": 16, "x": 8, "y": 21 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (container) (rate({job=\"journal\", container=~\".+\"} |~ \"(?i)(error|fatal|crash|panic)\" [5m]))",
+          "legendFormat": "{{container}}"
+        }
+      ]
+    },
+    {
+      "type": "logs",
+      "title": "Live logs",
+      "datasource": { "type": "loki", "uid": "vibe-loki" },
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 27 },
+      "options": {
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true,
+        "enableLogDetails": true
+      },
+      "targets": [
+        { "refId": "A", "expr": "{job=\"journal\", container=~\"$container\"}" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Cache",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Auth token cache hit ratio",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 42 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(vibe_cache_token_count{result=\"hit\"}[5m])) / clamp_min(sum(rate(vibe_cache_token_count[5m])), 0.001)",
+          "legendFormat": "hit ratio"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Valkey hit ratio",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 42 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(redis_keyspace_hits_total[5m]) / clamp_min(rate(redis_keyspace_hits_total[5m]) + rate(redis_keyspace_misses_total[5m]), 0.001)",
+          "legendFormat": "hit ratio"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Valkey memory and evictions",
+      "datasource": { "type": "prometheus", "uid": "vibe-prom" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 42 },
+      "targets": [
+        { "refId": "A", "expr": "redis_memory_used_bytes", "legendFormat": "used bytes" },
+        { "refId": "B", "expr": "redis_memory_max_bytes", "legendFormat": "maxmemory" },
+        { "refId": "C", "expr": "rate(redis_evicted_keys_total[5m])", "legendFormat": "evictions/s" }
+      ]
+    }
+  ]
+}

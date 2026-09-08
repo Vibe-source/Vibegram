@@ -9,15 +9,12 @@ defmodule Vibe.Badges do
 
   @badge_priority %{"admin" => 5, "verified" => 4, "gold" => 3, "silver" => 2, "bronze" => 1}
 
-  # ============================================
   # Badge Functions
-  # ============================================
 
   @doc """
   Award a badge to a user.
   """
   def award_badge(user_id, badge_type, source) do
-    # Deactivate lower priority badges
     deactivate_lower_badges(user_id, badge_type)
 
     %Badge{}
@@ -95,7 +92,6 @@ defmodule Vibe.Badges do
 
       badge ->
         Repo.delete(badge)
-        # Reactivate next highest badge if exists
         reactivate_highest_badge(user_id)
     end
   end

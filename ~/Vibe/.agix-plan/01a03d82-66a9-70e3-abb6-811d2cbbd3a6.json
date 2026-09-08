@@ -1,0 +1,54 @@
+{
+  "session": "01a03d82-66a9-70e3-abb6-811d2cbbd3a6",
+  "task": "please fix the handle send cell and rtl text cu…",
+  "steps": [
+    {
+      "what": "Trace video-note recorder release, outgoing-row transition, upload-state, cell layout, and playback lifecycle",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    },
+    {
+      "what": "Patch the video-note cell chrome and neutral pending/progress/error states",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    },
+    {
+      "what": "Implement continuous release-to-cell morph plus autoplay and play-scale lifecycle",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    },
+    {
+      "what": "Run the Agix-managed iOS build and review the complete diff",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    },
+    {
+      "what": "Append the shared project memory entry",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    }
+  ],
+  "state": "approved",
+  "by": "",
+  "at": 1787741014
+}

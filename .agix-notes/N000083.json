@@ -1,0 +1,18 @@
+{
+  "id": 83,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "Consume view-once only after the clear page is on a successfully presented viewer, exactly once. Replace consumed media with a viewed/expired service-pill tombstone; do not delete the row. Timed media deadline starts on successful display.",
+  "selector": "ios/ChatModule/ChatListView.swift::ChatListView.noteProtectedMediaOpened",
+  "path": "ios/ChatModule/ChatListView.swift",
+  "fqn": "ChatListView.noteProtectedMediaOpened",
+  "line": 17551,
+  "anchor_hash": "92682a0014af3f38e96f64589ec59aaa0c7c738ef3922bcd5ca9fef99cf8cfd8",
+  "branch": "main",
+  "commit": "976f6743c48673d437c1888db94b2627a35089b5",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787828463,
+  "updated_at": 1787828463
+}

@@ -664,13 +664,6 @@ final class VibeNativeCallScreenController: UIViewController {
     ])
   }
 
-  private func makeActionChip(key: String, title: String, width: CGFloat) -> NativeCallActionChip {
-    let chip = NativeCallActionChip(title: title, width: width, height: 54)
-    chip.accessibilityIdentifier = key
-    chip.addTarget(self, action: #selector(onButtonTap(_:)), for: .touchUpInside)
-    actionChips[key] = chip
-    return chip
-  }
 
   private func updateAvatarImage(from urlString: String?) {
     let normalized = normalizedString(urlString)
@@ -699,7 +692,7 @@ final class VibeNativeCallScreenController: UIViewController {
 
     guard let url = URL(string: normalized) else { return }
 
-    let task = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+    let task = VibeHTTP.shared.dataTask(with: url) { [weak self] data, _, _ in
       guard
         let self,
         let data,
@@ -1306,27 +1299,6 @@ final class VibeNativeCallScreenController: UIViewController {
     coordinator?.emitEvent(event)
   }
 
-  private func styleActionChip(
-    _ key: String,
-    title: String,
-    symbol: String,
-    fill: UIColor,
-    iconTint: UIColor,
-    textTint: UIColor,
-    border: UIColor,
-    showTitle: Bool
-  ) {
-    guard let chip = actionChips[key] else { return }
-    chip.apply(
-      title: title,
-      symbol: symbol,
-      fillColor: fill,
-      iconTintColor: iconTint,
-      textColor: textTint,
-      borderColor: border,
-      showsTitle: showTitle
-    )
-  }
 
   private func styleButton(
     _ key: String,

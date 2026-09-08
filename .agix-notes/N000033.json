@@ -1,0 +1,18 @@
+{
+  "id": 33,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — the allowance ran out mid-task\nFILES: /Users/mohammadshayani/Vibe/ios/Sources/Core/VibeSecureSessions.swift, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatEngine.swift, /Users/mohammadshayani/Vibe/core/vibe_secure/tests/round_trip.rs, /Users/mohammadshayani/Vibe/core/vibe_core_ffi/src/secure.rs, /Users/mohammadshayani/Vibe/core/vibe_secure/src/lib.rs, /Users/mohammadshayani/Vibe/core/vibe_secure/src/session.rs (+2)",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "codex",
+  "author": "Vibe Team",
+  "created_at": 1787750717,
+  "updated_at": 1787751065
+}

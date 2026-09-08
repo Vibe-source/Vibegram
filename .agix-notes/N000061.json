@@ -1,0 +1,18 @@
+{
+  "id": 61,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Reaction chip alpha is driven by ChatReactionTransitionCoordinator: ChatReactionChipView.apply (ios/ChatModule/ChatListViewCells.swift:2228) sets 'alpha = hidesEmoji ? 0.0 : 1.0' where hidesEmoji = coordinator.isFlying(chat,message,emoji) (:2306). Any flight that never calls finishFlight — cell recycled, window gone, animation completion dropped — leaves the chip permanently at alpha 0 / the strip looking half-faded. Suspect #1 for the reported 'reaction causes a slight cell opacity issue'.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787760803,
+  "updated_at": 1787760803
+}

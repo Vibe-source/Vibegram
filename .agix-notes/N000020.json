@@ -1,0 +1,18 @@
+{
+  "id": 20,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Crypto instrumentation + core sealed_elsewhere flag are compile-verified: xcodebuild Vibe (generic/platform=iOS, Debug) BUILD SUCCEEDED, and cargo test -p vibe_core --lib canonical = 20 passed. No FFI signature changed, so the shipped XCFramework still links; the Rust flag only takes effect after the next core rebuild.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787745006,
+  "updated_at": 1787745006
+}

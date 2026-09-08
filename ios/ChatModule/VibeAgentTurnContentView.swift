@@ -40,6 +40,10 @@ final class VibeAgentTurnContentView: UIView {
   override init(frame: CGRect) {
     super.init(frame: frame)
     backgroundColor = .clear
+    // The body owns required-height text/code rows while the chat list owns this wrapper's
+    // manual frame. During a streaming growth tick those two heights can differ for one
+    // layout pass; contain the body until the collection installs the newly measured slot.
+    clipsToBounds = true
     bodyView.translatesAutoresizingMaskIntoConstraints = false
     addSubview(bodyView)
     // The chat-bubble cell positions this wrapper with MANUAL FRAMES (it never turns off
@@ -129,6 +133,19 @@ final class VibeAgentTurnContentView: UIView {
   ) {
     let message = VibeAgentKitMap.chatMessage(from: row)
     var displayText = resoloAssistantDisplayText(for: message)
+    var displayItems = message.progressItems
+
+    // Supervisor team lead: the bubble shows a STABLE, append-only team feed — the
+    // lead's opening line + one tappable row per worker — instead of the lead's own
+    // rolling narration/tool stream. Re-rendering the whole body every stream frame is
+    // what made the team cell "reset"/shift constantly and hide all worker progress.
+    // The full lead feed stays reachable via the header tap (multi-agent sheet).
+    if bubbleRendersTeamRun(row), let runtime = row.agentRuntime {
+      let team = vibeAgentTeamDisplayFeed(
+        row: row, runtime: runtime, message: message, bodyText: displayText)
+      displayItems = team.items
+      displayText = team.bodyText
+    }
 
     // Guard against the "stopped mid-stream → blank bubble" bug: when a turn is
     // FINALIZED (not streaming) but maps to nothing renderable — no answer text, no
@@ -140,7 +157,7 @@ final class VibeAgentTurnContentView: UIView {
     // invisible, and log it so we can spot any OTHER path that lands here.
     if !message.isStreaming
       && displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && message.progressItems.isEmpty
+      && displayItems.isEmpty
       && message.runtime == nil
     {
       let statusText = row.status ?? "nil"
@@ -158,10 +175,10 @@ final class VibeAgentTurnContentView: UIView {
     // card isn't a zero-height empty shell while steps remain expandable.
     if !message.isStreaming
       && displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && !message.progressItems.isEmpty
+      && !displayItems.isEmpty
       && message.hasFinalResponseText
     {
-      let toolCount = message.progressItems.filter { $0.itemType != "text" }.count
+      let toolCount = displayItems.filter { $0.itemType != "text" }.count
       if toolCount > 0 {
         displayText = ""  // Worked · N steps loader carries the summary; no fake body
       }
@@ -174,7 +191,7 @@ final class VibeAgentTurnContentView: UIView {
       appearance: appearance,
       availableWidth: availableWidth,
       messageId: message.id,
-      progressItems: message.progressItems,
+      progressItems: displayItems,
       subagentChildren: message.subagentChildren,
       fallbackProgressLabels: message.progress,
       runtime: message.runtime,
@@ -187,6 +204,146 @@ final class VibeAgentTurnContentView: UIView {
       isContentCollapsed: isContentCollapsed
     )
   }
+}
+
+/// Builds the supervisor-team lead bubble's display feed. Append-only by construction:
+/// 1. the lead's OPENING narration paragraph ("I'm going to split this across…") — the
+///    first paragraph of the first text node, which stops changing once the lead moves
+///    past its intro (later narration/tool churn never touches it);
+/// 2. one `teamworker` row per worker (avatar + name + live status/last step), tappable
+///    → that worker's read-only detail view. Status text mutates in place (same height),
+///    so worker progress is visible without the cell ever re-flowing;
+/// 3. when the run settles, the lead's final answer becomes the body below the rows.
+/// The lead's own tool steps and rolling narration are deliberately NOT rendered here —
+/// they re-measured the bubble every stream frame (the "team cell keeps
+/// resetting/shifting" complaint). They remain in the header-tap multi-agent sheet.
+func vibeAgentTeamDisplayFeed(
+  row: ChatListRow,
+  runtime: ChatListRow.AgentRuntimeSummary,
+  message: VibeAgentKitChatMessage,
+  bodyText: String
+) -> (items: [VibeAgentKitProgressItem], bodyText: String) {
+  var items: [VibeAgentKitProgressItem] = []
+
+  // Intro: mid-run only — once settled the full final answer renders as the body and
+  // would duplicate the opening line. When the run is suppress-all-text (supervisor
+  // team), the lead posts NO narration paragraph at all: the cell is a pure progress
+  // runner (worker rows with live "reading/editing" status), and the only prose is the
+  // lead's final summary at settle.
+  if message.isStreaming, !runtime.suppressAllText {
+    let firstNarration = message.progressItems.first {
+      $0.itemType == "text" && !$0.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    if let intro = firstNarration?.label
+      .components(separatedBy: "\n\n").first?
+      .trimmingCharacters(in: .whitespacesAndNewlines), !intro.isEmpty
+    {
+      items.append(
+        VibeAgentKitProgressItem(
+          label: intro, badges: [], eventType: "progress", recipient: nil,
+          platform: nil, format: nil, messageContent: nil, messagePreview: nil,
+          voiceUrl: nil, voiceDuration: nil, status: nil, isRecording: false,
+          recordingStartTime: nil, tool: nil, image: nil, itemType: "text", sourceUrl: nil))
+    }
+  }
+
+  // Worker rows: real statuses when the bridge has reported them, else a synthesized
+  // "starting" row per known handle so the team roster shows from the first frame.
+  let roster: [ChatListRow.TeamWorkerStatus] =
+    runtime.teamWorkersStatus.isEmpty
+    ? runtime.teamWorkers.map {
+      ChatListRow.TeamWorkerStatus(
+        worker: $0, label: $0.capitalized,
+        status: message.isStreaming ? "starting" : "done",
+        startedAt: nil, finishedAt: nil, durationMs: nil,
+        summary: nil, taskId: nil, lastLabel: nil)
+    }
+    : runtime.teamWorkersStatus
+
+  // Real-time nodes. Each worker appears as a node only once the monitor has actually
+  // ENGAGED it — a still-pending/queued member stays hidden until it starts (and a run
+  // that finishes without ever engaging it never shows it). The lead is the monitor
+  // voice (intro + final answer), not a worker node under itself, so it's filtered out
+  // — EXCEPT on a solo run, where the single member IS the lead and must remain visible.
+  let leadHandle = (runtime.leadWorker ?? "").lowercased()
+  let hasNonLeadWorker = roster.contains { $0.worker.lowercased() != leadHandle }
+  let statuses = roster.filter { status in
+    let handle = status.worker.lowercased()
+    if hasNonLeadWorker, !leadHandle.isEmpty, handle == leadHandle { return false }
+    let s = status.status.lowercased()
+    if s == "pending" || s == "queued" { return false }
+    return true
+  }
+
+  // A settled turn has no live workers: once the message stops streaming, any worker
+  // still reading running/starting/waiting is stale (the run ended without a terminal
+  // frame — CLI crash, or orphaned by a server redeploy). Present it as "stopped" so the
+  // row never keeps a lingering shimmer after the run is over. This is the client's half
+  // of the fix — the worker statuses live inside the E2E-encrypted runtime, so only here
+  // (post-decryption) can they be terminalized; ChatEngine only flips the isStreaming flag.
+  let runNotStreaming = !message.isStreaming
+  let staleWorkerStates: Set<String> = [
+    "running", "starting", "pending", "queued", "active", "streaming",
+    "waiting", "in-progress", "in_progress", "working",
+  ]
+  for status in statuses {
+    let name = status.label.isEmpty ? status.worker.capitalized : status.label
+    let effectiveStatus =
+      (runNotStreaming && staleWorkerStates.contains(status.status.lowercased()))
+      ? "stopped" : status.status
+    let statusText: String = {
+      let s = effectiveStatus.lowercased()
+      if s == "done" || s == "completed" {
+        if let ms = status.durationMs, ms > 0 {
+          return "done · \(ChatListRow.TeamWorkerStatus.formatDuration(ms))"
+        }
+        return "done"
+      }
+      if s == "failed" || s == "error" { return "failed" }
+      if s == "skipped" { return "skipped" }
+      // Settled without a terminal frame (crashed run / orphaned by a server redeploy)
+      // — a real stopped state, never a lingering "working…".
+      if s == "stopped" || s == "cancelled" || s == "reassigned" { return "stopped" }
+      // The spawn beat: the lead has just called this CLI but no tool event has
+      // landed yet. "Calling…" next to the worker's avatar reads as "calling grok";
+      // the row appends the live elapsed clock ("Calling… · 0m 07s").
+      if s == "starting" || s == "pending" { return "Calling…" }
+      // Payload-contract barrier: a consumer held until its owner freezes the shape.
+      // The server puts "waiting for <contract> from <owner>" in lastLabel; show it so
+      // the user sees the barrier working (never a spinner, never hidden).
+      if s == "waiting" {
+        if let last = status.lastLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !last.isEmpty
+        {
+          return last.count > 40 ? String(last.prefix(40)) + "…" : last
+        }
+        return "waiting for payload…"
+      }
+      if let last = status.lastLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !last.isEmpty
+      {
+        return last.count > 34 ? String(last.prefix(34)) + "…" : last
+      }
+      return "working…"
+    }()
+    items.append(
+      VibeAgentKitProgressItem(
+        label: name, badges: [], eventType: "progress", recipient: nil, platform: nil,
+        format: nil, messageContent: nil, messagePreview: statusText, voiceUrl: nil,
+        voiceDuration: nil, status: effectiveStatus, isRecording: false,
+        recordingStartTime: nil, tool: nil, image: nil, itemType: "teamworker",
+        sourceUrl: nil, nodeId: "teamworker:\(status.worker)",
+        subagentType: status.worker,
+        // startedAt drives the row's live elapsed clock while running; durationMs is
+        // the frozen final time shown once the worker settles. `effectiveStatus`
+        // already coerced a stale running→stopped for a settled turn, so the row
+        // will not tick after the run ends even though startedAt is present.
+        durationMs: status.durationMs, startedAtMs: status.startedAt))
+  }
+
+  // Mid-run the body stays empty (intro rides the feed); settled turns show the lead's
+  // final answer under the worker rows, exactly like a normal Worked card body.
+  return (items, message.isStreaming ? "" : bodyText)
 }
 
 extension VibeAgentTurnContentView {

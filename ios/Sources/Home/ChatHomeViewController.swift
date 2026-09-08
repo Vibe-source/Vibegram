@@ -130,6 +130,7 @@ final class ChatHomeViewController: UIViewController, UITableViewDataSource, UIT
       isDark: isDark,
       avatarBackgroundColor: nil,
       avatarGradientColors: nil,
+      unreadBadgeColor: AppThemePalette.resolve(for: isDark ? .dark : .light).accentUIColor,
       isEditing: false,
       isEditSelected: false
     )

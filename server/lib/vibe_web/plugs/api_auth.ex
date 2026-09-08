@@ -1,9 +1,6 @@
 defmodule VibeWeb.Plugs.ApiAuth do
   @moduledoc """
   Auth plug for the JSON REST API.
-
-  Expects `Authorization: Bearer <login_token>` where `<login_token>` is the user's
-  `login_token` issued by `AuthController`.
   """
 
   import Plug.Conn
@@ -27,7 +24,9 @@ defmodule VibeWeb.Plugs.ApiAuth do
       token ->
         case Accounts.get_user_by_token(token) do
           {:ok, user} ->
-            assign(conn, :current_user, user)
+            conn
+            |> assign(:current_user, user)
+            |> assign(:current_auth_token, token)
 
           {:error, :token_expired} ->
             unauthorized(conn, "Token expired")

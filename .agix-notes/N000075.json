@@ -1,0 +1,18 @@
+{
+  "id": 75,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "View-once media now keeps the original image/video visible under a transparent dim + fine-dot sparkle overlay. Rectangular media gets an arrow+1 cue, all covered media gets a centered flame plate, and full-bleed timestamp/status gets a dark pill plus accent border. Generic iOS Swift build passed; asset catalog/device build was unavailable because CoreSimulator and the attached phone were not visible in this sandbox.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "976f6743c48673d437c1888db94b2627a35089b5",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787798141,
+  "updated_at": 1787798141
+}

@@ -1,0 +1,18 @@
+{
+  "id": 88,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Profile page had TWO visual layers: a fixed ChatProfilePageReflection (never scrolls, blurred bloom of the avatar) behind the ScrollView, plus the scrolling hero — that static backdrop is what read as 'disconnected'. Removed; media + identity + rows are now one scroll layer. The action row was also mounted twice (a circle copy in the flow and a pill copy on the hero, cross-faded by p); now ONE always-pill row.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787833327,
+  "updated_at": 1787833327
+}

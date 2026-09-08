@@ -1,0 +1,18 @@
+{
+  "id": 84,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "Server consume_view_once_media tombstones via message-edited (type system + metadata.service view_once_expired). TTL stamps mediaExpiresAt; persist_expired_timed_media on history read covers restart. Do not delete_message for view-once.",
+  "selector": "server/lib/vibe/chat.ex::Vibe.Chat.consume_view_once_media",
+  "path": "server/lib/vibe/chat.ex",
+  "fqn": "Vibe.Chat.consume_view_once_media",
+  "line": 1037,
+  "anchor_hash": "50f582e469ec7bcab3803d86bf992b5b7f3415e5864c9d5fbe2c5ac1c438e062",
+  "branch": "main",
+  "commit": "976f6743c48673d437c1888db94b2627a35089b5",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787828463,
+  "updated_at": 1787828463
+}

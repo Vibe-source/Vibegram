@@ -4,7 +4,7 @@
  *
  * Generates a signed BridgeBundle JSON that can be:
  * 1. Set as BLACKOUT_BRIDGE_BUNDLE_JSON env var on the server
- * 2. Baked into the app via EXPO_PUBLIC_BLACKOUT_BRIDGE_BUNDLE
+ * 2. Baked into the native app's bridge configuration
  * 3. Distributed via QR code or text import
  *
  * Usage:
@@ -127,7 +127,8 @@ function generateKeys(args) {
   console.log(`   Public key:  ${pubPath}`);
   console.log('');
   console.log('Add the public key to your app config:');
-  console.log(`   EXPO_PUBLIC_BLACKOUT_BRIDGE_CONTROL_KEYS='${JSON.stringify([publicKey.trim()])}'`);
+  console.log('   Native bridge control keys:');
+  console.log(`   ${JSON.stringify([publicKey.trim()])}`);
   console.log('');
   console.log('⚠️  Keep the private key safe! It signs bridge bundles.');
 }

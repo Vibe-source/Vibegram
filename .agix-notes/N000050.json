@@ -1,0 +1,18 @@
+{
+  "id": 50,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "CONFIRMED + FIXED: MLS opens are ONE-SHOT. New test core/vibe_secure/tests/round_trip.rs::the_same_message_cannot_be_opened_twice passes - group.process_message ratchets the sender secret tree and drops that generation's key, so re-parsing the same vmls1 envelope fails. VibeSecureSessions.ownPlaintext/rememberOwnPlaintext were isMe-ONLY, and buildHistoryRowsLocked re-opens encryptedContent from /api/chat/:id/messages on every cold history load, so every PEER MLS message rendered once live and was blank forever after - the sender still had it (retained own plaintext), the receiver did not. Fix in ios/Sources/Core/VibeSecureSessions.swift: rememberOwnPlaintext/ownPlaintext now wrap private retainPlaintextLocked/retainedPlaintextLocked (open() runs inside queue.sync, so calling the public ones would deadlock), and open() consults the retained cache before touching the ratchet and retains every successful open, peer messages included. cargo test -p vibe_secure --test round_trip 11/11; xcodebuild Vibe Debug generic/platform=iOS BUILD SUCCEEDED. Caveat: retention lives in UserDefaults (plaintext at rest, plist, 5000-entry bound) - pre-existing choice, now also holds peer text.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787753683,
+  "updated_at": 1787753683
+}

@@ -1,0 +1,33 @@
+{
+  "configurations" : [
+    {
+      "id" : "9D1F0A42-6C3B-4E77-9F2A-3B5C1D0E8A64",
+      "name" : "Default",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "preferredScreenCaptureFormat" : "screenRecording",
+    "testTimeoutsEnabled" : false,
+    "userAttachmentLifetime" : "keepAlways"
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:Vibe.xcodeproj",
+        "identifier" : "VibeTests",
+        "name" : "VibeTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Vibe.xcodeproj",
+        "identifier" : "VibeUITests",
+        "name" : "VibeUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

@@ -18,13 +18,23 @@ defmodule Vibe.ChatHomeCache do
     end
   end
 
+  # Deletes locally, then broadcasts so a second node drops its own copy too.
   def invalidate_user(user_id) when is_binary(user_id) do
+    invalidate_user_local(user_id)
+    Phoenix.PubSub.broadcast(Vibe.PubSub, "vibe:cache", {:chat_home_cache_invalidate, user_id})
+    :ok
+  end
+
+  def invalidate_user(_user_id), do: :ok
+
+  @doc "Local-only delete — called directly here and by Vibe.Cache's cross-node relay."
+  def invalidate_user_local(user_id) when is_binary(user_id) do
     ensure_table()
     :ets.delete(@table, user_id)
     :ok
   end
 
-  def invalidate_user(_user_id), do: :ok
+  def invalidate_user_local(_user_id), do: :ok
 
   def invalidate_users(user_ids) when is_list(user_ids) do
     Enum.each(user_ids, &invalidate_user/1)

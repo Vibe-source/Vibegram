@@ -1,1 +1,18 @@
-/* /index.html 200
+# Share links resolve on the Phoenix app (api.vibegram.io), not in this static build.
+# Forwarding them here is what makes https://vibegram.io/<handle> open the app; without
+# these rules the catch-all below would serve the SPA shell for every link.
+# Order matters: Netlify takes the first match.
+/r/*                                      https://api.vibegram.io/r/:splat        200
+/j/*                                      https://api.vibegram.io/j/:splat        200
+/.well-known/*                            https://api.vibegram.io/.well-known/:splat 200
+
+# Web app routes stay local.
+/                                         /index.html                             200
+/app                                      /index.html                             200
+/docs/*                                   /index.html                             200
+/settings/*                               /index.html                             200
+
+# Anything else that looks like an @handle is a share link.
+/:handle                                  https://api.vibegram.io/:handle         200
+
+/*                                        /index.html                             200

@@ -1,0 +1,492 @@
+# Vibe VPS stack — replaces Railway. Works unchanged with `podman compose` (rootless)
+# and `docker compose`. See docs/vps-deployment.md for first-deploy and migration runbooks.
+#
+# Container socket mount (sandbox-gateway) differs by engine — set before `compose up`:
+#   rootless podman: export CONTAINER_SOCKET_HOST_PATH="${XDG_RUNTIME_DIR}/podman/podman.sock"
+#   docker:          leave unset (defaults to /var/run/docker.sock)
+# The systemd units in deploy/systemd/ set this per engine.
+#
+# Built services pin an explicit `image:` name (podman-compose and docker
+# compose v2 default-name built images differently) — deploy.sh --rollback
+# retags a previous build onto these names without a rebuild.
+
+networks:
+  edge:
+  internal:
+  # Pinned subnet: deploy/egress-proxy/tinyproxy.conf's `Allow` line must match it.
+  # Compose prefixes the name with the project (deploy_sandbox-net) — SANDBOX_NETWORK uses that.
+  sandbox-net:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  wal_archive:
+  loki_data:
+  promtail_data:
+  grafana_data:
+  agent_home:
+
+services:
+  caddy:
+    image: caddy:2
+    # podman-compose ignores `deploy:` — these are the keys it actually enforces.
+    mem_limit: 256m
+    cpus: 1.0
+    restart: unless-stopped
+    # No depends_on on purpose: Caddy answers 502 while an upstream is down instead of
+    # taking the whole edge offline because the agent runtime is unhealthy.
+    # Loopback only: cloudflared dials out to Cloudflare, nothing dials in.
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      # Host path, not a named volume: fail2ban's caddy-auth jail (host-side)
+      # tails this file directly — see deploy/scripts/vps-bootstrap.sh.
+      - ./caddy-logs:/var/log/caddy
+    env_file:
+      - /run/vibe/env/caddy.env
+    networks:
+      - edge
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Caddy holds a client FD and an upstream FD per connection — one hop before core.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+
+  core:
+    image: vibe-core:latest
+    mem_limit: 1024m
+    cpus: 2.0
+    build:
+      context: ..
+      dockerfile: deploy/core/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - /run/vibe/env/core.env
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      # Optional dependency: the rate limiter fails open to ETS when Valkey is away.
+      valkey:
+        condition: service_started
+    networks:
+      - edge
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - agent_home:/home/agent
+      - ..:/opt/vibe-src:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # One FD per socket; the engine default can be as low as 1024. Set explicitly.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+
+  agent-runtime:
+    image: vibe-agent-runtime:latest
+    mem_limit: 1024m
+    cpus: 2.0
+    build:
+      context: ..
+      dockerfile: agent-runtime/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - /run/vibe/env/agent-runtime.env
+    depends_on:
+      pgbouncer:
+        condition: service_started
+    networks:
+      - edge
+      - internal
+    healthcheck:
+      # Plain liveness probe, outside /internal/v1/* — that namespace requires
+      # vibe-internal-auth/v1 HMAC headers a wget healthcheck cannot produce.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4100/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+
+  sandbox-gateway:
+    image: vibe-sandbox-gateway:latest
+    mem_limit: 256m
+    cpus: 1.0
+    build:
+      context: ../sandbox-gateway
+    restart: unless-stopped
+    env_file:
+      - /run/vibe/env/sandbox-gateway.env
+    volumes:
+      # Docker default; for rootless podman, export CONTAINER_SOCKET_HOST_PATH
+      # to ${XDG_RUNTIME_DIR}/podman/podman.sock before `compose up` (see header).
+      - ${CONTAINER_SOCKET_HOST_PATH:-/var/run/docker.sock}:/run/podman/podman.sock
+    # Root inside the container = the unprivileged `vibe` user on a rootless-podman host,
+    # which is exactly who owns the mounted socket. (On Docker this is host root — see docs.)
+    user: "0:0"
+    networks:
+      - internal
+      - sandbox-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8088/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+
+  egress-proxy:
+    image: vimagick/tinyproxy:latest
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+    volumes:
+      - ./egress-proxy/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
+      - ./egress-proxy/filter:/etc/tinyproxy/filter:ro
+    networks:
+      - sandbox-net
+      - internal
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+  postgres:
+    image: postgres:16-alpine
+    mem_limit: 2048m
+    cpus: 2.0
+    restart: unless-stopped
+    env_file:
+      - /run/vibe/env/postgres.env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - wal_archive:/wal_archive
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER:-postgres}\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    # No cap_drop: the official image's entrypoint needs CHOWN/SETUID/SETGID
+    # to init the data dir as root, then drop to the postgres user.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    mem_limit: 256m
+    cpus: 1.0
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/etc/pgbouncer/entrypoint.sh"]
+    env_file:
+      - /run/vibe/env/pgbouncer.env
+    volumes:
+      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./pgbouncer/entrypoint.sh:/etc/pgbouncer/entrypoint.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    # No healthcheck: the image ships no postgres-client/nc to probe with, and
+    # nothing downstream depends on pgbouncer's service_healthy condition.
+    read_only: true
+    tmpfs:
+      # mode=1777: the image runs as `postgres`, and a default tmpfs is root-owned,
+      # so entrypoint.sh's `mkdir /run/pgbouncer` fails without it.
+      - /tmp
+      - /run:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    mem_limit: 384m
+    cpus: 1.0
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/usr/local/etc/valkey/entrypoint.sh"]
+    env_file:
+      - /run/vibe/env/valkey.env
+    volumes:
+      - ./valkey/valkey.conf:/usr/local/etc/valkey/valkey.conf:ro
+      - ./valkey/entrypoint.sh:/usr/local/etc/valkey/entrypoint.sh:ro
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 384M
+
+  # 1 GB, not 512M: a 5k-row export measured 690-770 MiB and merely thrashes at
+  # 512 instead of failing. A limit is a ceiling — a typical render still uses ~200M.
+  doc-renderer:
+    image: vibe-doc-renderer:latest
+    mem_limit: 1024m
+    cpus: 1.0
+    build:
+      context: ..
+      dockerfile: deploy/doc-renderer/Dockerfile
+    restart: unless-stopped
+    # Read-only rootfs: fontconfig needs a writable cache or it errors on every render.
+    environment:
+      XDG_CACHE_HOME: /tmp
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5050/health', timeout=3)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+
+  backup:
+    image: vibe-backup:latest
+    mem_limit: 256m
+    cpus: 1.0
+    build:
+      context: ./backup
+    restart: unless-stopped
+    env_file:
+      - /run/vibe/env/backup.env
+    volumes:
+      - wal_archive:/wal_archive
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    mem_limit: 64m
+    cpus: 0.25
+    restart: unless-stopped
+    env_file:
+      - /run/vibe/env/postgres-exporter.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+
+  # Server-side hit/miss/eviction counters, so cache pressure is visible before
+  # it becomes a latency problem. Reads REDIS_PASSWORD from env/valkey.env.
+  valkey-exporter:
+    image: oliver006/redis_exporter:latest
+    mem_limit: 128m
+    cpus: 0.25
+    restart: unless-stopped
+    command: ["--redis.addr=redis://valkey:6379"]
+    env_file:
+      - /run/vibe/env/valkey.env
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true
+
+  prometheus:
+    image: prom/prometheus:latest
+    mem_limit: 512m
+    cpus: 0.5
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true
+
+  grafana:
+    image: grafana/grafana:latest
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
+    env_file:
+      - /run/vibe/env/monitoring.env
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - edge
+      - internal
+    security_opt:
+      - no-new-privileges:true
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    mem_limit: 128m
+    cpus: 0.25
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true
+
+  loki:
+    image: grafana/loki:3.1.1
+    mem_limit: 512m
+    cpus: 0.5
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - promtail_data:/promtail
+      # Single log source: podman is configured with the journald log driver.
+      - /var/log/journal:/var/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true

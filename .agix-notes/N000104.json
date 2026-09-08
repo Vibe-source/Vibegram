@@ -1,0 +1,18 @@
+{
+  "id": 104,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Shipped Telegram-style profile refinement: banner height unchanged; collapsed avatar is 104pt with tighter top air, identity/username moved up and username is 13pt light; hero join fade reduced to 92pt, collapsed-avatar scroll blur/fade added, and a thin-material header mask restores on scroll. Actions are compact 52pt untinted thin-material controls; group/channel use Mute, Search, More with report guidance, clear, and leave/delete routing. Group main profile now previews members/agents with theme-correct rows and agent badges; group edit is photo/name/description/member management with Cancel/Done, channel Edit opens the functional channel settings page with Cancel/Done. Root back now pops the inner NavigationStack path before closing the profile and logs ProfileNavigation decisions. Profile media thumbnails now feed their exact source view into ChatMediaZoomTransition, with ChatListView retained as fallback after swiping. Generic unsigned iOS build is green using the sandbox/cache redirected agix build command.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787907686,
+  "updated_at": 1787907686
+}

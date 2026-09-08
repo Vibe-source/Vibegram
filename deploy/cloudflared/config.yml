@@ -1,0 +1,19 @@
+# Ingress for the outbound tunnel. TUNNEL_ID/DOMAIN/ORIGIN are filled in by tunnel-install.sh.
+# Credentials live in tmpfs, sealed at rest like every other secret on this box.
+tunnel: TUNNEL_ID
+credentials-file: /run/vibe/tunnel.json
+no-autoupdate: true
+metrics: 127.0.0.1:2000
+
+ingress:
+  - hostname: api.DOMAIN
+    service: http://ORIGIN
+  - hostname: agents.DOMAIN
+    service: http://ORIGIN
+  - hostname: logs.DOMAIN
+    service: http://ORIGIN
+  - hostname: www.DOMAIN
+    service: http://ORIGIN
+  - hostname: DOMAIN
+    service: http://ORIGIN
+  - service: http_status:404

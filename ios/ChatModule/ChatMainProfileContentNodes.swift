@@ -1,5 +1,6 @@
 import UIKit
 import AVFoundation
+import CoreImage
 
 final class ChatMainProfileTabNode: UIControl {
   private let titleLabel = UILabel()
@@ -278,11 +279,16 @@ final class ChatMainProfileListRowNode: UIControl {
 
 final class ChatMainProfileMediaCellNode: UIControl {
   private static let imageCache = NSCache<NSString, UIImage>()
+  private static let previewContext = CIContext(options: [.cacheIntermediates: false])
 
   private let imageView = UIImageView()
   private let placeholderIcon = UIImageView()
   private let videoBadge = UIView()
   private let videoBadgeLabel = UILabel()
+
+  var mediaTransitionSourceView: UIView {
+    imageView.isHidden ? self : imageView
+  }
 
   private var imageLoadTask: URLSessionDataTask?
   private var imageURLString: String?
@@ -356,8 +362,17 @@ final class ChatMainProfileMediaCellNode: UIControl {
     }
   }
 
-  func configure(urlString: String?, isVideo: Bool, thumbnailBase64: String? = nil) {
+  func configure(
+    urlString: String?,
+    isVideo: Bool,
+    thumbnailBase64: String? = nil,
+    mediaKey: String? = nil
+  ) {
     videoBadge.isHidden = !isVideo
+    // SwiftUI re-runs updateUIView on every diff; without this the preview re-renders each pass.
+    if let urlString, !urlString.isEmpty, imageURLString == urlString, imageView.image != nil {
+      return
+    }
     imageLoadTask?.cancel()
     imageLoadTask = nil
     imageView.image = nil
@@ -365,13 +380,13 @@ final class ChatMainProfileMediaCellNode: UIControl {
     placeholderIcon.isHidden = false
     imageURLString = nil
 
+    // Base64 is the blur preview only — it seeds the cell, the full image still loads over it.
     if let thumbnailBase64,
        let data = Data(base64Encoded: thumbnailBase64),
        let image = UIImage(data: data) {
-      imageView.image = image
+      imageView.image = Self.softenedPreview(image) ?? image
       imageView.isHidden = false
       placeholderIcon.isHidden = true
-      return
     }
 
     guard let urlString, !urlString.isEmpty else { return }
@@ -417,8 +432,14 @@ final class ChatMainProfileMediaCellNode: UIControl {
       return
     }
 
-    let task = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-      guard let self, let data, let image = UIImage(data: data) else { return }
+    let task = VibeHTTP.shared.dataTask(with: url) { [weak self] data, _, _ in
+      guard let self, let data else { return }
+      guard
+        let plaintext = ChatEngine.shared.decryptMediaDataIfNeeded(data, mediaKey: mediaKey),
+        let image = UIImage(data: plaintext)
+      else { return }
+      let identity = VibeMediaVault.identity(rawURL: urlString, mediaKey: mediaKey)
+      _ = VibeMediaVault.shared.store(plaintext, for: identity, kind: .image)
       Self.imageCache.setObject(image, forKey: urlString as NSString)
       DispatchQueue.main.async {
         guard self.imageURLString == urlString else { return }
@@ -429,6 +450,30 @@ final class ChatMainProfileMediaCellNode: UIControl {
     }
     imageLoadTask = task
     task.resume()
+  }
+
+  /// Upscales the tiny preview before applying a real blur so source pixels do not read as blocks.
+  private static func softenedPreview(_ image: UIImage) -> UIImage? {
+    guard image.size.width > 0, image.size.height > 0 else { return nil }
+    let scale = 320 / max(image.size.width, image.size.height)
+    let size = CGSize(
+      width: max(1, (image.size.width * scale).rounded()),
+      height: max(1, (image.size.height * scale).rounded()))
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = 1
+    format.opaque = true
+    let upscaled = UIGraphicsImageRenderer(size: size, format: format).image { context in
+      context.cgContext.interpolationQuality = .high
+      image.draw(in: CGRect(origin: .zero, size: size))
+    }
+    guard let input = CIImage(image: upscaled) else { return upscaled }
+    let extent = input.extent
+    let blurred = input
+      .clampedToExtent()
+      .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 10.0])
+      .cropped(to: extent)
+    guard let output = previewContext.createCGImage(blurred, from: extent) else { return upscaled }
+    return UIImage(cgImage: output)
   }
 
   func applyTheme(placeholderTintColor: UIColor, placeholderBackgroundColor: UIColor) {

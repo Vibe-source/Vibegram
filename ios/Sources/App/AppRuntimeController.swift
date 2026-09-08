@@ -55,6 +55,19 @@ enum AppAppearanceController {
   static func setOption(_ option: AppAppearanceOption) {
     UserDefaults.standard.set(option.rawValue, forKey: storageKey)
     applyStoredPreference()
+    var draft = ChatAppearanceDraftStore.current
+    if draft.mode != option.rawValue {
+      draft.mode = option.rawValue
+      if let themeId = draft.themeId {
+        draft = draft.applying(themeId: themeId)
+      }
+      ChatAppearanceDraftStore.save(draft)
+    }
+    ChatListAppearance.invalidateBootstrap()
+    NotificationCenter.default.post(
+      name: ChatAppearanceDraftStore.didChangeNotification,
+      object: nil
+    )
   }
 
   static func applyStoredPreference(to window: UIWindow? = nil) {
@@ -70,6 +83,27 @@ enum AppAppearanceController {
         sceneWindow.overrideUserInterfaceStyle = style
       }
     }
+  }
+
+  /// iOS renders the app-switcher snapshot in BOTH interface styles, so backgrounding flips
+  /// userInterfaceStyle across the hierarchy and every theme handler reruns. Pinning the
+  /// window stops that flip at the top instead of paying for it in every view.
+  static func pinCurrentStyleForSnapshot() {
+    guard currentOption == .system else { return }
+    for scene in UIApplication.shared.connectedScenes {
+      guard let windowScene = scene as? UIWindowScene else { continue }
+      for sceneWindow in windowScene.windows
+      where sceneWindow.overrideUserInterfaceStyle == .unspecified {
+        sceneWindow.overrideUserInterfaceStyle = sceneWindow.traitCollection.userInterfaceStyle
+      }
+    }
+  }
+
+  /// Released only once the app is active again, which is what lets a style the user
+  /// changed while we were pinned land through the normal trait path.
+  static func releaseSnapshotStylePin() {
+    guard currentOption == .system else { return }
+    applyStoredPreference()
   }
 }
 
@@ -135,6 +169,13 @@ enum AppThemePlateController {
 
   static func setOption(_ option: AppThemePlateOption) {
     UserDefaults.standard.set(option.rawValue, forKey: storageKey)
+    // Same reason as AppAppearanceController.setOption — the chat draft names its own plate.
+    var draft = ChatAppearanceDraftStore.current
+    if draft.themeId != option.rawValue {
+      draft.themeId = option.rawValue
+      ChatAppearanceDraftStore.save(draft)
+    }
+    ChatListAppearance.invalidateBootstrap()
   }
 }
 
@@ -203,16 +244,16 @@ struct AppThemePalette {
 
     switch (plate, isDark) {
     case (.glacier, true):
-      accent = hex(0x12B8A7)
-      accentMuted = rgba(18, 184, 167, 0.6)
-      button = hex(0x12B8A7)
-      bubbleMe = hex(0x12B8A7)
+      accent = hex(0x3B8AE8)
+      accentMuted = rgba(59, 138, 232, 0.6)
+      button = hex(0x3B8AE8)
+      bubbleMe = hex(0x3B8AE8)
       bubbleThem = hex(0x242936)
     case (.glacier, false):
-      accent = hex(0x189DA8)
-      accentMuted = rgba(24, 157, 168, 0.6)
-      button = hex(0x189DA8)
-      bubbleMe = hex(0x3F6EF5)
+      accent = hex(0x3B8AE8)
+      accentMuted = rgba(59, 138, 232, 0.6)
+      button = hex(0x3B8AE8)
+      bubbleMe = hex(0x3B8AE8)
       bubbleThem = hex(0xFFFFFF)
     case (.zen, true):
       accent = hex(0x2F80ED)
@@ -221,70 +262,70 @@ struct AppThemePalette {
       bubbleMe = hex(0x2F80ED)
       bubbleThem = hex(0x1E2732)
     case (.zen, false):
-      accent = hex(0x1976D2)
-      accentMuted = rgba(25, 118, 210, 0.6)
-      button = hex(0x1976D2)
-      bubbleMe = hex(0x1976D2)
+      accent = hex(0x2F7FE0)
+      accentMuted = rgba(47, 127, 224, 0.6)
+      button = hex(0x2F7FE0)
+      bubbleMe = hex(0x2F7FE0)
       bubbleThem = hex(0xFFFFFF)
     case (.ocean, true):
-      accent = hex(0x2EB872)
-      accentMuted = rgba(46, 184, 114, 0.6)
-      button = hex(0x2EB872)
-      bubbleMe = hex(0x2EB872)
+      accent = hex(0x2C9A68)
+      accentMuted = rgba(44, 154, 104, 0.6)
+      button = hex(0x2C9A68)
+      bubbleMe = hex(0x2C9A68)
       bubbleThem = hex(0x1F2B28)
     case (.ocean, false):
-      accent = hex(0x5FAD75)
-      accentMuted = rgba(95, 173, 117, 0.6)
-      button = hex(0x5FAD75)
-      bubbleMe = hex(0xDDF8C8)
+      accent = hex(0x2E9B6E)
+      accentMuted = rgba(46, 155, 110, 0.6)
+      button = hex(0x2E9B6E)
+      bubbleMe = hex(0x2E9B6E)
       bubbleThem = hex(0xFFFFFF)
     case (.obsidian, true):
-      accent = hex(0xA9B2C3)
-      accentMuted = rgba(169, 178, 195, 0.6)
-      button = hex(0xA9B2C3)
-      bubbleMe = hex(0xD9DEE8)
+      accent = hex(0x3D6EA8)
+      accentMuted = rgba(61, 110, 168, 0.6)
+      button = hex(0x3D6EA8)
+      bubbleMe = hex(0x3D6EA8)
       bubbleThem = hex(0x20232B)
     case (.obsidian, false):
-      accent = hex(0x4A5568)
-      accentMuted = rgba(74, 85, 104, 0.6)
-      button = hex(0x4A5568)
-      bubbleMe = hex(0x313A46)
+      accent = hex(0x4A6FA0)
+      accentMuted = rgba(74, 111, 160, 0.6)
+      button = hex(0x4A6FA0)
+      bubbleMe = hex(0x4A6FA0)
       bubbleThem = hex(0xFFFFFF)
     case (.music, true):
-      accent = hex(0xE84AA8)
-      accentMuted = rgba(232, 74, 168, 0.6)
-      button = hex(0xE84AA8)
-      bubbleMe = hex(0xE84AA8)
+      accent = hex(0xC43B88)
+      accentMuted = rgba(196, 59, 136, 0.6)
+      button = hex(0xC43B88)
+      bubbleMe = hex(0xC43B88)
       bubbleThem = hex(0x2A202D)
     case (.music, false):
-      accent = hex(0xD63D8C)
-      accentMuted = rgba(214, 61, 140, 0.6)
-      button = hex(0xD63D8C)
-      bubbleMe = hex(0xD63D8C)
+      accent = hex(0xC43B88)
+      accentMuted = rgba(196, 59, 136, 0.6)
+      button = hex(0xC43B88)
+      bubbleMe = hex(0xC43B88)
       bubbleThem = hex(0xFFFFFF)
     case (.terracotta, true):
-      accent = hex(0xE86D32)
-      accentMuted = rgba(232, 109, 50, 0.6)
-      button = hex(0xE86D32)
-      bubbleMe = hex(0xE86D32)
+      accent = hex(0xC85A28)
+      accentMuted = rgba(200, 90, 40, 0.6)
+      button = hex(0xC85A28)
+      bubbleMe = hex(0xC85A28)
       bubbleThem = hex(0x29231F)
     case (.terracotta, false):
-      accent = hex(0xD9632D)
-      accentMuted = rgba(217, 99, 45, 0.6)
-      button = hex(0xD9632D)
-      bubbleMe = hex(0xD9632D)
+      accent = hex(0xC85A28)
+      accentMuted = rgba(200, 90, 40, 0.6)
+      button = hex(0xC85A28)
+      bubbleMe = hex(0xC85A28)
       bubbleThem = hex(0xFFFFFF)
     case (.leaf, true):
-      accent = hex(0x28B463)
-      accentMuted = rgba(40, 180, 99, 0.6)
-      button = hex(0x28B463)
-      bubbleMe = hex(0x28B463)
+      accent = hex(0x3A9B4A)
+      accentMuted = rgba(58, 155, 74, 0.6)
+      button = hex(0x3A9B4A)
+      bubbleMe = hex(0x3A9B4A)
       bubbleThem = hex(0x1F2A22)
     case (.leaf, false):
-      accent = hex(0x66B879)
-      accentMuted = rgba(102, 184, 121, 0.6)
-      button = hex(0x66B879)
-      bubbleMe = hex(0xDBF8C4)
+      accent = hex(0x3D9B40)
+      accentMuted = rgba(61, 155, 64, 0.6)
+      button = hex(0x3D9B40)
+      bubbleMe = hex(0x3D9B40)
       bubbleThem = hex(0xFFFFFF)
     }
 
@@ -335,22 +376,43 @@ struct AppThemePalette {
 
 @MainActor
 final class AppToastController: ObservableObject {
+  enum Category: Equatable {
+    case info
+    case success
+    case error
+    case progress
+  }
+
+  struct Presentation: Identifiable, Equatable {
+    let id = UUID()
+    let message: String
+    let category: Category
+  }
+
   static let shared = AppToastController()
 
-  @Published private(set) var message: String?
+  @Published private(set) var presentation: Presentation?
+  var message: String? { presentation?.message }
   private var hideTask: Task<Void, Never>?
 
   private init() {}
 
-  func show(_ message: String, duration: TimeInterval = 2.6) {
+  func show(
+    _ message: String,
+    category: Category? = nil,
+    duration: TimeInterval = 2.6
+  ) {
     hideTask?.cancel()
-    self.message = message
+    presentation = Presentation(
+      message: message,
+      category: category ?? Self.inferredCategory(for: message)
+    )
     hideTask = Task { [weak self] in
       guard duration > 0 else { return }
       try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
       guard !Task.isCancelled else { return }
       await MainActor.run {
-        self?.message = nil
+        self?.presentation = nil
       }
     }
   }
@@ -358,7 +420,20 @@ final class AppToastController: ObservableObject {
   func clear() {
     hideTask?.cancel()
     hideTask = nil
-    message = nil
+    presentation = nil
+  }
+
+  private static func inferredCategory(for message: String) -> Category {
+    let value = message.lowercased()
+    let errorWords = ["error", "fail", "couldn", "unavailable", "required", "missing", "not found", "denied"]
+    if errorWords.contains(where: value.contains) { return .error }
+
+    let progressWords = ["sending", "loading", "connecting", "updating", "preparing"]
+    if progressWords.contains(where: value.contains) { return .progress }
+
+    let successWords = ["copied", "saved", "updated", "sent", "deleted", "removed", "complete", "success", "thanks"]
+    if successWords.contains(where: value.contains) { return .success }
+    return .info
   }
 }
 
@@ -382,9 +457,22 @@ struct AppUserProfile: Equatable {
   let privacyGifts: AppPrivacyChoice
   let privacyBirthday: AppPrivacyChoice
   let privacySavedMusic: AppPrivacyChoice
+  /// Public share link as the SERVER built it (it owns the share host, which moves when
+  /// the domain changes). Nil on older servers; `shareLink` then falls back locally.
+  let serverShareLink: String?
 
   var displayName: String {
     name?.nilIfBlank ?? username
+  }
+
+  /// The one link this person can hand to anyone: `vibegram.io/<username>`.
+  var shareLink: String? {
+    serverShareLink?.nilIfBlank ?? VibeShareLinks.profileURL(username: username)
+  }
+
+  /// Same link without the scheme, for display.
+  var shareLinkDisplay: String? {
+    VibeShareLinks.display(shareLink)
   }
 
   var subtitle: String {
@@ -413,7 +501,8 @@ struct AppUserProfile: Equatable {
     privacyBio: AppPrivacyChoice = .everybody,
     privacyGifts: AppPrivacyChoice = .everybody,
     privacyBirthday: AppPrivacyChoice = .everybody,
-    privacySavedMusic: AppPrivacyChoice = .everybody
+    privacySavedMusic: AppPrivacyChoice = .everybody,
+    serverShareLink: String? = nil
   ) {
     let resolvedUserID = userID.trimmingCharacters(in: .whitespacesAndNewlines)
     let resolvedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -438,6 +527,7 @@ struct AppUserProfile: Equatable {
     self.privacyGifts = privacyGifts
     self.privacyBirthday = privacyBirthday
     self.privacySavedMusic = privacySavedMusic
+    self.serverShareLink = serverShareLink?.nilIfBlank
   }
 
   init?(payload: [String: Any], fallbackConfig: AppSessionConfig? = nil) {
@@ -482,7 +572,8 @@ struct AppUserProfile: Equatable {
       privacyBirthday: Self.normalizedPrivacyChoice(payload["privacyBirthday"])
         ?? Self.normalizedPrivacyChoice(fallbackConfig?.privacyBirthday) ?? .everybody,
       privacySavedMusic: Self.normalizedPrivacyChoice(payload["privacySavedMusic"])
-        ?? Self.normalizedPrivacyChoice(fallbackConfig?.privacySavedMusic) ?? .everybody
+        ?? Self.normalizedPrivacyChoice(fallbackConfig?.privacySavedMusic) ?? .everybody,
+      serverShareLink: Self.normalizedString(payload["shareLink"] ?? payload["share_link"])
     ) else {
       return nil
     }
@@ -546,6 +637,8 @@ struct AppUserProfileDraft: Equatable {
   var phoneNumber: String
   var bio: String
   var dateOfBirth: String
+  /// Remote URL after media upload — never raw bytes.
+  var profileImage: String?
 
   init(profile: AppUserProfile?) {
     self.name = profile?.name ?? ""
@@ -553,16 +646,23 @@ struct AppUserProfileDraft: Equatable {
     self.phoneNumber = profile?.phoneNumber ?? AppSessionConfig.current?.phoneNumber ?? ""
     self.bio = profile?.bio ?? ""
     self.dateOfBirth = profile?.dateOfBirth ?? ""
+    self.profileImage = profile?.profileImage
   }
 
   var trimmedPayload: [String: Any] {
-    [
+    var body: [String: Any] = [
       "name": name.trimmingCharacters(in: .whitespacesAndNewlines),
       "username": username.trimmingCharacters(in: .whitespacesAndNewlines),
       "phoneNumber": phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines),
       "bio": bio.trimmingCharacters(in: .whitespacesAndNewlines),
       "dateOfBirth": dateOfBirth.trimmingCharacters(in: .whitespacesAndNewlines),
     ]
+    if let profileImage = profileImage?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !profileImage.isEmpty
+    {
+      body["profileImage"] = profileImage
+    }
+    return body
   }
 }
 
@@ -747,7 +847,7 @@ private enum AppProfileService {
     request.timeoutInterval = 15
     applyHeaders(&request, token: config.authToken)
 
-    let (data, response) = try await URLSession.shared.data(for: request)
+    let (data, response) = try await VibeHTTP.shared.data(for: request)
     guard let httpResponse = response as? HTTPURLResponse else {
       throw AppProfileServiceError.invalidResponse
     }
@@ -798,7 +898,7 @@ private enum AppProfileService {
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-    let (data, response) = try await URLSession.shared.data(for: request)
+    let (data, response) = try await VibeHTTP.shared.data(for: request)
     guard let httpResponse = response as? HTTPURLResponse else {
       throw AppProfileServiceError.invalidResponse
     }

@@ -3,6 +3,7 @@ defmodule VibeWeb.UserChannel do
   require Logger
   alias VibeWeb.Presence
   alias Vibe.Accounts
+  alias Vibe.AgentBridge
   alias Vibe.Notifications
 
   @impl true
@@ -22,15 +23,14 @@ defmodule VibeWeb.UserChannel do
     user_id = socket.assigns.user_id
     user = Accounts.get_user(user_id)
 
-    # Track this user's presence immediately (fast, no DB)
+    Phoenix.PubSub.subscribe(Vibe.PubSub, AgentBridge.topic(user_id))
+
     if user && user.show_online_status do
       {:ok, _} = Presence.track(socket, user_id, %{
         online_at: System.system_time(:second)
       })
     end
 
-    # Heavy work (list_chats = 6 DB queries) runs in a background Task
-    # so the channel process stays responsive for incoming messages
     channel_pid = self()
     show_online = user && user.show_online_status
 
@@ -38,7 +38,6 @@ defmodule VibeWeb.UserChannel do
       chats = Chat.list_chats(user_id)
       friend_ids = Enum.map(chats, fn c -> c[:friendId] end) |> Enum.reject(&is_nil/1)
 
-      # Notify friends I am online
       if show_online do
         Enum.each(friend_ids, fn fid ->
           VibeWeb.Endpoint.broadcast("user:#{fid}", "friend-online", %{
@@ -48,21 +47,20 @@ defmodule VibeWeb.UserChannel do
         end)
       end
 
-      # Find which friends are online
       online_friend_ids = Enum.filter(friend_ids, fn fid ->
         VibeWeb.Presence.list("user:#{fid}") |> map_size() > 0
       end)
 
-      # Send results back to the channel process (push must happen there)
-      send(channel_pid, {:after_join_complete, friend_ids, online_friend_ids})
+      bridge_status = AgentBridge.status_for_push(user_id)
+
+      send(channel_pid, {:after_join_complete, friend_ids, online_friend_ids, bridge_status})
     end)
 
     {:noreply, socket}
   end
 
   @impl true
-  def handle_info({:after_join_complete, friend_ids, online_friend_ids}, socket) do
-    # Cache friend_ids so terminate/2 doesn't need to re-fetch
+  def handle_info({:after_join_complete, friend_ids, online_friend_ids, bridge_status}, socket) do
     socket = assign(socket, :friend_ids, friend_ids)
 
     push(socket, "initial-presence", %{
@@ -70,16 +68,42 @@ defmodule VibeWeb.UserChannel do
       online_friend_ids: online_friend_ids
     })
 
+    push(socket, "bridge-status", bridge_status)
+
+    {:noreply, socket}
+  end
+
+  # A computer joined/left the bridge, or updated its repos / running tasks.
+  @impl true
+  def handle_info(
+        %Phoenix.Socket.Broadcast{topic: "bridge:" <> _, event: "presence_diff"},
+        socket
+      ) do
+    push(socket, "bridge-status", AgentBridge.status_for_push(socket.assigns.user_id))
+    {:noreply, socket}
+  end
+
+  # Everything else on the bridge topic (run_task fan-out to the daemon) is.
+  @impl true
+  def handle_info(%Phoenix.Socket.Broadcast{topic: "bridge:" <> _}, socket) do
     {:noreply, socket}
   end
 
   @impl true
   def terminate(_reason, socket) do
     user_id = socket.assigns.user_id
-    # Use cached friend_ids from :after_join_complete (avoids re-running list_chats)
     cached_friend_ids = socket.assigns[:friend_ids]
 
-    # Run all terminate work asynchronously so the process exits immediately
+    if repo_running?() do
+      spawn_offline_broadcast(user_id, cached_friend_ids)
+    end
+
+    :ok
+  end
+
+  defp repo_running?, do: is_pid(Process.whereis(Vibe.Repo))
+
+  defp spawn_offline_broadcast(user_id, cached_friend_ids) do
     Task.start(fn ->
       user = Accounts.get_user(user_id)
       last_seen = DateTime.utc_now()
@@ -92,7 +116,6 @@ defmodule VibeWeb.UserChannel do
         case cached_friend_ids do
           ids when is_list(ids) -> ids
           _ ->
-            # Fallback: fetch if cache wasn't populated (e.g. very short session)
             chats = Chat.list_chats(user_id)
             Enum.map(chats, fn c -> c[:friendId] end) |> Enum.reject(&is_nil/1)
         end
@@ -189,7 +212,6 @@ defmodule VibeWeb.UserChannel do
     {:noreply, socket}
   end
 
-  # Join Requests
   @impl true
   def handle_in("call-join-request", %{"toUserId" => to_user_id} = payload, socket) do
     payload = Map.put(payload, "fromId", socket.assigns.user_id) # Chat.tsx expects fromId
@@ -211,14 +233,12 @@ defmodule VibeWeb.UserChannel do
      {:noreply, socket}
   end
 
-  # Fallback Voice Stream (Heavy? Consider dedicated socket/UDP in future)
   @impl true
   def handle_in("voice-stream", %{"toUserId" => to_user_id} = payload, socket) do
      VibeWeb.Endpoint.broadcast!("user:#{to_user_id}", "voice-stream", payload)
      {:noreply, socket}
   end
 
-  # WebRTC Signaling (SDP offers/answers, ICE candidates)
   @impl true
   def handle_in("webrtc-signal", %{"toUserId" => to_user_id} = payload, socket) do
     payload = Map.put(payload, "fromUserId", socket.assigns.user_id)

@@ -124,37 +124,146 @@ enum ChatAvatarURLResolver {
   }
 }
 
+/// Shared avatar memory + disk store used by home, chat, profile, and members.
+///
+/// **Display contract for call sites:**
+/// - Always call `cached(for:)` first and paint that image immediately when present.
+/// - Never clear an on-screen avatar to initials while the **same URL** is still loading.
+/// - On URL change for the same entity: keep the previous image until the new one
+///   arrives, then soft-crossfade (see `VibeAvatarDisplay.apply`).
 enum ChatAvatarImageStore {
+  static let didReplaceNotification = Notification.Name("ChatAvatarImageStore.didReplace")
+
+  /// Downsampled avatar edge for list cells (fast cold open / memory).
+  private static let diskPixelMax: CGFloat = 384
+  /// Higher cap for profile/settings hero (full-width banner needs more than 384).
+  private static let heroPixelMax: CGFloat = 1280
+
   private static let imageCache: NSCache<NSString, UIImage> = {
     let cache = NSCache<NSString, UIImage>()
-    cache.countLimit = 128
-    // ~24 MB of decoded avatar pixels (cost ≈ width*height*4 when known).
-    cache.totalCostLimit = 24 * 1024 * 1024
+    cache.countLimit = 256
+    // ~48 MB of decoded avatar pixels (cost ≈ width*height*4 when known).
+    cache.totalCostLimit = 48 * 1024 * 1024
     return cache
   }()
   private static let inFlightCoordinator = ChatAvatarImageLoadCoordinator()
+  /// Avoid repeated failed disk stats on hot scroll paths.
+  private static let diskMissLock = NSLock()
+  private static var diskMissKeys = Set<String>()
+  /// Remote fetches that came back with nothing, and when to stop believing that.
+  /// A user with no uploaded picture 404s forever, and without this every repaint asked
+  /// again — the server log shows the same `/api/push/avatar/<id>` 404 (~350ms each)
+  /// every few seconds, indefinitely. Short enough that a newly-set avatar appears on
+  /// its own within a few minutes; `invalidate`/`purge` clear it immediately.
+  private static let negativeTTL: TimeInterval = 300
+  private static var negativeUntilByKey: [String: TimeInterval] = [:]
 
+  private static func isNegativeCached(_ key: String) -> Bool {
+    diskMissLock.lock()
+    defer { diskMissLock.unlock() }
+    guard let until = negativeUntilByKey[key] else { return false }
+    if until > Date().timeIntervalSince1970 { return true }
+    negativeUntilByKey.removeValue(forKey: key)
+    return false
+  }
+
+  private static func markNegative(_ key: String) {
+    diskMissLock.lock()
+    negativeUntilByKey[key] = Date().timeIntervalSince1970 + negativeTTL
+    diskMissLock.unlock()
+  }
+
+  /// Avatars live in the shared media vault, which is in Application Support. They used to sit
+  /// in `Caches`, where iOS reclaims them whenever it wants — every purge cost a re-download of
+  /// every face in the list, and the Settings cache screen could not account for them.
+  private static var diskDirectory: URL = {
+    VibeMediaVault.shared.directory(for: .avatar)
+  }()
+
+  /// Memory hit, else **synchronous** disk seed (downsampled JPEG) so cold launch
+  /// paints avatars on first layout without an initials flash.
   static func cached(for rawValue: String?) -> UIImage? {
     guard let key = cacheKey(rawValue) else { return nil }
-    return imageCache.object(forKey: key as NSString)
+    if let mem = imageCache.object(forKey: key as NSString) {
+      return mem
+    }
+    if let disk = loadFromDisk(key: key) {
+      storeInMemory(disk, key: key)
+      return disk
+    }
+    return nil
   }
 
   static func cache(_ image: UIImage, for rawValue: String?) {
-    guard let key = cacheKey(rawValue) else { return }
-    let pixelW = max(1, Int(image.size.width * image.scale))
-    let pixelH = max(1, Int(image.size.height * image.scale))
-    imageCache.setObject(image, forKey: key as NSString, cost: pixelW * pixelH * 4)
+    cache(image, for: rawValue, maxPixel: diskPixelMax)
   }
 
+  /// Prefer for profile/settings hero uploads (sharper than list 384px).
+  static func cacheHero(_ image: UIImage, for rawValue: String?) {
+    cache(image, for: rawValue, maxPixel: heroPixelMax)
+  }
+
+  static func replaceHero(_ image: UIImage, for rawValue: String?) {
+    guard let key = cacheKey(rawValue) else { return }
+    cache(image, for: key, maxPixel: heroPixelMax)
+    NotificationCenter.default.post(name: didReplaceNotification, object: key)
+  }
+
+  static func cache(_ image: UIImage, for rawValue: String?, maxPixel: CGFloat) {
+    guard let key = cacheKey(rawValue) else { return }
+    let prepared = downsample(image, maxPixel: maxPixel) ?? image
+    storeInMemory(prepared, key: key)
+    writeToDisk(prepared, key: key)
+  }
+
+  /// Memory-only purge (memory warnings). Disk survives for the next paint.
   static func purge() {
     imageCache.removeAllObjects()
+    diskMissLock.lock()
+    diskMissKeys.removeAll()
+    negativeUntilByKey.removeAll()
+    diskMissLock.unlock()
+  }
+
+  /// Drop one key (e.g. after a known avatar URL rotation).
+  static func invalidate(rawValue: String?) {
+    guard let key = cacheKey(rawValue) else { return }
+    imageCache.removeObject(forKey: key as NSString)
+    diskMissLock.lock()
+    diskMissKeys.remove(key)
+    negativeUntilByKey.removeValue(forKey: key)
+    diskMissLock.unlock()
+    let url = diskFileURL(for: key)
+    try? FileManager.default.removeItem(at: url)
   }
 
   static func load(from rawValue: String?) async -> UIImage? {
+    await load(from: rawValue, maxPixel: diskPixelMax)
+  }
+
+  /// Higher-res load for hero/settings (does not force every list cell to pay).
+  static func loadHero(from rawValue: String?) async -> UIImage? {
+    await load(from: rawValue, maxPixel: heroPixelMax)
+  }
+
+  static func load(from rawValue: String?, maxPixel: CGFloat) async -> UIImage? {
     guard let key = cacheKey(rawValue) else { return nil }
+
     if let cached = imageCache.object(forKey: key as NSString) {
-      return cached
+      // List path always accepts cache; hero path re-fetches if under-resolved.
+      if maxPixel <= diskPixelMax || longestPixelEdge(cached) >= maxPixel * 0.55 {
+        return cached
+      }
     }
+
+    if let disk = loadFromDisk(key: key) {
+      if maxPixel <= diskPixelMax || longestPixelEdge(disk) >= maxPixel * 0.55 {
+        storeInMemory(disk, key: key)
+        return disk
+      }
+    }
+
+    if isNegativeCached(key) { return nil }
 
     let task = await inFlightCoordinator.task(for: key) {
       Task.detached(priority: .utility) {
@@ -162,15 +271,106 @@ enum ChatAvatarImageStore {
       }
     }
     let image = await task.value
-
     await inFlightCoordinator.finish(key: key)
 
+    if image == nil { markNegative(key) }
     if let image {
-      let pixelW = max(1, Int(image.size.width * image.scale))
-      let pixelH = max(1, Int(image.size.height * image.scale))
-      imageCache.setObject(image, forKey: key as NSString, cost: pixelW * pixelH * 4)
+      let prepared = downsample(image, maxPixel: maxPixel) ?? image
+      storeInMemory(prepared, key: key)
+      writeToDisk(prepared, key: key)
+      return prepared
+    }
+    return nil
+  }
+
+  private static func longestPixelEdge(_ image: UIImage) -> CGFloat {
+    max(image.size.width * image.scale, image.size.height * image.scale)
+  }
+
+  private static func storeInMemory(_ image: UIImage, key: String) {
+    let pixelW = max(1, Int(image.size.width * image.scale))
+    let pixelH = max(1, Int(image.size.height * image.scale))
+    imageCache.setObject(image, forKey: key as NSString, cost: pixelW * pixelH * 4)
+  }
+
+  private static func diskFileName(for key: String) -> String {
+    let safe = key.data(using: .utf8).map { $0.base64EncodedString() } ?? key
+    let trimmed = safe
+      .replacingOccurrences(of: "/", with: "_")
+      .replacingOccurrences(of: "+", with: "-")
+    return String(trimmed.prefix(180)) + ".jpg"
+  }
+
+  private static func diskFileURL(for key: String) -> URL {
+    diskDirectory.appendingPathComponent(diskFileName(for: key))
+  }
+
+  /// Where a pre-vault build wrote this avatar. Checked once on a miss and moved forward, so an
+  /// upgrade does not re-download every face the app already has.
+  private static func legacyDiskFileURL(for key: String) -> URL? {
+    guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+    else { return nil }
+    return caches
+      .appendingPathComponent("vibe-avatars", isDirectory: true)
+      .appendingPathComponent(diskFileName(for: key))
+  }
+
+  private static func loadFromDisk(key: String) -> UIImage? {
+    diskMissLock.lock()
+    let knownMiss = diskMissKeys.contains(key)
+    diskMissLock.unlock()
+    if knownMiss { return nil }
+
+    let url = diskFileURL(for: key)
+    if !FileManager.default.fileExists(atPath: url.path) {
+      // Carry a pre-vault copy forward rather than call this a miss and re-fetch it.
+      if let legacy = legacyDiskFileURL(for: key),
+        FileManager.default.fileExists(atPath: legacy.path)
+      {
+        try? FileManager.default.moveItem(at: legacy, to: url)
+      }
+    }
+    guard FileManager.default.fileExists(atPath: url.path) else {
+      diskMissLock.lock()
+      diskMissKeys.insert(key)
+      diskMissLock.unlock()
+      return nil
+    }
+    guard let data = try? Data(contentsOf: url),
+      let image = UIImage(data: data)
+    else {
+      diskMissLock.lock()
+      diskMissKeys.insert(key)
+      diskMissLock.unlock()
+      return nil
     }
     return image
+  }
+
+  private static func writeToDisk(_ image: UIImage, key: String) {
+    diskMissLock.lock()
+    diskMissKeys.remove(key)
+    diskMissLock.unlock()
+    let url = diskFileURL(for: key)
+    DispatchQueue.global(qos: .utility).async {
+      guard let data = image.jpegData(compressionQuality: 0.82) else { return }
+      try? data.write(to: url, options: [.atomic])
+    }
+  }
+
+  private static func downsample(_ image: UIImage, maxPixel: CGFloat) -> UIImage? {
+    let pixelW = image.size.width * image.scale
+    let pixelH = image.size.height * image.scale
+    let longest = max(pixelW, pixelH)
+    guard longest > maxPixel else { return image }
+    let scale = maxPixel / longest
+    let newSize = CGSize(width: max(1, pixelW * scale), height: max(1, pixelH * scale))
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = 1
+    let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
+    return renderer.image { _ in
+      image.draw(in: CGRect(origin: .zero, size: newSize))
+    }
   }
 
   private static func fetchImage(for value: String) async -> UIImage? {
@@ -198,14 +398,34 @@ enum ChatAvatarImageStore {
           request.timeoutInterval = 12.0
           request.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
           request.setValue("true", forHTTPHeaderField: "ngrok-skip-browser-warning")
-          let (data, response) = try await URLSession.shared.data(for: request)
+          let (data, response) = try await VibeHTTP.shared.data(for: request)
           if let status = (response as? HTTPURLResponse)?.statusCode,
             !(200...299).contains(status)
           {
+            // 404 is common for users without avatars (negative-cached above).
+            // Only durable-log unexpected statuses to keep the ring useful.
+            if status != 404 {
+              VibeLog.warning(
+                "avatar fetch bad status",
+                category: "network",
+                metadata: [
+                  "status": String(status),
+                  "host": url.host ?? "?",
+                ]
+              )
+            }
             return nil
           }
           return UIImage(data: data)
         } catch {
+          VibeLog.warning(
+            "avatar fetch failed",
+            category: "network",
+            metadata: [
+              "host": url.host ?? "?",
+              "error": error.localizedDescription,
+            ]
+          )
           return nil
         }
       }
@@ -220,6 +440,48 @@ enum ChatAvatarImageStore {
   private static func cacheKey(_ rawValue: String?) -> String? {
     let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return value.isEmpty ? nil : value
+  }
+}
+
+/// Soft in-circle avatar apply: never flash initials when a cached/previous image exists.
+enum VibeAvatarDisplay {
+  /// Apply `image` into `imageView` with a short cross-dissolve when replacing a prior photo.
+  /// Call only on main. When `image` is nil and `keepPrevious` is true, leave the current photo.
+  static func apply(
+    _ image: UIImage?,
+    to imageView: UIImageView,
+    fallbackLabel: UILabel?,
+    animated: Bool,
+    keepPreviousIfNil: Bool = true
+  ) {
+    if image == nil {
+      if keepPreviousIfNil, imageView.image != nil { return }
+      imageView.image = nil
+      fallbackLabel?.isHidden = false
+      return
+    }
+    // Same instance already on screen — never re-assign or touch fallback (avoids letter fade).
+    if imageView.image === image {
+      if let fallbackLabel, !fallbackLabel.isHidden {
+        fallbackLabel.isHidden = true
+      }
+      return
+    }
+    let hadPhoto = imageView.image != nil
+    if animated, hadPhoto {
+      UIView.transition(
+        with: imageView,
+        duration: 0.22,
+        options: [.transitionCrossDissolve, .allowUserInteraction]
+      ) {
+        imageView.image = image
+      }
+    } else {
+      imageView.image = image
+    }
+    if let fallbackLabel, !fallbackLabel.isHidden {
+      fallbackLabel.isHidden = true
+    }
   }
 }
 
@@ -244,16 +506,12 @@ private actor ChatAvatarImageLoadCoordinator {
 }
 
 enum ChatAvatarFallbackStyle {
-  private static let palettes: [(lightStart: String, lightEnd: String, darkStart: String, darkEnd: String)] = [
-    ("#5B8DEF", "#3D6BC6", "#6EA2FF", "#355EAA"),
-    ("#1FA97A", "#167A60", "#3BC99A", "#126B55"),
-    ("#D66A5A", "#AF493F", "#E98574", "#963B33"),
-    ("#A06AD8", "#7C4EB2", "#B984EA", "#6E45A0"),
-    ("#D59A2E", "#AF741D", "#E6B24A", "#966418"),
-    ("#2F9AA8", "#207585", "#4BB6C4", "#1B6575"),
-    ("#E05A8A", "#B83E6A", "#F178A4", "#9C345B"),
-    ("#6078D6", "#4659AE", "#7A91EA", "#3A4E9C"),
-  ]
+  // Owned by VibeAvatarFallback, which the notification service extension also
+  // compiles. Duplicating the table here would let a push notification colour
+  // someone differently from the chat list the moment either copy is edited.
+  private static var palettes: [(lightStart: String, lightEnd: String, darkStart: String, darkEnd: String)] {
+    VibeAvatarFallback.palettes
+  }
 
   static func hexGradient(
     title: String?,
@@ -341,9 +599,26 @@ struct ChatHomeListRow {
   let isArchiveEntry: Bool
   let type: String?
   let isGroup: Bool
+  /// True when `type == "channel"`. Channels are group-like rooms but must NOT
+  /// expose a members roster in the profile (groups do). `parse` also forces
+  /// `type = "channel"` when the server sends `isChannel: true`.
+  var isChannel: Bool {
+    (type ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "channel"
+  }
+  /// Group chats where every participant can open the Members list.
+  var showsMemberList: Bool { isGroup && !isChannel }
+  /// Signed-in user's role in this room (`owner`/`admin`/`member`), from home list.
+  let myRole: String?
   /// True when the chat's friend is an AI agent's shadow user — i.e. this is a
   /// 1:1 "talk to the agent" chat. Mirrors the server's `friendIsAgent` flag.
   let isAgentFriend: Bool
+  /// True only for rows synthesized for the Agents tab (an agent the current
+  /// user created/owns), never for a normal Home chat row — even one whose
+  /// peer happens to be an agent. Defaults false so every pre-existing
+  /// `ChatHomeListRow(...)` call site keeps its exact current swipe actions.
+  /// Adds the "Settings" leading swipe action, the only row-shape difference
+  /// the Agents tab needs from an ordinary chat row.
+  var isOwnedAgent: Bool = false
   /// The agent's id when `isAgentFriend` is true. Sent as `peerAgentId` so the
   /// engine routes the message to the agent backend instead of E2E-encrypting
   /// to a human peer. Mirrors the server's `friendAgentId`.
@@ -364,9 +639,40 @@ struct ChatHomeListRow {
   /// visible message, else room creation). Drives newest-first home ordering.
   /// Mirrors the server's `lastMessageAt`.
   let lastMessageAt: Double
+  /// Epoch-ms instant this participant last cleared the chat, `0` when never cleared.
+  /// Mirrors the server's `messagesClearedAt`.
+  ///
+  /// This is the repair channel for "deleted for both sides, but the other phone still
+  /// shows everything". The delete itself travels as a fire-and-forget `chat-deleted`
+  /// socket push; a peer whose socket was down never hears it and keeps its whole local
+  /// transcript, which the server will never contradict because it filters cleared
+  /// messages out of every response. Carrying the clear *point* instead means any
+  /// refresh is enough to notice and repair the divergence.
+  ///
+  /// `var` with a default so the existing memberwise-init call sites keep compiling;
+  /// every copy helper below forwards it explicitly.
+  var messagesClearedAt: Double = 0
+  /// Room creation epoch-ms when present (`createdAt`).
+  let createdAt: Double
+  /// Optional room description (group/channel).
+  let roomDescription: String?
+  /// Channel access: `private` or `public`.
+  let accessType: String?
+  /// Public channel slug identity.
+  let publicSlug: String?
+  /// Shareable invite / public link when known.
+  let shareLink: String?
+  /// Channel join-approval policy.
+  let joinApprovalRequired: Bool
+  /// Channel restrict-saving-content policy.
+  let restrictSavingContent: Bool
+  /// Server member count when provided.
+  let memberCount: Int?
+  /// Server subscriber count for channels when provided.
+  let subscriberCount: Int?
 
   /// Explicit initializer (replaces the synthesized memberwise init) so
-  /// `lastMessageAt` can default — every pre-existing `ChatHomeListRow(...)` call
+  /// additive fields can default — every pre-existing `ChatHomeListRow(...)` call
   /// site keeps compiling and only the recency-aware paths pass a real value.
   init(
     chatId: String,
@@ -391,6 +697,7 @@ struct ChatHomeListRow {
     isArchiveEntry: Bool,
     type: String?,
     isGroup: Bool,
+    myRole: String? = nil,
     isAgentFriend: Bool,
     peerAgentId: String?,
     agentEventInboxMode: String?,
@@ -398,7 +705,16 @@ struct ChatHomeListRow {
     previewRows: [[String: Any]],
     initialMessages: [[String: Any]],
     members: [[String: Any]],
-    lastMessageAt: Double = 0
+    lastMessageAt: Double = 0,
+    createdAt: Double = 0,
+    roomDescription: String? = nil,
+    accessType: String? = nil,
+    publicSlug: String? = nil,
+    shareLink: String? = nil,
+    joinApprovalRequired: Bool = false,
+    restrictSavingContent: Bool = false,
+    memberCount: Int? = nil,
+    subscriberCount: Int? = nil
   ) {
     self.chatId = chatId
     self.title = title
@@ -422,6 +738,7 @@ struct ChatHomeListRow {
     self.isArchiveEntry = isArchiveEntry
     self.type = type
     self.isGroup = isGroup
+    self.myRole = myRole
     self.isAgentFriend = isAgentFriend
     self.peerAgentId = peerAgentId
     self.agentEventInboxMode = agentEventInboxMode
@@ -430,6 +747,15 @@ struct ChatHomeListRow {
     self.initialMessages = initialMessages
     self.members = members
     self.lastMessageAt = lastMessageAt
+    self.createdAt = createdAt
+    self.roomDescription = roomDescription
+    self.accessType = accessType
+    self.publicSlug = publicSlug
+    self.shareLink = shareLink
+    self.joinApprovalRequired = joinApprovalRequired
+    self.restrictSavingContent = restrictSavingContent
+    self.memberCount = memberCount
+    self.subscriberCount = subscriberCount
   }
 
   var isBuiltInAgentSurface: Bool {
@@ -440,8 +766,69 @@ struct ChatHomeListRow {
     Self.bridgeProvider(peerUserId: peerUserId, name: title, isAgent: isAgentFriend, agentId: peerAgentId) != nil
   }
 
+  /// Human 1:1 rows with no preview/messages stay off Home until someone sends.
+  var hasVisibleActivity: Bool {
+    if isTyping || unreadCount > 0 { return true }
+    if !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+    if !initialMessages.isEmpty || !previewRows.isEmpty { return true }
+    return false
+  }
+
   var isGoldTier: Bool {
     peerTier?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "gold"
+  }
+
+  /// Delivery state for the newest Home preview when that message was sent by us.
+  ///
+  /// Home rows are projected from ChatEngine whenever a receipt changes, so rendering
+  /// must only inspect the row it already owns. Calling the engine synchronously here
+  /// blocks the main thread behind launch/history work once per visible/signature row.
+  var latestOutgoingDisplayStatus: String? {
+    guard !isSavedMessages, !isArchiveEntry, !isGroup, !isChannel else { return nil }
+    let tail = initialMessages.isEmpty ? previewRows : initialMessages
+    guard let rawRow = tail.last else { return nil }
+    let message = (rawRow["message"] as? [String: Any]) ?? rawRow
+
+    let messageID = Self.normalizedString(
+      message["id"] ?? message["messageId"] ?? message["message_id"]
+        ?? rawRow["id"] ?? rawRow["messageId"] ?? rawRow["message_id"] ?? rawRow["key"])
+    guard let messageID else { return nil }
+
+    let explicitIsMe = Self.parseBool(
+      message["isMe"] ?? message["is_me"] ?? rawRow["isMe"] ?? rawRow["is_me"])
+    let config = ChatEngineStore.shared.getConfig()
+    let myUserID = Self.normalizedString(config["myUserId"] ?? config["userId"])
+    let fromUserID = Self.normalizedString(
+      message["fromId"] ?? message["from_id"] ?? message["senderId"] ?? message["sender_id"])
+    let isMe = explicitIsMe
+      ?? {
+        guard let myUserID, let fromUserID else { return false }
+        return myUserID.caseInsensitiveCompare(fromUserID) == .orderedSame
+      }()
+    guard isMe else { return nil }
+
+    let rawStatus = Self.normalizedString(
+      message["status"] ?? message["deliveryStatus"] ?? message["delivery_status"])?
+      .lowercased()
+    switch rawStatus {
+    case "pending", "sending", "sent", "delivered", "read":
+      return rawStatus
+    default:
+      return nil
+    }
+  }
+
+  var latestReactionPreview: String? {
+    let tail = initialMessages.isEmpty ? previewRows : initialMessages
+    guard let rawRow = tail.last else { return nil }
+    let message = (rawRow["message"] as? [String: Any]) ?? rawRow
+    let rawReactions = message["reactions"] ?? rawRow["reactions"]
+    guard let reactions = rawReactions as? [[String: Any]] else { return nil }
+    let emojis = reactions.compactMap { reaction in
+      Self.normalizedString(reaction["emoji"] ?? reaction["reaction"])
+    }
+    guard !emojis.isEmpty else { return nil }
+    return emojis.prefix(3).joined()
   }
 
   static func isBuiltInAgentChatId(_ rawChatId: String) -> Bool {
@@ -490,11 +877,14 @@ struct ChatHomeListRow {
   }
 
   func cachePayload(messageLimit: Int = 5) -> [String: Any] {
-    let shouldIncludeMessagePayload = messageLimit > 0 && !isBridgeAgentSurface
+    // Bridge-agent DMs are ordinary conversations from Home's perspective. Keeping
+    // their latest row lets Home show the actual session/activity after a relaunch
+    // instead of permanently replacing every preview with "Start session".
+    let shouldIncludeMessagePayload = messageLimit > 0
     var payload: [String: Any] = [
       "chatId": chatId,
       "title": title,
-      "preview": isBridgeAgentSurface ? "Start session" : preview,
+      "preview": preview,
       "timeLabel": timeLabel,
       "unreadCount": unreadCount,
       "markedUnread": markedUnread,
@@ -511,6 +901,9 @@ struct ChatHomeListRow {
       "previewRows": shouldIncludeMessagePayload ? previewRows : [],
       "messages": shouldIncludeMessagePayload ? Array(initialMessages.suffix(messageLimit)) : [],
       "lastMessageAt": lastMessageAt,
+      // Survives a cold start so a relaunch does not re-import a transcript this
+      // participant already cleared.
+      "messagesClearedAt": messagesClearedAt,
     ]
     if let peerUserId { payload["peerUserId"] = peerUserId }
     if let peerAgentId { payload["peerAgentId"] = peerAgentId }
@@ -522,15 +915,31 @@ struct ChatHomeListRow {
     if let avatarGradientStartDark { payload["avatarGradientStartDark"] = avatarGradientStartDark }
     if let avatarGradientEndDark { payload["avatarGradientEndDark"] = avatarGradientEndDark }
     if let type { payload["type"] = type }
+    if isChannel { payload["isChannel"] = true }
+    if let myRole { payload["role"] = myRole }
+    // Group roster must survive cold start. Without this, opening a group from
+    // cache always showed 0 members (profile "No members yet") until a live
+    // home refresh happened to re-open the chat.
+    if !members.isEmpty {
+      payload["members"] = members
+    }
+    if createdAt > 0 { payload["createdAt"] = createdAt }
+    if let roomDescription { payload["description"] = roomDescription }
+    if let accessType { payload["accessType"] = accessType }
+    if let publicSlug { payload["publicSlug"] = publicSlug }
+    if let shareLink { payload["shareLink"] = shareLink }
+    if joinApprovalRequired { payload["joinApprovalRequired"] = true }
+    if restrictSavingContent { payload["restrictSavingContent"] = true }
+    if let memberCount { payload["memberCount"] = memberCount }
+    if let subscriberCount { payload["subscriberCount"] = subscriberCount }
     return payload
   }
 
   func withPresence(isTyping: Bool, isOnline: Bool, preview: String? = nil) -> ChatHomeListRow {
-    let bridgeSurface = isBridgeAgentSurface
-    return ChatHomeListRow(
+    var copy = ChatHomeListRow(
       chatId: chatId,
       title: title,
-      preview: bridgeSurface ? "Start session" : (preview ?? self.preview),
+      preview: preview ?? self.preview,
       timeLabel: timeLabel,
       unreadCount: unreadCount,
       markedUnread: markedUnread,
@@ -550,15 +959,84 @@ struct ChatHomeListRow {
       isArchiveEntry: isArchiveEntry,
       type: type,
       isGroup: isGroup,
+      myRole: myRole,
       isAgentFriend: isAgentFriend,
       peerAgentId: peerAgentId,
       agentEventInboxMode: agentEventInboxMode,
       peerTier: peerTier,
-      previewRows: bridgeSurface ? [] : previewRows,
-      initialMessages: bridgeSurface ? [] : initialMessages,
+      previewRows: previewRows,
+      initialMessages: initialMessages,
       members: members,
-      lastMessageAt: lastMessageAt
+      lastMessageAt: lastMessageAt,
+      createdAt: createdAt,
+      roomDescription: roomDescription,
+      accessType: accessType,
+      publicSlug: publicSlug,
+      shareLink: shareLink,
+      joinApprovalRequired: joinApprovalRequired,
+      restrictSavingContent: restrictSavingContent,
+      memberCount: memberCount,
+      subscriberCount: subscriberCount
     )
+    // Not a memberwise parameter (it defaults, so old call sites still compile), so a
+    // copy has to forward it by hand or the clear point silently resets to "never".
+    copy.messagesClearedAt = messagesClearedAt
+    return copy
+  }
+
+  /// Local-only unread state, applied before (and independently of) the server call.
+  ///
+  /// Marking a chat unread is a projection of THIS user's chat list. It deliberately
+  /// touches nothing that the peer can observe: no read receipt is retracted, no message
+  /// status is rewritten, and the peer's own ticks are unaffected — the server endpoint
+  /// behind it only flips this participant's `marked_unread` flag.
+  func withLocalUnread(_ unread: Bool) -> ChatHomeListRow {
+    var copy = ChatHomeListRow(
+      chatId: chatId,
+      title: title,
+      preview: preview,
+      timeLabel: timeLabel,
+      unreadCount: unread ? max(1, unreadCount) : 0,
+      markedUnread: unread,
+      muted: muted,
+      pinned: pinned,
+      archived: archived,
+      isTyping: isTyping,
+      isOnline: isOnline,
+      peerUserId: peerUserId,
+      avatarUri: avatarUri,
+      avatarFallback: avatarFallback,
+      avatarGradientStartLight: avatarGradientStartLight,
+      avatarGradientEndLight: avatarGradientEndLight,
+      avatarGradientStartDark: avatarGradientStartDark,
+      avatarGradientEndDark: avatarGradientEndDark,
+      isSavedMessages: isSavedMessages,
+      isArchiveEntry: isArchiveEntry,
+      type: type,
+      isGroup: isGroup,
+      myRole: myRole,
+      isAgentFriend: isAgentFriend,
+      peerAgentId: peerAgentId,
+      agentEventInboxMode: agentEventInboxMode,
+      peerTier: peerTier,
+      previewRows: previewRows,
+      initialMessages: initialMessages,
+      members: members,
+      lastMessageAt: lastMessageAt,
+      createdAt: createdAt,
+      roomDescription: roomDescription,
+      accessType: accessType,
+      publicSlug: publicSlug,
+      shareLink: shareLink,
+      joinApprovalRequired: joinApprovalRequired,
+      restrictSavingContent: restrictSavingContent,
+      memberCount: memberCount,
+      subscriberCount: subscriberCount
+    )
+    // Not a memberwise parameter (it defaults, so old call sites still compile), so a
+    // copy has to forward it by hand or the clear point silently resets to "never".
+    copy.messagesClearedAt = messagesClearedAt
+    return copy
   }
 
   static func parse(_ raw: [String: Any]) -> ChatHomeListRow? {
@@ -586,10 +1064,6 @@ struct ChatHomeListRow {
 
     let previewRaw = firstSafeDisplayText(raw["preview"], raw["subtitle"])
     let previewMessage = serverMessages.last.map(homePreviewText(from:))
-    let timeLabel =
-      normalizedString(raw["timeLabel"] ?? raw["time_label"] ?? raw["time"])
-      ?? serverMessages.last.map(homeTimeLabel(from:))
-      ?? ""
     let unreadCount = parseInt(raw["unreadCount"] ?? raw["unread_count"]) ?? 0
     let markedUnread = parseBool(raw["markedUnread"] ?? raw["marked_unread"]) ?? false
     let muted = parseBool(raw["muted"]) ?? false
@@ -597,9 +1071,24 @@ struct ChatHomeListRow {
     let archived = parseBool(raw["archived"]) ?? false
     let isTyping = parseBool(raw["isTyping"] ?? raw["is_typing"]) ?? false
     let isOnline = parseBool(raw["isOnline"] ?? raw["is_online"]) ?? false
-    let type = normalizedString(raw["type"] ?? raw["chatType"] ?? raw["chat_type"])
-    let isGroup =
-      parseBool(raw["isGroup"] ?? raw["is_group"]) ?? (type == "group" || type == "channel")
+    let rawType = normalizedString(raw["type"] ?? raw["chatType"] ?? raw["chat_type"])
+    // Explicit isChannel from server (or cache) wins over a missing/stale type.
+    let explicitChannel = parseBool(raw["isChannel"] ?? raw["is_channel"]) == true
+    let type: String? = explicitChannel ? "channel" : rawType
+    // Type is authoritative for multi-party rooms. Older channel rows may have
+    // `is_group: false` on the server while `type == "channel"` — still treat as
+    // group-like so list/header/profile use the channel path, not a DM.
+    let isGroup: Bool = {
+      if type == "group" || type == "channel" { return true }
+      return parseBool(raw["isGroup"] ?? raw["is_group"]) ?? false
+    }()
+    let isChannelRow =
+      (type ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "channel"
+    // Per-user role for this room (owner/admin/member). Stabilizes admin chrome
+    // without re-deriving only from the members array (which can arrive incomplete).
+    let myRole = normalizedString(
+      raw["role"] ?? raw["myRole"] ?? raw["my_role"] ?? raw["memberRole"] ?? raw["member_role"]
+    )?.lowercased()
     // Groups/channels are never a 1:1 with a "friend": ignore any friend_* fields. A stale
     // pre-fix cached row can still carry a leaked agent friendId/friendImage — that's what
     // made an old group open Codex AND show Codex's avatar instead of the uploaded photo.
@@ -668,30 +1157,73 @@ struct ChatHomeListRow {
     let peerTier = normalizedString(
       raw["friendTier"] ?? raw["friend_tier"] ?? raw["peerTier"] ?? raw["peer_tier"]
         ?? raw["tier"] ?? raw["badge"] ?? raw["badgeTier"] ?? raw["badge_tier"])
-    let isBridgeAgent = Self.bridgeProvider(
-      peerUserId: peerUserId,
-      name: title,
-      isAgent: isAgentFriend,
-      agentId: peerAgentId
-    ) != nil
-    let preview = isBridgeAgent ? "Start session" : (previewRaw ?? previewMessage ?? "")
-    let initialMessages = isBridgeAgent ? [] : serverMessages
-    let previewRows = isBridgeAgent ? [] : parsePreviewRows(raw["previewRows"] ?? raw["preview_rows"])
-
-    let lastMessageAt: Double = {
-      if let value = raw["lastMessageAt"] as? NSNumber { return value.doubleValue }
-      if let value = raw["last_message_at"] as? NSNumber { return value.doubleValue }
-      if let text = normalizedString(raw["lastMessageAt"] ?? raw["last_message_at"]),
-        let parsed = Double(text)
-      {
-        return parsed
+    // Do not erase real bridge-agent activity. The server supplies the newest
+    // transcript row, which is the source of truth for Home's preview and order.
+    // Empty multi-party rooms with no messages get localized create copy.
+    let preview: String = {
+      if let previewRaw { return previewRaw }
+      if let previewMessage { return previewMessage }
+      if serverMessages.isEmpty {
+        if isChannelRow { return "Channel created" }
+        if isGroup { return "Group created" }
       }
-      // Cache/legacy payloads without the field: derive from the newest message.
-      if let newest = serverMessages.last { return Double(parseTimestamp(newest)) }
+      return ""
+    }()
+    let initialMessages = serverMessages
+    let previewRows = parsePreviewRows(raw["previewRows"] ?? raw["preview_rows"])
+
+    let createdAt: Double = {
+      if let value = parseEpochMillis(raw["createdAt"] ?? raw["created_at"]) { return value }
       return 0
     }()
 
-    return ChatHomeListRow(
+    let lastMessageAt: Double = {
+      if let value = parseEpochMillis(raw["lastMessageAt"] ?? raw["last_message_at"]) {
+        return value
+      }
+      // Cache/legacy payloads without the field: derive from the newest message.
+      if let newest = serverMessages.last {
+        let ts = Double(parseTimestamp(newest))
+        if ts > 0 { return ts }
+      }
+      // Empty rooms: fall back to createdAt so ordering/time still work.
+      if createdAt > 0 { return createdAt }
+      return 0
+    }()
+
+    // Explicit time text first, then message time, then lastMessageAt/createdAt.
+    let timeLabel: String = {
+      if let explicit = normalizedString(raw["timeLabel"] ?? raw["time_label"] ?? raw["time"]) {
+        return explicit
+      }
+      if let fromMessage = serverMessages.last.map(homeTimeLabel(from:)), !fromMessage.isEmpty {
+        return fromMessage
+      }
+      if lastMessageAt > 0 {
+        return homeTimeLabel(fromEpochMillis: lastMessageAt)
+      }
+      if createdAt > 0 {
+        return homeTimeLabel(fromEpochMillis: createdAt)
+      }
+      return ""
+    }()
+
+    let roomDescription = normalizedString(
+      raw["description"] ?? raw["roomDescription"] ?? raw["room_description"])
+    let accessType = normalizedString(raw["accessType"] ?? raw["access_type"])?.lowercased()
+    let publicSlug = normalizedString(raw["publicSlug"] ?? raw["public_slug"])
+    let shareLink = normalizedString(
+      raw["shareLink"] ?? raw["share_link"] ?? raw["inviteLink"] ?? raw["invite_link"])
+    let joinApprovalRequired =
+      parseBool(raw["joinApprovalRequired"] ?? raw["join_approval_required"]) ?? false
+    let restrictSavingContent =
+      parseBool(raw["restrictSavingContent"] ?? raw["restrict_saving_content"]) ?? false
+    let memberCount = parseInt(raw["memberCount"] ?? raw["member_count"])
+    let subscriberCount = parseInt(raw["subscriberCount"] ?? raw["subscriber_count"])
+    let messagesClearedAt =
+      parseEpochMillis(raw["messagesClearedAt"] ?? raw["messages_cleared_at"]) ?? 0
+
+    var parsed = ChatHomeListRow(
       chatId: chatId,
       title: title,
       preview: preview,
@@ -714,6 +1246,7 @@ struct ChatHomeListRow {
       isArchiveEntry: isArchiveEntry,
       type: type,
       isGroup: isGroup,
+      myRole: myRole,
       isAgentFriend: isAgentFriend,
       peerAgentId: peerAgentId,
       agentEventInboxMode: agentEventInboxMode,
@@ -721,8 +1254,19 @@ struct ChatHomeListRow {
       previewRows: previewRows,
       initialMessages: initialMessages,
       members: parsePreviewRows(raw["members"]),
-      lastMessageAt: lastMessageAt
+      lastMessageAt: lastMessageAt,
+      createdAt: createdAt,
+      roomDescription: roomDescription,
+      accessType: accessType,
+      publicSlug: publicSlug,
+      shareLink: shareLink,
+      joinApprovalRequired: joinApprovalRequired,
+      restrictSavingContent: restrictSavingContent,
+      memberCount: memberCount,
+      subscriberCount: subscriberCount
     )
+    parsed.messagesClearedAt = messagesClearedAt
+    return parsed
   }
 
   private static func parsePreviewRows(_ value: Any?) -> [[String: Any]] {
@@ -742,66 +1286,138 @@ struct ChatHomeListRow {
   }
 
   static func homePreviewText(from raw: [String: Any]) -> String {
-    if let text = firstSafeDisplayText(
-      raw["preview"],
-      raw["plainContent"],
-      raw["plain_content"],
-      raw["plaintext"]
-    ) {
-      return text
-    }
-
-    if let text = ChatEngine.shared.makeHomePreviewText(raw) {
-      return text
-    }
-
-    if let text = firstSafeDisplayText(raw["content"], raw["text"]) {
-      return text
-    }
-
-    let type = normalizedString(raw["type"])?.lowercased() ?? "text"
-    let fileName =
-      normalizedString(raw["fileName"] ?? raw["file_name"] ?? raw["name"] ?? raw["title"])
-
-    switch type {
-    case "image":
-      return "Photo"
-    case "video":
-      return "Video"
-    case "voice":
-      return "Voice message"
-    case "music":
-      return "Audio"
-    case "file":
-      return fileName ?? "File"
-    case "location":
-      return "Location"
-    case "contact":
-      return "Contact"
-    case "gif":
-      return "GIF"
-    case "sticker":
-      return "Sticker"
-    default:
-      if normalizedString(raw["mediaUrl"] ?? raw["media_url"]) != nil {
-        return fileName ?? "Attachment"
+    let base: String = {
+      if let text = firstSafeDisplayText(
+        raw["preview"],
+        raw["plainContent"],
+        raw["plain_content"],
+        raw["plaintext"]
+      ) {
+        return text
       }
-      return "Encrypted message"
+
+      if let text = ChatEngine.shared.makeHomePreviewText(raw) {
+        return text
+      }
+
+      if let text = firstSafeDisplayText(raw["content"], raw["text"]) {
+        return text
+      }
+
+      let type = normalizedString(raw["type"])?.lowercased() ?? "text"
+      let fileName =
+        normalizedString(raw["fileName"] ?? raw["file_name"] ?? raw["name"] ?? raw["title"])
+
+      switch type {
+      case "image":
+        return "Photo"
+      case "video":
+        return "Video"
+      case "voice":
+        return "Voice message"
+      case "music":
+        return "Audio"
+      case "file":
+        return fileName ?? "File"
+      case "location":
+        return "Location"
+      case "contact":
+        return "Contact"
+      case "gif":
+        return "GIF"
+      case "sticker":
+        return "Sticker"
+      default:
+        if normalizedString(raw["mediaUrl"] ?? raw["media_url"]) != nil {
+          return fileName ?? "Attachment"
+        }
+        return "Encrypted message"
+      }
+    }()
+
+    // Telegram-style home list: "Forwarded message" (or prefix) when last msg is a forward.
+    if isForwardedHomeMessage(raw) {
+      let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
+      if trimmed.isEmpty || trimmed == "Encrypted message" {
+        return "Forwarded message"
+      }
+      // Avoid double-prefix if server already formatted it.
+      if trimmed.lowercased().hasPrefix("forwarded") {
+        return trimmed
+      }
+      return "Forwarded message"
     }
+    return base
+  }
+
+  private static func isForwardedHomeMessage(_ raw: [String: Any]) -> Bool {
+    let metadata =
+      (raw["metadata"] as? [String: Any])
+      ?? (raw["meta"] as? [String: Any])
+      ?? [:]
+    if parseBool(metadata["isForwarded"] ?? metadata["is_forwarded"]) == true {
+      return true
+    }
+    if parseBool(raw["isForwarded"] ?? raw["is_forwarded"]) == true {
+      return true
+    }
+    let keys = [
+      "forwardedFromName", "forwarded_from_name",
+      "forwardedFromUserId", "forwarded_from_user_id",
+      "forwardedFromMessageId", "forwarded_from_message_id",
+    ]
+    for key in keys {
+      if normalizedString(metadata[key]) != nil { return true }
+      if normalizedString(raw[key]) != nil { return true }
+    }
+    return false
   }
 
   static func homeTimeLabel(from raw: [String: Any]) -> String {
     let timestamp = parseTimestamp(raw)
     guard timestamp > 0 else { return "" }
-    let date = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000.0)
+    return homeTimeLabel(fromEpochMillis: Double(timestamp))
+  }
+
+  /// Format an epoch-millisecond activity/create timestamp for the home list.
+  static func homeTimeLabel(fromEpochMillis millis: Double) -> String {
+    guard millis > 0 else { return "" }
+    // Accept seconds if a server ever sends them (pre-2001 ms values).
+    let seconds: TimeInterval = millis > 1_000_000_000_000
+      ? millis / 1000.0
+      : millis
+    let date = Date(timeIntervalSince1970: seconds)
     let calendar = Calendar.current
+    let now = Date()
     if calendar.isDateInToday(date) {
       return HomeTimeFormatters.time.string(from: date)
     }
-    if calendar.isDate(date, equalTo: Date(), toGranularity: .year) {
+    if calendar.isDateInYesterday(date) {
+      return NSLocalizedString("Yesterday", comment: "Home list date for the previous day")
+    }
+    let daysAgo = calendar.dateComponents(
+      [.day],
+      from: calendar.startOfDay(for: date),
+      to: calendar.startOfDay(for: now)
+    ).day
+    if let daysAgo, (2..<7).contains(daysAgo) {
       return HomeTimeFormatters.day.string(from: date)
     }
+    if calendar.isDate(date, equalTo: now, toGranularity: .year) {
+      return HomeTimeFormatters.dayMonth.string(from: date)
+    }
     return HomeTimeFormatters.shortDate.string(from: date)
+  }
+
+  private static func parseEpochMillis(_ value: Any?) -> Double? {
+    if let number = value as? NSNumber {
+      let d = number.doubleValue
+      return d > 0 ? d : nil
+    }
+    if let text = normalizedString(value), let parsed = Double(text), parsed > 0 {
+      return parsed
+    }
+    return nil
   }
 
   private static func resolveAvatarURI(
@@ -924,7 +1540,13 @@ private enum HomeTimeFormatters {
 
   static let day: DateFormatter = {
     let formatter = DateFormatter()
-    formatter.setLocalizedDateFormatFromTemplate("EEE")
+    formatter.setLocalizedDateFormatFromTemplate("EEEE")
+    return formatter
+  }()
+
+  static let dayMonth: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.setLocalizedDateFormatFromTemplate("MMM d")
     return formatter
   }()
 
@@ -953,6 +1575,23 @@ struct ChatHomeSwipeActionSpec {
 
 extension ChatHomeListRow {
   var leadingSwipeActionSpecs: [ChatHomeSwipeActionSpec] {
+    // Owned-agent rows (Agents tab) get exactly one leading action — Settings —
+    // instead of Pin/Read: an agent management row has no "unread" concept, and
+    // routing Pin through a synthetic/no-chat-yet row risks a real network call
+    // against a chatId that was never registered server-side.
+    if isOwnedAgent {
+      return [
+        ChatHomeSwipeActionSpec(
+          eventType: "swipeAgentSettings",
+          title: "Settings",
+          systemImageName: "gearshape.fill",
+          backgroundColor: ChatHomeSwipePalette.settings,
+          foregroundColor: .white,
+          style: .normal,
+          isFullSwipeTarget: true
+        )
+      ]
+    }
     let hasUnread = unreadCount > 0 || markedUnread
     return [
       ChatHomeSwipeActionSpec(
@@ -977,7 +1616,20 @@ extension ChatHomeListRow {
   }
 
   var trailingSwipeActionSpecs: [ChatHomeSwipeActionSpec] {
-    [
+    if isOwnedAgent {
+      return [
+        ChatHomeSwipeActionSpec(
+          eventType: "swipeDelete",
+          title: "Delete",
+          systemImageName: "trash.fill",
+          backgroundColor: ChatHomeSwipePalette.delete,
+          foregroundColor: .white,
+          style: .destructive,
+          isFullSwipeTarget: true
+        )
+      ]
+    }
+    return [
       ChatHomeSwipeActionSpec(
         eventType: "swipeDelete",
         title: "Delete",
@@ -1010,6 +1662,7 @@ extension ChatHomeListRow {
 }
 
 private enum ChatHomeSwipePalette {
+  static let settings = UIColor(red: 0.42, green: 0.45, blue: 0.50, alpha: 1)
   static let pin = UIColor(red: 0.20, green: 0.47, blue: 0.90, alpha: 1)
   static let read = UIColor(red: 0.24, green: 0.61, blue: 0.86, alpha: 1)
   static let mute = UIColor(red: 0.86, green: 0.53, blue: 0.04, alpha: 1)

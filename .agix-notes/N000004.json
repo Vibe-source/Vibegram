@@ -1,0 +1,18 @@
+{
+  "id": 4,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — agent-requested\nNEXT: Have the user test a video-note long press on device; rerun the Agix-wrapped iOS build in an environment that permits SwiftPM manifest sandboxing if available.\nDID: exec(const p = await tools.exec_command({cmd:\"agix optimise prepare --done \\\"Implemented the video-note self-close fix in ios/ChatModule/Ch…",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "codex",
+  "author": "Vibe Team",
+  "created_at": 1787738393,
+  "updated_at": 1787741014
+}

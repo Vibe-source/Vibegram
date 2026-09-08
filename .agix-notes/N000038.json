@@ -1,0 +1,18 @@
+{
+  "id": 38,
+  "status": "resolved",
+  "priority": 2,
+  "kind": "warning",
+  "body": "claim_key_package has no relationship check and no rate limit: any authenticated user can GET /mls/key-packages/:user_id in a loop and permanently consume a target's whole KeyPackage pool (claims are single-use, irreversible). Every legitimate peer then gets 404 'No available KeyPackage' and E2EE establishment with that user is denied until their device tops up. Also discloses deviceId to any caller. NOT FIXED — needs a per-claimer cap or a contact/DM-exists precondition.",
+  "selector": "server/lib/vibe/mls.ex::Vibe.Mls.claim_key_package",
+  "path": "server/lib/vibe/mls.ex",
+  "fqn": "Vibe.Mls.claim_key_package",
+  "line": 113,
+  "anchor_hash": "3849f93f0db236f6714daa2b2d261edcd0ae44a6625284cead0131506f423781",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787750992,
+  "updated_at": 1787751692
+}

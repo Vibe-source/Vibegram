@@ -8,7 +8,7 @@ defmodule SetAgentProfiles do
     upload_and_set("claude", @claude_image, "agent-profiles/claude.png")
     upload_and_set("codex", @gpt_image, "agent-profiles/codex.png")
     upload_and_set("grok", @grok_image, "agent-profiles/grok-v2.png")
-    upload_and_set("agy", @agy_image, "agent-profiles/agy.png")
+    upload_and_set("agy", @agy_image, "agent-profiles/agy-v3.png")
   end
 
   def run_grok_only do
@@ -16,7 +16,7 @@ defmodule SetAgentProfiles do
   end
 
   def run_agy_only do
-    upload_and_set("agy", @agy_image, "agent-profiles/agy.png")
+    upload_and_set("agy", @agy_image, "agent-profiles/agy-v3.png")
   end
 
   defp upload_and_set(username, local_path, remote_path) do
@@ -57,8 +57,7 @@ defmodule SetAgentProfiles do
   end
 end
 
-# railway run SET_AGENT_ONLY=agy mix run set_agent_profiles.exs
-# (same env as Claude/Codex; defaults to all profiles)
+# railway run SET_AGENT_ONLY=agy mix run set_agent_profiles.exs (same env.
 case System.get_env("SET_AGENT_ONLY") do
   "agy" -> SetAgentProfiles.run_agy_only()
   "grok" -> SetAgentProfiles.run_grok_only()

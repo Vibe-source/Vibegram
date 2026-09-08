@@ -8,13 +8,19 @@ defmodule VibeWeb.PushAvatarController do
 
   def show(conn, %{"user_id" => user_id}) do
     Logger.info("[PushAvatar] request user_id=#{user_id}")
+    viewer = conn.assigns[:current_user]
+
     case Accounts.get_user(user_id) do
       nil ->
         Logger.warning("[PushAvatar] user not found user_id=#{user_id}")
         send_resp(conn, 404, "")
 
       user ->
-        send_avatar(conn, user.profile_image)
+        if Accounts.viewer_can_see?(user, viewer, :privacy_profile_photos) do
+          send_avatar(conn, user.profile_image)
+        else
+          send_resp(conn, 404, "")
+        end
     end
   end
 

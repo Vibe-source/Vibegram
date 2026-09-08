@@ -1,0 +1,18 @@
+{
+  "id": 121,
+  "status": "done",
+  "priority": 2,
+  "kind": "handoff",
+  "body": "MLS item 2 source changes are parse-clean. Build attempts (normal and -skipPackageUpdates) both stopped in Xcode Swift package resolution before compilation due sandbox Operation not permitted writing ~/.cache/clang/ModuleCache and ~/Library/Caches/org.swift.swiftpm; install not run.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787922058,
+  "updated_at": 1787931340
+}

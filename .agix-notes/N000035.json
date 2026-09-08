@@ -1,0 +1,18 @@
+{
+  "id": 35,
+  "status": "resolved",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Vibe.Mls.post_welcome had NO membership check: any authenticated user could claim a victim KeyPackage (GET /mls/key-packages/:user_id, no relationship check), build an MLS group, and POST a Welcome naming any chat_id (mls_welcomes.chat_id is a plain :string, no FK) — seating the victim in an attacker-controlled group. Worse since the client stopped discarding groups when incomingWelcomes>0. FIXED: authorize_welcome/3 requires BOTH sender and recipient to be Chat.is_participant? of chat_id; 404 not 403 so chat ids cannot be probed. mix compile green.",
+  "selector": "server/lib/vibe/mls.ex::Vibe.Mls.post_welcome",
+  "path": "server/lib/vibe/mls.ex",
+  "fqn": "Vibe.Mls.post_welcome",
+  "line": 305,
+  "anchor_hash": "afd492208c64172f363e2224a1e19bb4c92f256e78b67b724eddc549f6c0f9e1",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787750992,
+  "updated_at": 1787751752
+}

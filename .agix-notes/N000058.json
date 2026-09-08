@@ -1,0 +1,18 @@
+{
+  "id": 58,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "AVAudioSession.setActive(false) is off-main with audioSessionEpoch; audioPlayerDidFinishPlaying on main was MainHang 1.35s.",
+  "selector": "ios/ChatModule/ChatListViewCells.swift::VoiceBubblePlaybackCoordinator.stopActivePlayback",
+  "path": "ios/ChatModule/ChatListViewCells.swift",
+  "fqn": "VoiceBubblePlaybackCoordinator.stopActivePlayback",
+  "line": 9281,
+  "anchor_hash": "37c7dabb8e1b489d4c43e759e0b116422036e2ee35e629fb4685b12033ae65db",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787759682,
+  "updated_at": 1787759682
+}

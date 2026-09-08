@@ -544,9 +544,14 @@ enum NativeAuthService {
       path: "register",
       body: [
         "username": username,
-        "password": recoverySecret,
+        // v3: the server never sees `recoverySecret` itself — only one-way
+        // derivations of it. `credential` becomes the account lookup handle,
+        // `password` the auth secret. The KEK stays derived from the raw secret
+        // on-device and is never transmitted in any form.
+        "credential": NativeAuthCrypto.lookupId(from: recoverySecret),
+        "password": NativeAuthCrypto.authSecret(from: recoverySecret),
         "deviceId": UUID().uuidString,
-        "identityKey": "v2",
+        "identityKey": "v3",
         "publicKey": keyPair.publicKeyPem,
         "encryptedPrivateKey": encryptedPrivateKey,
       ]
@@ -564,7 +569,7 @@ enum NativeAuthService {
       privateKeyPem: keyPair.privateKeyPem,
       encryptedPrivateKey: encryptedPrivateKey,
       tokenExpiresAt: response.tokenExpiresAt,
-      identityKey: "v2",
+      identityKey: "v3",
       phoneNumber: response.phoneNumber
     )
     return NativeAuthResult(config: config, recoverySecret: recoverySecret)
@@ -575,15 +580,44 @@ enum NativeAuthService {
     apiBaseURLString: String,
     transportMode: PacketTransportMode
   ) async throws -> NativeAuthResult {
-    let response = try await request(
-      apiBaseURLString: apiBaseURLString,
-      path: "login",
-      body: [
-        "credential": secret,
-        "password": secret,
-        "deviceId": UUID().uuidString,
-      ]
-    )
+    let deviceId = UUID().uuidString
+    let lookupId = NativeAuthCrypto.lookupId(from: secret)
+    let authSecret = NativeAuthCrypto.authSecret(from: secret)
+
+    // v3 first. A pre-v3 account's `secure_id` and `password_hash` are derived
+    // from the raw secret, so this lookup simply misses and we fall through —
+    // there is no way to tell the two account generations apart up front, and
+    // asking the server which one it is would leak exactly what we are hiding.
+    var usedLegacyIdentity = false
+    let response: NativeAuthResponse
+    do {
+      response = try await request(
+        apiBaseURLString: apiBaseURLString,
+        path: "login",
+        body: [
+          "credential": lookupId,
+          "password": authSecret,
+          "deviceId": deviceId,
+        ]
+      )
+    } catch {
+      // Legacy accounts only. The raw secret goes to the server this one last
+      // time, because it is the only thing a pre-v3 record can be authenticated
+      // against. The upgrade below then re-keys the account so that never
+      // happens again for this user. A wrong secret costs one extra request,
+      // which is the right trade for not having to distinguish a 401 from a
+      // dropped connection here.
+      response = try await request(
+        apiBaseURLString: apiBaseURLString,
+        path: "login",
+        body: [
+          "credential": secret,
+          "password": secret,
+          "deviceId": deviceId,
+        ]
+      )
+      usedLegacyIdentity = true
+    }
     guard let encryptedPrivateKey = response.encryptedPrivateKey, !encryptedPrivateKey.isEmpty else {
       throw NativeAuthError.message("Key sync unavailable for this account.")
     }
@@ -598,6 +632,19 @@ enum NativeAuthService {
     )
     let publicKeyPem = try NativeAuthCrypto.derivePublicKeyPem(from: privateKeyPem)
 
+    // Only after the private key has actually been unwrapped — re-keying an
+    // account whose key we could not open would strand the user on credentials
+    // that no longer match anything they can use.
+    var upgradedSecureId: String?
+    if usedLegacyIdentity {
+      upgradedSecureId = await upgradeIdentityToV3(
+        apiBaseURLString: apiBaseURLString,
+        token: response.token,
+        recoverySecret: secret
+      )
+    }
+    let upgradedToV3 = upgradedSecureId != nil
+
     let config = AppSessionConfig(
       apiBaseURLString: apiBaseURLString,
       socketURLString: nil,
@@ -605,15 +652,57 @@ enum NativeAuthService {
       authToken: response.token,
       transportMode: transportMode,
       username: response.username,
-      secureID: response.secureId,
+      secureID: upgradedSecureId ?? response.secureId,
       publicKeyPem: publicKeyPem,
       privateKeyPem: privateKeyPem,
       encryptedPrivateKey: encryptedPrivateKey,
       tokenExpiresAt: response.tokenExpiresAt,
-      identityKey: "v2",
+      identityKey: upgradedToV3 ? "v3" : (usedLegacyIdentity ? "v2" : "v3"),
       phoneNumber: response.phoneNumber
     )
     return NativeAuthResult(config: config, recoverySecret: nil)
+  }
+
+  /// Re-keys a pre-v3 account so the raw recovery secret is never sent again.
+  ///
+  /// Best-effort on purpose: a failure here must not block a login that has
+  /// already succeeded. The account stays on v2 and the next sign-in retries.
+  /// Note this rotates only `secure_id` and `password_hash` — it deliberately
+  /// does **not** touch `encrypted_private_key`, because the KEK derivation is
+  /// unchanged. That is what makes this migration non-destructive: the worst
+  /// case is a login that has to fall back again, never lost key material.
+  /// Returns the account's **new** `secureId` on success, or `nil` if the
+  /// upgrade did not happen. The server rotates `secure_id` in lockstep with the
+  /// password hash, and the client cannot recompute it (the pepper is
+  /// server-side), so the fresh value has to be carried back into the session
+  /// config — keeping the stale one would break the next secure-id login.
+  private static func upgradeIdentityToV3(
+    apiBaseURLString: String,
+    token: String,
+    recoverySecret: String
+  ) async -> String? {
+    do {
+      let data = try await requestRaw(
+        apiBaseURLString: apiBaseURLString,
+        path: "upgrade-identity",
+        body: [
+          "credential": NativeAuthCrypto.lookupId(from: recoverySecret),
+          "password": NativeAuthCrypto.authSecret(from: recoverySecret),
+          "identityKey": "v3",
+        ],
+        bearerToken: token
+      )
+      guard
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let secureId = object["secureId"] as? String,
+        !secureId.isEmpty
+      else {
+        return nil
+      }
+      return secureId
+    } catch {
+      return nil
+    }
   }
 
   private static func request(
@@ -621,6 +710,24 @@ enum NativeAuthService {
     path: String,
     body: [String: Any]
   ) async throws -> NativeAuthResponse {
+    let data = try await requestRaw(
+      apiBaseURLString: apiBaseURLString, path: path, body: body)
+    do {
+      return try JSONDecoder().decode(NativeAuthResponse.self, from: data)
+    } catch {
+      throw NativeAuthError.message("The auth response could not be parsed.")
+    }
+  }
+
+  /// The POST itself, without assuming the response decodes to
+  /// `NativeAuthResponse` — the identity upgrade returns a different shape.
+  @discardableResult
+  private static func requestRaw(
+    apiBaseURLString: String,
+    path: String,
+    body: [String: Any],
+    bearerToken: String? = nil
+  ) async throws -> Data {
     var base = apiBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
     while base.hasSuffix("/") {
       base.removeLast()
@@ -636,21 +743,19 @@ enum NativeAuthService {
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     request.setValue("true", forHTTPHeaderField: "ngrok-skip-browser-warning")
+    if let bearerToken, !bearerToken.isEmpty {
+      request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+    }
     request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
-    let (data, response) = try await URLSession.shared.data(for: request)
+    let (data, response) = try await VibeHTTP.shared.data(for: request)
     guard let httpResponse = response as? HTTPURLResponse else {
       throw NativeAuthError.message("The server did not return a valid response.")
     }
     guard (200...299).contains(httpResponse.statusCode) else {
       throw parseServerError(data: data, statusCode: httpResponse.statusCode)
     }
-
-    do {
-      return try JSONDecoder().decode(NativeAuthResponse.self, from: data)
-    } catch {
-      throw NativeAuthError.message("The auth response could not be parsed.")
-    }
+    return data
   }
 
   private static func parseServerError(data: Data, statusCode: Int) -> NativeAuthError {
@@ -720,6 +825,45 @@ private enum NativeAuthCrypto {
       let end = hex.index(start, offsetBy: min(4, hex.distance(from: start, to: hex.endIndex)), limitedBy: hex.endIndex) ?? hex.endIndex
       return String(hex[start..<end])
     }.joined(separator: "-")
+  }
+
+  /// Domain-separated values derived from the recovery secret, so that nothing
+  /// the server receives can reconstruct the key-wrapping passphrase.
+  ///
+  /// The recovery secret used to be sent verbatim as **both** the login
+  /// `credential` and the `password`, while the *same* string was also the
+  /// PBKDF2 passphrase that wraps the RSA private key — and the server stores a
+  /// copy of that wrapped key. Holding both halves, the server could unwrap the
+  /// private key at any login and read every message the account had ever sent.
+  /// That made end-to-end encryption nominal rather than real.
+  ///
+  /// HKDF is one-way, so a server holding `lookupId` and `authSecret` cannot
+  /// recover the recovery secret and therefore cannot derive the KEK. This only
+  /// works because the recovery secret is 24 random bytes (192 bits) — see
+  /// `generateRecoverySecret`. It would **not** be sound for a user-chosen
+  /// password, which is why one must never be introduced here.
+  ///
+  /// `deriveKey` below is deliberately left untouched. Keeping the KEK
+  /// derivation bit-for-bit identical means `encrypted_private_key` never has to
+  /// be re-wrapped, so no migration can destroy key material: the worst failure
+  /// is a rejected login, which is recoverable. Re-wrapping would not be.
+  static func lookupId(from recoverySecret: String) -> String {
+    hkdfHex(recoverySecret, info: "vibe/lookup/v1")
+  }
+
+  static func authSecret(from recoverySecret: String) -> String {
+    hkdfHex(recoverySecret, info: "vibe/auth/v1")
+  }
+
+  private static func hkdfHex(_ secret: String, info: String) -> String {
+    let derived = HKDF<SHA256>.deriveKey(
+      inputKeyMaterial: SymmetricKey(data: Data(secret.utf8)),
+      info: Data(info.utf8),
+      outputByteCount: 32
+    )
+    return derived.withUnsafeBytes { raw in
+      raw.map { String(format: "%02X", $0) }.joined()
+    }
   }
 
   static func generateKeyPair() throws -> NativeAuthKeyPair {

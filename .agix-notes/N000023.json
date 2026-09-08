@@ -1,0 +1,18 @@
+{
+  "id": 23,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Video-note tap scale is list-owned: expandedVideoNoteMessageId drives AgentTurnBubbleState.videoNoteExpanded so measure uses 200 vs 248 and neighbors reflow via reloadAgentTurnStateRow. Playback end auto scale-down. Do not put transform scale back on the cell.",
+  "selector": "ios/ChatModule/ChatListView.swift::setExpandedVideoNoteMessageId",
+  "path": "ios/ChatModule/ChatListView.swift",
+  "fqn": "setExpandedVideoNoteMessageId",
+  "line": 24589,
+  "anchor_hash": "831f1d88758640ba82c6120b0c39e850312c4816165c6e5516813f05cb6d5122",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787745515,
+  "updated_at": 1787745515
+}

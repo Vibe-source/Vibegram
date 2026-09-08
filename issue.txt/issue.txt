@@ -1,0 +1,655 @@
+i also found one layout shift as well the cell width shfit 2026-08-03 21:20:42.980 Vibe[10041:1917922] [ChatOpen] presentation-seed chat=saved_messag visible=31 retained=24 cachedHeights=24 sizing=estimated window=full normMs=0 parseMs=2 filterMs=0 posMs=2 layoutMs=149 mountMs=152 totalMs=156 sinceOpenMs=762
+2026-08-03 21:20:42.980 Vibe[10041:1917922] [ChatOpen] seed-profile chat=saved_messag sizeCalls=48 sizeMs=2 trust=24 sig=0 cacheHit=0 measure=0 measureMs=0 configure=17 configureMs=22 cell=17 cellMs=116 insetMs=0 contentMs=1 offsetMs=0
+2026-08-03 21:20:42.980 Vibe[10041:1917922] [VibeCore] seed-prepared chat=saved_messag hit=0 miss=24 width=424 storePrepared=16 storeHit=3 storeMiss=230
+2026-08-03 21:20:42.980 Vibe[10041:1917922] [ChatOpen] viewport-cover seed chat=saved_messag rows=31 cells=17 cover=88% off=1467 contentH=2422 boundsH=956 span=1314…2344
+2026-08-03 21:20:42.980 Vibe[10041:1917922] [ChatOpen] viewport-vis seed chat=saved_messag list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=4 clear=0) snapshotOverlay=Y defersPresentation=Y
+2026-08-03 21:20:42.980 Vibe[10041:1917922] [ChatOpen] viewport-occluded seed chat=saved_messag above-list=[UIImageView(a=1.00 bg=0.00 contents=Y 440x956)]
+2026-08-03 21:20:42.980 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=saved_messag staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:20:42.980 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=saved_messag — reconciling from engine
+2026-08-03 21:20:42.980 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=24 action=apply-pending chat=saved_messag
+2026-08-03 21:20:42.981 Vibe[10041:1917922] [ChatOpen] flush-stages chat=saved_messag visible=31 windowed=31 parsedAll=31 progress=0 usage=[] thinking=[] inboxMode=N inbox=[] afterInbox=31 afterBridgeFresh=31 final=31
+2026-08-03 21:20:42.984 Vibe[10041:1917922] [MusicList] setRows chat=saved_messages rows=31 musicCandidates=1 registered=1 persistedTotal=10
+2026-08-03 21:20:42.984 Vibe[10041:1917922] [ChatOpen] viewport RESTORE chat=saved_messag reason=bottom-already-settled
+2026-08-03 21:20:42.984 Vibe[10041:1917922] [ChatOpen] reopen-snapshot REMOVE chat=saved_messag reason=reconcile-match overlay=440x956 cv=440x956
+2026-08-03 21:20:42.984 Vibe[10041:1917922] [ChatOpen] presentation-reconcile chat=saved_messag rows=31 equal=Y structural=N mode=match changed=0 ms=3 sinceOpenMs=766
+2026-08-03 21:20:42.984 Vibe[10041:1917922] [ChatOpen] viewport-cover complete chat=saved_messag rows=31 cells=17 cover=88% off=1467 contentH=2422 boundsH=956 span=1314…2344
+2026-08-03 21:20:42.984 Vibe[10041:1917922] [ChatOpen] viewport-vis complete chat=saved_messag list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=4 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:20:42.987 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=7 July state=STUCK pills=1 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:20:43.114 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=7 July state=STUCK pills=2 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:20:43.152 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=6 July state=riding pills=2 slotY=124 pillY=108 safeTop=0 padTop=130
+2026-08-03 21:20:43.164 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=6 July state=STUCK pills=2 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:20:43.194 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=4 July state=riding pills=1 slotY=124 pillY=103 safeTop=0 padTop=130
+2026-08-03 21:20:43.214 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=4 July state=STUCK pills=1 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:20:43.426 Vibe[10041:1917922] [ChatOpen] older-history REQUEST chat=saved_messag offset=588 expected=m-350e167a-9899- rows=31
+2026-08-03 21:20:43.590 Vibe[10041:1917922] [ChatOpen] viewport-cover settled chat=saved_messag rows=31 cells=10 cover=83% off=-8 contentH=2422 boundsH=956 span=130…1176
+2026-08-03 21:20:43.590 Vibe[10041:1917922] [ChatOpen] viewport-vis settled chat=saved_messag list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=3 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:20:43.806 Vibe[10041:1917922] [KbViewport] PERSIST chat=saved_messag kb=0 insetB=0 off=-75 contentH=2422 boundsH=956 atBottom=N anchor=350e167a screenY=237
+2026-08-03 21:20:44.181 Vibe[10041:1917922] [KbViewport] PERSIST chat=saved_messag kb=0 insetB=0 off=-52 contentH=2422 boundsH=956 atBottom=N anchor=350e167a screenY=214
+2026-08-03 21:20:44.556 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=4 July state=riding pills=1 slotY=124 pillY=109 safeTop=0 padTop=130
+2026-08-03 21:20:44.569 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=6 July state=STUCK pills=2 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:20:44.606 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=6 July state=riding pills=2 slotY=124 pillY=103 safeTop=0 padTop=130
+2026-08-03 21:20:44.619 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=7 July state=STUCK pills=2 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:20:44.681 Vibe[10041:1917922] [ChatOpen] date-pin chat=saved_messag label=7 July state=STUCK pills=1 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:20:45.507 Vibe[10041:1917922] [KbViewport] PERSIST chat=saved_messag kb=0 insetB=0 off=1467 contentH=2422 boundsH=956 atBottom=Y anchor=none screenY=0
+2026-08-03 21:20:45.973 Vibe[10041:1918356] [VibeCore] prepared chat=saved_messag rows=31 sized=31 deferred=0 width=424 ms=57 reason=settle total=17
+2026-08-03 21:20:46.084 Vibe[10041:1917922] [ChatOpen] reopen-snapshot CAPTURE chat=saved_messag size=440x956 atBottom=Y luma=208
+2026-08-03 21:20:46.665 Vibe[10041:1917922] [KbViewport] PERSIST chat=saved_messag kb=0 insetB=0 off=1467 contentH=2422 boundsH=956 atBottom=Y anchor=none screenY=0
+2026-08-03 21:20:46.685 Vibe[10041:1918441] [ChatOpen] heights PERSIST chat=saved_messag total=181 carried=157 fresh=24 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:20:46.725 Vibe[10041:1917922] [AgentRoute] ChatRoute(row:) chatId=63f5b27bf064 title=test4 isGroup=N isChannel=N peerUserId=b7068555-29da-44a0-bc29-84da81cda87f peerAgentId=nil isAgentFriend=false resolvedBridge=nil members=0 myRole=member initial=9
+2026-08-03 21:20:46.731 Vibe[10041:1917922] [ChatOpen] host-stage ChatMainView.init totalMs=3 listMs=1 configureMs=1 sinceTapMs=6
+2026-08-03 21:20:46.734 Vibe[10041:1917922] [WhoAmI] ChatMainView.setGroupMembers chatMembers=0 me=CFAC3A0D prevRole=<nil> nextRole=<nil> source=not-in-roster flipped=N isAdmin=N sample=[]
+2026-08-03 21:20:46.734 Vibe[10041:1917922] [ChatOpen] viewport LOAD chat=63f5b27bf064 restore=same-run atBottom=Y hasAnchor=N age=5s
+2026-08-03 21:20:46.735 Vibe[10041:1917922] [ChatOpen] heights RESTORE chat=63f5b27bf064 entries=9
+2026-08-03 21:20:46.735 Vibe[10041:1917922] [Seed] src=warmSnapshot rows=12 action=stash chat=63f5b27bf064 (await window attach)
+2026-08-03 21:20:46.735 Vibe[10041:1917922] [ChatOpen] warm-cache DEFER chat=63f5b27bf064 cached=12 heights=9
+2026-08-03 21:20:46.735 Vibe[10041:1917922] [ChatOpen] engine-bind chat=63f5b27bf064 heightsMs=0 warmRestoreMs=0 hydrateMs=0 totalMs=0
+2026-08-03 21:20:46.739 Vibe[10041:1917922] [VibeCore] driver ARMED chat=63f5b27bf064
+2026-08-03 21:20:46.740 Vibe[10041:1917922] [Seed] src=routePreview rows=9 action=keep (have src=warmSnapshot rows=12) chat=63f5b27bf064
+2026-08-03 21:20:46.740 Vibe[10041:1917922] [ChatOpen] host-stage viewDidLoad applyRouteMs=9 sinceTapMs=15
+2026-08-03 21:20:46.742 Vibe[10041:1917922] [ChatOpen] reopen-snapshot SHOW chat=63f5b27bf064 img=440x956 cv=0x0 self=0x0 overlay=0x0 insetB=0
+2026-08-03 21:20:46.742 Vibe[10041:1917922] [ChatOpen] cover-gap chat=63f5b27bf064 emptyMs=-1 sinceOpenMs=7 by=raster
+2026-08-03 21:20:46.748 Vibe[10041:1917922] [ChatOpen] firstRealBounds seed-deferred chat=63f5b27bf064 — shell committed uncovered=N
+2026-08-03 21:20:46.748 Vibe[10041:1917922] [ChatOpen] first-layout chat=63f5b27bf064 insetMs=0 layoutScrollMs=0 decorateMs=0 totalMs=0 visible=0 sinceOpenMs=13
+2026-08-03 21:20:46.749 Vibe[10041:1917922] [ChatOpen] navigation-prestage chat=63f5b27bf064 rows=0 raster=Y covered=Y frozen=N offset=0 contentH=956 bounds=440x956
+2026-08-03 21:20:46.753 Vibe[10041:1917922] [ChatOpen] host-stage pre-push prestage 22ms chatId=63f5b27bf064
+2026-08-03 21:20:46.754 Vibe[10041:1917922] [ChatOpen] host-stage viewWillAppear appearanceMs=0 rowsMs=0 inputMs=0 sinceTapMs=29
+2026-08-03 21:20:46.795 Vibe[10041:1917922] [VibeCore] window chat=63f5b27bf064 rows=9 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:20:46.795 Vibe[10041:1917922] [VibeCore] host MOUNT chat=63f5b27bf064 reason=engineReconcile gen=4 rows=9 (geometry LIVE, order/content engine)
+2026-08-03 21:20:46.795 Vibe[10041:1917922] [VibeCore] authority LIVE chat=63f5b27bf064 rows=9 engine=9 (core window drives the list)
+2026-08-03 21:20:46.795 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=9 action=stash chat=63f5b27bf064 (await window attach)
+2026-08-03 21:20:46.796 Vibe[10041:1917922] [VibeCore] window chat=63f5b27bf064 rows=9 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:20:46.796 Vibe[10041:1917922] [VibeCore] host MOUNT chat=63f5b27bf064 reason=engineReconcile gen=4 rows=9 (geometry LIVE, order/content engine)
+2026-08-03 21:20:47.300 Vibe[10041:1917922] [ChatOpen] host-stage viewDidAppear sinceTapMs=575
+2026-08-03 21:20:47.328 Vibe[10041:1917922] [ChatOpen] seed-mount PUSH-COVERED chat=63f5b27bf064 rows=9 waitMs=533
+2026-08-03 21:20:47.417 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=9 action=mount chat=63f5b27bf064
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [ChatOpen] presentation-seed chat=63f5b27bf064 visible=12 retained=9 cachedHeights=9 sizing=estimated window=tail normMs=0 parseMs=0 filterMs=0 posMs=1 layoutMs=86 mountMs=88 totalMs=88 sinceOpenMs=683
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [ChatOpen] seed-profile chat=63f5b27bf064 sizeCalls=18 sizeMs=1 trust=0 sig=0 cacheHit=0 measure=0 measureMs=0 configure=12 configureMs=8 cell=12 cellMs=65 insetMs=0 contentMs=0 offsetMs=0
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [VibeCore] seed-prepared chat=63f5b27bf064 hit=0 miss=0 width=424 storePrepared=17 storeHit=3 storeMiss=230
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [ChatOpen] viewport-cover seed chat=63f5b27bf064 rows=12 cells=12 cover=42% off=0 contentH=956 boundsH=956 span=447…877
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [ChatOpen] viewport-vis seed chat=63f5b27bf064 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=3 clear=0) snapshotOverlay=Y defersPresentation=Y
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [ChatOpen] viewport-occluded seed chat=63f5b27bf064 above-list=[UIImageView(a=1.00 bg=0.00 contents=Y 440x956)]
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=63f5b27bf064 staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=63f5b27bf064 — reconciling from engine
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=9 action=apply-pending chat=63f5b27bf064
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [VibeCore] authority LIVE chat=63f5b27bf064 rows=9 engine=9 (core window drives the list)
+2026-08-03 21:20:47.418 Vibe[10041:1917922] [ChatOpen] flush-stages chat=63f5b27bf064 visible=12 windowed=12 parsedAll=12 progress=0 usage=[] thinking=[] inboxMode=N inbox=[] afterInbox=12 afterBridgeFresh=12 final=12
+2026-08-03 21:20:47.419 Vibe[10041:1917922] [MusicList] setRows chat=63f5b27bf064 rows=12 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:20:47.419 Vibe[10041:1917922] [KbViewport] RESTORE chat=63f5b27bf064 kb=0 insetB=0 contentH=956 boundsH=956 savedAtBottom=Y savedScreenY=0
+2026-08-03 21:20:47.419 Vibe[10041:1917922] [ChatOpen] viewport RESTORE chat=63f5b27bf064 reason=bottom saved=Y
+2026-08-03 21:20:47.419 Vibe[10041:1917922] [ChatOpen] reopen-snapshot REMOVE chat=63f5b27bf064 reason=rows-mounted overlay=440x956 cv=440x956
+2026-08-03 21:20:47.419 Vibe[10041:1917922] [ChatOpen] presentation-reconcile chat=63f5b27bf064 rows=12 equal=Y structural=N mode=equal changed=0 ms=1 sinceOpenMs=684
+2026-08-03 21:20:47.419 Vibe[10041:1917922] [ChatOpen] viewport-cover complete chat=63f5b27bf064 rows=12 cells=12 cover=42% off=0 contentH=956 boundsH=956 span=447…877
+2026-08-03 21:20:47.419 Vibe[10041:1917922] [ChatOpen] viewport-vis complete chat=63f5b27bf064 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=3 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:20:47.426 Vibe[10041:1917922] [VibeCore] window chat=63f5b27bf064 rows=9 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:20:47.426 Vibe[10041:1917922] [VibeCore] host MOUNT chat=63f5b27bf064 reason=engineReconcile gen=4 rows=9 (geometry LIVE, order/content engine)
+2026-08-03 21:20:47.426 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=63f5b27bf064 stage=mount rows=9 differed=9 worst=8-f5dc57e0183b core=55.0 list=34.0
+2026-08-03 21:20:47.426 Vibe[10041:1917922] [VibeCore] authority LIVE chat=63f5b27bf064 rows=9 engine=9 (core window drives the list)
+2026-08-03 21:20:47.428 Vibe[10041:1917922] [VibeCore] window chat=63f5b27bf064 rows=9 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:20:47.428 Vibe[10041:1917922] [VibeCore] host MOUNT chat=63f5b27bf064 reason=engineReconcile gen=4 rows=9 (geometry LIVE, order/content engine)
+2026-08-03 21:20:47.428 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=63f5b27bf064 stage=mount rows=9 differed=9 worst=8-f5dc57e0183b core=55.0 list=34.0
+2026-08-03 21:20:48.025 Vibe[10041:1917922] [ChatOpen] viewport-cover settled chat=63f5b27bf064 rows=12 cells=12 cover=42% off=0 contentH=956 boundsH=956 span=447…877
+2026-08-03 21:20:48.027 Vibe[10041:1917922] [ChatOpen] viewport-vis settled chat=63f5b27bf064 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=3 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:20:48.972 Vibe[10041:1918356] [ChatOpen] heights PERSIST chat=63f5b27bf064 total=9 carried=9 fresh=9 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:20:49.051 Vibe[10041:1918356] [VibeCore] prepared chat=63f5b27bf064 rows=12 sized=12 deferred=0 width=424 ms=38 reason=settle total=18
+2026-08-03 21:20:49.172 Vibe[10041:1917922] [ChatOpen] reopen-snapshot CAPTURE chat=63f5b27bf064 size=440x956 atBottom=Y luma=132
+2026-08-03 21:20:49.729 Vibe[10041:1917922] [KbViewport] PERSIST chat=63f5b27bf064 kb=0 insetB=0 off=0 contentH=956 boundsH=956 atBottom=Y anchor=none screenY=0
+2026-08-03 21:20:49.737 Vibe[10041:1918441] [ChatOpen] heights PERSIST chat=63f5b27bf064 total=9 carried=9 fresh=9 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:20:49.886 Vibe[10041:1917922] [AgentRoute] ChatRoute(row:) chatId=176cdf92eec5 title=test isGroup=N isChannel=N peerUserId=7486c619-3d97-4067-afd6-662fb13f6dd5 peerAgentId=nil isAgentFriend=false resolvedBridge=nil members=0 myRole=member initial=16
+2026-08-03 21:20:49.901 Vibe[10041:1917922] [ChatOpen] host-stage ChatMainView.init totalMs=7 listMs=2 configureMs=3 sinceTapMs=15
+2026-08-03 21:20:49.909 Vibe[10041:1917922] [WhoAmI] ChatMainView.setGroupMembers chatMembers=0 me=CFAC3A0D prevRole=<nil> nextRole=<nil> source=not-in-roster flipped=N isAdmin=N sample=[]
+2026-08-03 21:20:49.909 Vibe[10041:1917922] [ChatOpen] viewport LOAD chat=176cdf92eec5 restore=same-run atBottom=N hasAnchor=Y age=24s
+2026-08-03 21:20:49.940 Vibe[10041:1917922] [ChatOpen] heights RESTORE chat=176cdf92eec5 entries=1477
+2026-08-03 21:20:49.990 Vibe[10041:1917922] [Seed] src=warmSnapshot rows=1001 action=stash chat=176cdf92eec5 (await window attach)
+2026-08-03 21:20:49.990 Vibe[10041:1917922] [ChatOpen] warm-cache DEFER chat=176cdf92eec5 cached=1001 heights=200
+2026-08-03 21:20:49.990 Vibe[10041:1917922] [ChatOpen] engine-bind chat=176cdf92eec5 heightsMs=29 warmRestoreMs=50 hydrateMs=0 totalMs=81
+2026-08-03 21:20:49.994 Vibe[10041:1917922] [VibeCore] driver ARMED chat=176cdf92eec5
+2026-08-03 21:20:49.996 Vibe[10041:1917922] [Seed] src=routePreview rows=16 action=keep (have src=warmSnapshot rows=1001) chat=176cdf92eec5
+2026-08-03 21:20:49.996 Vibe[10041:1917922] [ChatOpen] host-stage viewDidLoad applyRouteMs=94 sinceTapMs=110
+2026-08-03 21:20:49.998 Vibe[10041:1917922] [ChatOpen] reopen-snapshot SHOW chat=176cdf92eec5 img=440x956 cv=0x0 self=0x0 overlay=0x0 insetB=0
+2026-08-03 21:20:49.998 Vibe[10041:1917922] [ChatOpen] cover-gap chat=176cdf92eec5 emptyMs=-1 sinceOpenMs=89 by=raster
+2026-08-03 21:20:50.005 Vibe[10041:1917922] [ChatOpen] firstRealBounds seed-deferred chat=176cdf92eec5 — shell committed uncovered=N
+2026-08-03 21:20:50.005 Vibe[10041:1917922] [ChatOpen] first-layout chat=176cdf92eec5 insetMs=0 layoutScrollMs=0 decorateMs=0 totalMs=0 visible=0 sinceOpenMs=95
+2026-08-03 21:20:50.006 Vibe[10041:1917922] [ChatOpen] navigation-prestage chat=176cdf92eec5 rows=0 raster=Y covered=Y frozen=N offset=0 contentH=956 bounds=440x956
+2026-08-03 21:20:50.010 Vibe[10041:1917922] [ChatOpen] host-stage pre-push prestage 108ms chatId=176cdf92eec5
+2026-08-03 21:20:50.011 Vibe[10041:1917922] [ChatOpen] host-stage viewWillAppear appearanceMs=0 rowsMs=0 inputMs=0 sinceTapMs=125
+2026-08-03 21:20:50.050 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:20:50.052 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=42 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:20:50.053 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=1000 (core window drives the list)
+2026-08-03 21:20:50.055 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=stash chat=176cdf92eec5 (await window attach)
+2026-08-03 21:20:50.056 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:20:50.057 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=42 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:20:50.546 Vibe[10041:1917922] [ChatOpen] host-stage viewDidAppear sinceTapMs=660
+2026-08-03 21:20:50.575 Vibe[10041:1917922] [ChatOpen] seed-mount PUSH-COVERED chat=176cdf92eec5 rows=200 waitMs=520
+2026-08-03 21:20:50.778 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=mount chat=176cdf92eec5
+2026-08-03 21:20:50.778 Vibe[10041:1917922] [ChatOpen] presentation-seed chat=176cdf92eec5 visible=201 retained=200 cachedHeights=200 sizing=estimated window=full normMs=2 parseMs=5 filterMs=2 posMs=19 layoutMs=167 mountMs=189 totalMs=199 sinceOpenMs=869
+2026-08-03 21:20:50.778 Vibe[10041:1917922] [ChatOpen] seed-profile chat=176cdf92eec5 sizeCalls=400 sizeMs=18 trust=0 sig=0 cacheHit=0 measure=0 measureMs=0 configure=25 configureMs=20 cell=25 cellMs=121 insetMs=10 contentMs=8 offsetMs=0
+2026-08-03 21:20:50.778 Vibe[10041:1917922] [VibeCore] seed-prepared chat=176cdf92eec5 hit=0 miss=0 width=424 storePrepared=18 storeHit=3 storeMiss=230
+2026-08-03 21:20:50.779 Vibe[10041:1917922] [ChatOpen] viewport-cover seed chat=176cdf92eec5 rows=201 cells=25 cover=86% off=6483 contentH=7439 boundsH=956 span=6462…7360
+2026-08-03 21:20:50.779 Vibe[10041:1917922] [ChatOpen] viewport-vis seed chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=Y defersPresentation=Y
+2026-08-03 21:20:50.780 Vibe[10041:1917922] [ChatOpen] viewport-occluded seed chat=176cdf92eec5 above-list=[UIImageView(a=1.00 bg=0.00 contents=Y 440x956)]
+2026-08-03 21:20:50.780 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=176cdf92eec5 staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:20:50.780 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=176cdf92eec5 — reconciling from engine
+2026-08-03 21:20:50.780 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=apply-pending chat=176cdf92eec5
+2026-08-03 21:20:50.780 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=200 (core window drives the list)
+2026-08-03 21:20:50.785 Vibe[10041:1917922] [ChatOpen] flush-stages chat=176cdf92eec5 visible=201 windowed=201 parsedAll=201 progress=0 usage=[] thinking=[] inboxMode=N inbox=[] afterInbox=201 afterBridgeFresh=201 final=201
+2026-08-03 21:20:50.804 Vibe[10041:1917922] [MusicList] setRows chat=176cdf92eec5 rows=201 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:20:50.805 Vibe[10041:1917922] [KbViewport] RESTORE chat=176cdf92eec5 kb=0 insetB=0 contentH=7439 boundsH=956 savedAtBottom=N savedScreenY=162
+2026-08-03 21:20:50.962 Vibe[10041:1917922] [ScrollHitch] 157ms wallpaper=0 auto=0 history=0 avatars=0 toggles=0 pill=0 emit=157 cells=24 off=0
+2026-08-03 21:20:50.962 Vibe[10041:1917922] [ChatOpen] viewport RESTORE chat=176cdf92eec5 reason=saved row=1 unread=0 offset=0
+2026-08-03 21:20:50.962 Vibe[10041:1917922] [ChatOpen] reopen-snapshot REMOVE chat=176cdf92eec5 reason=rows-mounted overlay=440x956 cv=440x956
+2026-08-03 21:20:50.963 Vibe[10041:1917922] [ChatOpen] presentation-reconcile chat=176cdf92eec5 rows=201 equal=Y structural=N mode=equal changed=0 ms=183 sinceOpenMs=1053
+2026-08-03 21:20:50.963 Vibe[10041:1917922] [ChatOpen] viewport-cover complete chat=176cdf92eec5 rows=201 cells=24 cover=81% off=0 contentH=7439 boundsH=956 span=130…988
+2026-08-03 21:20:50.963 Vibe[10041:1917922] [ChatOpen] viewport-vis complete chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=1 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:20:51.001 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:20:51.002 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=42 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:20:51.003 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=mount rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:20:51.008 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=1000 (core window drives the list)
+2026-08-03 21:20:51.041 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:20:51.042 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=42 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:20:51.042 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=mount rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:20:51.375 Vibe[10041:1918427] [ChatEngine] backfillNewest START chatId=176cdf92eec5 trigger=chat_joined
+2026-08-03 21:20:51.592 Vibe[10041:1917922] [ChatOpen] viewport-cover settled chat=176cdf92eec5 rows=201 cells=24 cover=81% off=0 contentH=7439 boundsH=956 span=130…988
+2026-08-03 21:20:51.594 Vibe[10041:1917922] [ChatOpen] viewport-vis settled chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=1 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:20:52.423 Vibe[10041:1917996] [ChatOpen] heights PERSIST chat=176cdf92eec5 total=1477 carried=1477 fresh=200 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:20:52.462 Vibe[10041:1918427] [ChatEngine] backfillNewest OK chatId=176cdf92eec5 trigger=chat_joined fetched=60 ins=0 upd=0 retiredLive=0
+2026-08-03 21:20:52.609 Vibe[10041:1917996] [VibeCore] prepared chat=176cdf92eec5 rows=200 sized=200 deferred=0 width=424 ms=124 reason=persist total=19
+2026-08-03 21:20:54.415 Vibe[10041:1917922] [ChatOpen] older-history REQUEST chat=176cdf92eec5 offset=-31 expected=m-45767064-09af- rows=201
+2026-08-03 21:20:54.422 Vibe[10041:1918376] [ChatEngine] loadOlderHistory START chatId=176cdf92eec5 limit=60
+2026-08-03 21:20:54.449 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=transaction rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:20:54.876 Vibe[10041:1917922] [KbViewport] PERSIST chat=176cdf92eec5 kb=0 insetB=0 off=-26 contentH=7439 boundsH=956 atBottom=N anchor=45767064 screenY=188
+2026-08-03 21:20:54.900 Vibe[10041:1917922] [ChatOpen] date-pin chat=176cdf92eec5 label=Today state=STUCK pills=1 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:20:55.496 Vibe[10041:1917922] [KbViewport] PERSIST chat=176cdf92eec5 kb=0 insetB=0 off=1725 contentH=7439 boundsH=956 atBottom=N anchor=94bcf912 screenY=-15
+2026-08-03 21:20:55.584 Vibe[10041:1918376] [ChatEngine] loadOlderHistory chatId=176cdf92eec5 source=network rows=60 exhausted=N
+2026-08-03 21:20:55.585 Vibe[10041:1918376] [ChatDelta] history chat=176cdf92eec5 gen=16 ins=60 upd=0 del=0
+2026-08-03 21:20:55.630 Vibe[10041:1918584] [VibeCore] prepared chat=176cdf92eec5 rows=60 sized=60 deferred=0 width=424 ms=39 reason=persist total=20
+2026-08-03 21:20:55.781 Vibe[10041:1917922] [ChatOpen] older-history PREPEND-ARMED chat=176cdf92eec5 expected=m-45767064-09af- idx=860 count=201→1060
+2026-08-03 21:20:55.782 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=1060 (core window drives the list)
+2026-08-03 21:20:55.858 Vibe[10041:1917922] [ChatOpen] warm-snapshot GROW chat=176cdf92eec5 was=201 added=860
+2026-08-03 21:20:55.862 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:20:55.863 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:20:55.864 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=mount rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:20:55.871 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:20:55.872 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:20:55.872 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=mount rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:20:57.537 Vibe[10041:1917922] [ChatOpen] reopen-snapshot CAPTURE-SKIP chat=176cdf92eec5 — bottom clearance 345 (inset 0 + keyboard 345), bottom-pinned replay would gap
+2026-08-03 21:20:57.685 Vibe[10041:1917999] [VibeCore] prepared chat=176cdf92eec5 rows=200 sized=200 deferred=0 width=424 ms=148 reason=settle total=21
+2026-08-03 21:20:58.278 Vibe[10041:1917922] [KbViewport] PERSIST chat=176cdf92eec5 kb=0 insetB=0 off=6483 contentH=7439 boundsH=956 atBottom=Y anchor=none screenY=0
+2026-08-03 21:20:58.387 Vibe[10041:1918427] [ChatOpen] heights PERSIST chat=176cdf92eec5 total=1477 carried=1477 fresh=200 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:21:48.048 Vibe[10041:1917922] [AgentRoute] ChatRoute(row:) chatId=176cdf92eec5 title=test isGroup=N isChannel=N peerUserId=7486c619-3d97-4067-afd6-662fb13f6dd5 peerAgentId=nil isAgentFriend=false resolvedBridge=nil members=0 myRole=member initial=16
+2026-08-03 21:21:48.065 Vibe[10041:1917922] [ChatOpen] host-stage ChatMainView.init totalMs=8 listMs=2 configureMs=3 sinceTapMs=16
+2026-08-03 21:21:48.073 Vibe[10041:1917922] [WhoAmI] ChatMainView.setGroupMembers chatMembers=0 me=CFAC3A0D prevRole=<nil> nextRole=<nil> source=not-in-roster flipped=N isAdmin=N sample=[]
+2026-08-03 21:21:48.073 Vibe[10041:1917922] [ChatOpen] viewport LOAD chat=176cdf92eec5 restore=same-run atBottom=Y hasAnchor=N age=50s
+2026-08-03 21:21:48.102 Vibe[10041:1917922] [ChatOpen] heights RESTORE chat=176cdf92eec5 entries=1477
+2026-08-03 21:21:48.159 Vibe[10041:1917922] [Seed] src=warmSnapshot rows=1061 action=stash chat=176cdf92eec5 (await window attach)
+2026-08-03 21:21:48.159 Vibe[10041:1917922] [ChatOpen] warm-cache DEFER chat=176cdf92eec5 cached=1061 heights=200
+2026-08-03 21:21:48.159 Vibe[10041:1917922] [ChatOpen] engine-bind chat=176cdf92eec5 heightsMs=29 warmRestoreMs=57 hydrateMs=0 totalMs=86
+2026-08-03 21:21:48.163 Vibe[10041:1917922] [VibeCore] driver ARMED chat=176cdf92eec5
+2026-08-03 21:21:48.165 Vibe[10041:1917922] [Seed] src=routePreview rows=16 action=keep (have src=warmSnapshot rows=1061) chat=176cdf92eec5
+2026-08-03 21:21:48.165 Vibe[10041:1917922] [ChatOpen] host-stage viewDidLoad applyRouteMs=100 sinceTapMs=117
+2026-08-03 21:21:48.167 Vibe[10041:1917922] [ChatOpen] reopen-snapshot SHOW chat=176cdf92eec5 img=440x956 cv=0x0 self=0x0 overlay=0x0 insetB=0
+2026-08-03 21:21:48.167 Vibe[10041:1917922] [ChatOpen] cover-gap chat=176cdf92eec5 emptyMs=-1 sinceOpenMs=94 by=raster
+2026-08-03 21:21:48.174 Vibe[10041:1917922] [ChatOpen] firstRealBounds seed-deferred chat=176cdf92eec5 — shell committed uncovered=N
+2026-08-03 21:21:48.174 Vibe[10041:1917922] [ChatOpen] first-layout chat=176cdf92eec5 insetMs=0 layoutScrollMs=0 decorateMs=0 totalMs=0 visible=0 sinceOpenMs=100
+2026-08-03 21:21:48.175 Vibe[10041:1917922] [ChatOpen] navigation-prestage chat=176cdf92eec5 rows=0 raster=Y covered=Y frozen=N offset=0 contentH=956 bounds=440x956
+2026-08-03 21:21:48.179 Vibe[10041:1917922] [ChatOpen] host-stage pre-push prestage 114ms chatId=176cdf92eec5
+2026-08-03 21:21:48.180 Vibe[10041:1917922] [ChatOpen] host-stage viewWillAppear appearanceMs=0 rowsMs=0 inputMs=0 sinceTapMs=131
+2026-08-03 21:21:48.222 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:48.224 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:48.225 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=1060 (core window drives the list)
+2026-08-03 21:21:48.227 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=stash chat=176cdf92eec5 (await window attach)
+2026-08-03 21:21:48.228 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:48.229 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:48.713 Vibe[10041:1917922] [ChatOpen] host-stage viewDidAppear sinceTapMs=664
+2026-08-03 21:21:48.739 Vibe[10041:1917922] [ChatOpen] seed-mount PUSH-COVERED chat=176cdf92eec5 rows=200 waitMs=511
+2026-08-03 21:21:48.940 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=mount chat=176cdf92eec5
+2026-08-03 21:21:48.940 Vibe[10041:1917922] [ChatOpen] presentation-seed chat=176cdf92eec5 visible=201 retained=200 cachedHeights=200 sizing=estimated window=full normMs=2 parseMs=4 filterMs=2 posMs=20 layoutMs=164 mountMs=187 totalMs=197 sinceOpenMs=867
+2026-08-03 21:21:48.940 Vibe[10041:1917922] [ChatOpen] seed-profile chat=176cdf92eec5 sizeCalls=400 sizeMs=19 trust=0 sig=0 cacheHit=0 measure=0 measureMs=0 configure=25 configureMs=20 cell=25 cellMs=118 insetMs=10 contentMs=9 offsetMs=0
+2026-08-03 21:21:48.940 Vibe[10041:1917922] [VibeCore] seed-prepared chat=176cdf92eec5 hit=0 miss=0 width=424 storePrepared=21 storeHit=3 storeMiss=230
+2026-08-03 21:21:48.941 Vibe[10041:1917922] [ChatOpen] viewport-cover seed chat=176cdf92eec5 rows=201 cells=25 cover=86% off=6483 contentH=7439 boundsH=956 span=6462…7360
+2026-08-03 21:21:48.941 Vibe[10041:1917922] [ChatOpen] viewport-vis seed chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=Y defersPresentation=Y
+2026-08-03 21:21:48.941 Vibe[10041:1917922] [ChatOpen] viewport-occluded seed chat=176cdf92eec5 above-list=[UIImageView(a=1.00 bg=0.00 contents=Y 440x956)]
+2026-08-03 21:21:48.941 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=176cdf92eec5 staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:21:48.941 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=176cdf92eec5 — reconciling from engine
+2026-08-03 21:21:48.941 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=apply-pending chat=176cdf92eec5
+2026-08-03 21:21:48.941 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=200 (core window drives the list)
+2026-08-03 21:21:48.946 Vibe[10041:1917922] [ChatOpen] flush-stages chat=176cdf92eec5 visible=201 windowed=201 parsedAll=201 progress=0 usage=[] thinking=[] inboxMode=N inbox=[] afterInbox=201 afterBridgeFresh=201 final=201
+2026-08-03 21:21:48.966 Vibe[10041:1917922] [MusicList] setRows chat=176cdf92eec5 rows=201 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:21:48.966 Vibe[10041:1917922] [ChatOpen] viewport RESTORE chat=176cdf92eec5 reason=bottom-already-settled
+2026-08-03 21:21:48.966 Vibe[10041:1917922] [ChatOpen] reopen-snapshot REMOVE chat=176cdf92eec5 reason=reconcile-match overlay=440x956 cv=440x956
+2026-08-03 21:21:48.967 Vibe[10041:1917922] [ChatOpen] presentation-reconcile chat=176cdf92eec5 rows=201 equal=Y structural=N mode=match changed=0 ms=25 sinceOpenMs=893
+2026-08-03 21:21:48.967 Vibe[10041:1917922] [ChatOpen] viewport-cover complete chat=176cdf92eec5 rows=201 cells=25 cover=86% off=6483 contentH=7439 boundsH=956 span=6462…7360
+2026-08-03 21:21:48.967 Vibe[10041:1917922] [ChatOpen] viewport-vis complete chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:21:49.005 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:49.006 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:49.007 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=mount rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:21:49.008 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=1060 (core window drives the list)
+2026-08-03 21:21:49.037 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:49.038 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:49.038 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=mount rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:21:49.531 Vibe[10041:1918357] [VibeCore] prepared chat=176cdf92eec5 rows=200 sized=200 deferred=0 width=424 ms=139 reason=settle total=22
+2026-08-03 21:21:49.551 Vibe[10041:1917922] [ChatOpen] reopen-snapshot CAPTURE chat=176cdf92eec5 size=440x956 atBottom=Y luma=224
+2026-08-03 21:21:49.575 Vibe[10041:1919107] [ChatEngine] backfillNewest START chatId=176cdf92eec5 trigger=chat_joined
+2026-08-03 21:21:49.607 Vibe[10041:1917922] [ChatOpen] viewport-cover settled chat=176cdf92eec5 rows=201 cells=25 cover=86% off=6483 contentH=7439 boundsH=956 span=6462…7360
+2026-08-03 21:21:49.608 Vibe[10041:1917922] [ChatOpen] viewport-vis settled chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:21:50.142 Vibe[10041:1917922] [KbViewport] PERSIST chat=176cdf92eec5 kb=0 insetB=0 off=6483 contentH=7439 boundsH=956 atBottom=Y anchor=none screenY=0
+2026-08-03 21:21:50.233 Vibe[10041:1917922] [AgentRoute] ChatRoute(row:) chatId=176cdf92eec5 title=test isGroup=N isChannel=N peerUserId=7486c619-3d97-4067-afd6-662fb13f6dd5 peerAgentId=nil isAgentFriend=false resolvedBridge=nil members=0 myRole=member initial=16
+2026-08-03 21:21:50.239 Vibe[10041:1917922] [ChatOpen] host-stage ChatMainView.init totalMs=3 listMs=1 configureMs=1 sinceTapMs=6
+2026-08-03 21:21:50.243 Vibe[10041:1917922] [WhoAmI] ChatMainView.setGroupMembers chatMembers=0 me=CFAC3A0D prevRole=<nil> nextRole=<nil> source=not-in-roster flipped=N isAdmin=N sample=[]
+2026-08-03 21:21:50.243 Vibe[10041:1917922] [ChatOpen] viewport LOAD chat=176cdf92eec5 restore=same-run atBottom=Y hasAnchor=N age=0s
+2026-08-03 21:21:50.245 Vibe[10041:1918376] [ChatOpen] heights PERSIST chat=176cdf92eec5 total=1477 carried=1477 fresh=200 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:21:50.262 Vibe[10041:1917922] [ChatOpen] heights RESTORE chat=176cdf92eec5 entries=1477
+2026-08-03 21:21:50.264 Vibe[10041:1917922] [Seed] src=warmSnapshot rows=201 action=stash chat=176cdf92eec5 (await window attach)
+2026-08-03 21:21:50.265 Vibe[10041:1917922] [ChatOpen] warm-cache DEFER chat=176cdf92eec5 cached=201 heights=200
+2026-08-03 21:21:50.265 Vibe[10041:1917922] [ChatOpen] engine-bind chat=176cdf92eec5 heightsMs=18 warmRestoreMs=2 hydrateMs=0 totalMs=21
+2026-08-03 21:21:50.268 Vibe[10041:1917922] [VibeCore] driver ARMED chat=176cdf92eec5
+2026-08-03 21:21:50.270 Vibe[10041:1917922] [Seed] src=routePreview rows=16 action=keep (have src=warmSnapshot rows=201) chat=176cdf92eec5
+2026-08-03 21:21:50.271 Vibe[10041:1917922] [ChatOpen] host-stage viewDidLoad applyRouteMs=31 sinceTapMs=37
+2026-08-03 21:21:50.272 Vibe[10041:1917922] [ChatOpen] reopen-snapshot SHOW chat=176cdf92eec5 img=440x956 cv=0x0 self=0x0 overlay=0x0 insetB=0
+2026-08-03 21:21:50.272 Vibe[10041:1917922] [ChatOpen] cover-gap chat=176cdf92eec5 emptyMs=-1 sinceOpenMs=29 by=raster
+2026-08-03 21:21:50.279 Vibe[10041:1917922] [ChatOpen] firstRealBounds seed-deferred chat=176cdf92eec5 — shell committed uncovered=N
+2026-08-03 21:21:50.279 Vibe[10041:1917922] [ChatOpen] first-layout chat=176cdf92eec5 insetMs=0 layoutScrollMs=0 decorateMs=0 totalMs=0 visible=0 sinceOpenMs=36
+2026-08-03 21:21:50.280 Vibe[10041:1917922] [ChatOpen] navigation-prestage chat=176cdf92eec5 rows=0 raster=Y covered=Y frozen=N offset=0 contentH=956 bounds=440x956
+2026-08-03 21:21:50.284 Vibe[10041:1917922] [ChatOpen] host-stage pre-push prestage 45ms chatId=176cdf92eec5
+2026-08-03 21:21:50.285 Vibe[10041:1917922] [ChatOpen] host-stage viewWillAppear appearanceMs=0 rowsMs=0 inputMs=0 sinceTapMs=52
+2026-08-03 21:21:50.404 Vibe[10041:1919108] [ChatEngine] backfillNewest OK chatId=176cdf92eec5 trigger=chat_joined fetched=60 ins=0 upd=0 retiredLive=0
+2026-08-03 21:21:50.406 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:50.409 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:50.409 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=1060 (core window drives the list)
+2026-08-03 21:21:50.412 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=stash chat=176cdf92eec5 (await window attach)
+2026-08-03 21:21:50.413 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:50.414 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:50.549 Vibe[10041:1918879] [VibeCore] prepared chat=176cdf92eec5 rows=200 sized=200 deferred=0 width=424 ms=124 reason=persist total=23
+2026-08-03 21:21:50.824 Vibe[10041:1917922] [ChatOpen] host-stage viewDidAppear sinceTapMs=591
+2026-08-03 21:21:50.850 Vibe[10041:1917922] [ChatOpen] seed-mount PUSH-COVERED chat=176cdf92eec5 rows=200 waitMs=438
+2026-08-03 21:21:51.056 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=mount chat=176cdf92eec5
+2026-08-03 21:21:51.056 Vibe[10041:1917922] [ChatOpen] presentation-seed chat=176cdf92eec5 visible=201 retained=200 cachedHeights=200 sizing=estimated window=full normMs=1 parseMs=4 filterMs=2 posMs=21 layoutMs=169 mountMs=192 totalMs=201 sinceOpenMs=813
+2026-08-03 21:21:51.056 Vibe[10041:1917922] [ChatOpen] seed-profile chat=176cdf92eec5 sizeCalls=400 sizeMs=19 trust=0 sig=0 cacheHit=0 measure=0 measureMs=0 configure=25 configureMs=20 cell=25 cellMs=123 insetMs=11 contentMs=9 offsetMs=0
+2026-08-03 21:21:51.056 Vibe[10041:1917922] [VibeCore] seed-prepared chat=176cdf92eec5 hit=0 miss=0 width=424 storePrepared=23 storeHit=3 storeMiss=230
+2026-08-03 21:21:51.057 Vibe[10041:1917922] [ChatOpen] viewport-cover seed chat=176cdf92eec5 rows=201 cells=25 cover=86% off=6483 contentH=7439 boundsH=956 span=6462…7360
+2026-08-03 21:21:51.057 Vibe[10041:1917922] [ChatOpen] viewport-vis seed chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=Y defersPresentation=Y
+2026-08-03 21:21:51.058 Vibe[10041:1917922] [ChatOpen] viewport-occluded seed chat=176cdf92eec5 above-list=[UIImageView(a=1.00 bg=0.00 contents=Y 440x956)]
+2026-08-03 21:21:51.058 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=176cdf92eec5 staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:21:51.058 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=176cdf92eec5 — reconciling from engine
+2026-08-03 21:21:51.058 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=apply-pending chat=176cdf92eec5
+2026-08-03 21:21:51.058 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=200 (core window drives the list)
+2026-08-03 21:21:51.063 Vibe[10041:1917922] [ChatOpen] flush-stages chat=176cdf92eec5 visible=201 windowed=201 parsedAll=201 progress=0 usage=[] thinking=[] inboxMode=N inbox=[] afterInbox=201 afterBridgeFresh=201 final=201
+2026-08-03 21:21:51.082 Vibe[10041:1917922] [MusicList] setRows chat=176cdf92eec5 rows=201 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:21:51.083 Vibe[10041:1917922] [ChatOpen] viewport RESTORE chat=176cdf92eec5 reason=bottom-already-settled
+2026-08-03 21:21:51.083 Vibe[10041:1917922] [ChatOpen] reopen-snapshot REMOVE chat=176cdf92eec5 reason=reconcile-match overlay=440x956 cv=440x956
+2026-08-03 21:21:51.083 Vibe[10041:1917922] [ChatOpen] presentation-reconcile chat=176cdf92eec5 rows=201 equal=Y structural=N mode=match changed=0 ms=25 sinceOpenMs=840
+2026-08-03 21:21:51.083 Vibe[10041:1917922] [ChatOpen] viewport-cover complete chat=176cdf92eec5 rows=201 cells=25 cover=86% off=6483 contentH=7439 boundsH=956 span=6462…7360
+2026-08-03 21:21:51.083 Vibe[10041:1917922] [ChatOpen] viewport-vis complete chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:21:51.087 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:51.088 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:51.088 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=mount rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:21:51.123 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=1060 (core window drives the list)
+2026-08-03 21:21:51.152 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:51.153 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:51.153 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=mount rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:21:51.292 Vibe[10041:1918879] [VibeCore] prepared chat=176cdf92eec5 rows=200 sized=200 deferred=0 width=424 ms=106 reason=settle total=24
+2026-08-03 21:21:51.300 Vibe[10041:1917922] [ChatOpen] reopen-snapshot CAPTURE chat=176cdf92eec5 size=440x956 atBottom=Y luma=224
+2026-08-03 21:21:51.713 Vibe[10041:1917922] [ChatOpen] viewport-cover settled chat=176cdf92eec5 rows=201 cells=25 cover=86% off=6483 contentH=7439 boundsH=956 span=6462…7360
+2026-08-03 21:21:51.716 Vibe[10041:1917922] [ChatOpen] viewport-vis settled chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:21:51.885 Vibe[10041:1917922] [KbViewport] PERSIST chat=176cdf92eec5 kb=0 insetB=0 off=6483 contentH=7439 boundsH=956 atBottom=Y anchor=none screenY=0
+2026-08-03 21:21:51.962 Vibe[10041:1917922] [AgentRoute] ChatRoute(row:) chatId=176cdf92eec5 title=test isGroup=N isChannel=N peerUserId=7486c619-3d97-4067-afd6-662fb13f6dd5 peerAgentId=nil isAgentFriend=false resolvedBridge=nil members=0 myRole=member initial=16
+2026-08-03 21:21:51.968 Vibe[10041:1917922] [ChatOpen] host-stage ChatMainView.init totalMs=3 listMs=1 configureMs=1 sinceTapMs=5
+2026-08-03 21:21:51.972 Vibe[10041:1917922] [WhoAmI] ChatMainView.setGroupMembers chatMembers=0 me=CFAC3A0D prevRole=<nil> nextRole=<nil> source=not-in-roster flipped=N isAdmin=N sample=[]
+2026-08-03 21:21:51.972 Vibe[10041:1917922] [ChatOpen] viewport LOAD chat=176cdf92eec5 restore=same-run atBottom=Y hasAnchor=N age=0s
+2026-08-03 21:21:51.979 Vibe[10041:1919107] [ChatOpen] heights PERSIST chat=176cdf92eec5 total=1477 carried=1477 fresh=200 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:21:51.990 Vibe[10041:1917922] [ChatOpen] heights RESTORE chat=176cdf92eec5 entries=1477
+2026-08-03 21:21:51.993 Vibe[10041:1917922] [Seed] src=warmSnapshot rows=201 action=stash chat=176cdf92eec5 (await window attach)
+2026-08-03 21:21:51.993 Vibe[10041:1917922] [ChatOpen] warm-cache DEFER chat=176cdf92eec5 cached=201 heights=200
+2026-08-03 21:21:51.993 Vibe[10041:1917922] [ChatOpen] engine-bind chat=176cdf92eec5 heightsMs=18 warmRestoreMs=2 hydrateMs=0 totalMs=21
+2026-08-03 21:21:51.998 Vibe[10041:1917922] [VibeCore] driver ARMED chat=176cdf92eec5
+2026-08-03 21:21:51.999 Vibe[10041:1917922] [Seed] src=routePreview rows=16 action=keep (have src=warmSnapshot rows=201) chat=176cdf92eec5
+2026-08-03 21:21:52.000 Vibe[10041:1917922] [ChatOpen] host-stage viewDidLoad applyRouteMs=31 sinceTapMs=37
+2026-08-03 21:21:52.001 Vibe[10041:1917922] [ChatOpen] reopen-snapshot SHOW chat=176cdf92eec5 img=440x956 cv=0x0 self=0x0 overlay=0x0 insetB=0
+2026-08-03 21:21:52.001 Vibe[10041:1917922] [ChatOpen] cover-gap chat=176cdf92eec5 emptyMs=-1 sinceOpenMs=29 by=raster
+2026-08-03 21:21:52.008 Vibe[10041:1917922] [ChatOpen] firstRealBounds seed-deferred chat=176cdf92eec5 — shell committed uncovered=N
+2026-08-03 21:21:52.008 Vibe[10041:1917922] [ChatOpen] first-layout chat=176cdf92eec5 insetMs=0 layoutScrollMs=0 decorateMs=0 totalMs=0 visible=0 sinceOpenMs=36
+2026-08-03 21:21:52.009 Vibe[10041:1917922] [ChatOpen] navigation-prestage chat=176cdf92eec5 rows=0 raster=Y covered=Y frozen=N offset=0 contentH=956 bounds=440x956
+2026-08-03 21:21:52.013 Vibe[10041:1917922] [ChatOpen] host-stage pre-push prestage 45ms chatId=176cdf92eec5
+2026-08-03 21:21:52.015 Vibe[10041:1917922] [ChatOpen] host-stage viewWillAppear appearanceMs=0 rowsMs=0 inputMs=0 sinceTapMs=52
+2026-08-03 21:21:52.062 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:52.064 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:52.065 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=1060 (core window drives the list)
+2026-08-03 21:21:52.067 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=stash chat=176cdf92eec5 (await window attach)
+2026-08-03 21:21:52.068 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:52.069 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:52.557 Vibe[10041:1917922] [ChatOpen] host-stage viewDidAppear sinceTapMs=595
+2026-08-03 21:21:52.586 Vibe[10041:1917922] [ChatOpen] seed-mount PUSH-COVERED chat=176cdf92eec5 rows=200 waitMs=519
+2026-08-03 21:21:52.793 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=mount chat=176cdf92eec5
+2026-08-03 21:21:52.793 Vibe[10041:1917922] [ChatOpen] presentation-seed chat=176cdf92eec5 visible=201 retained=200 cachedHeights=200 sizing=estimated window=full normMs=1 parseMs=4 filterMs=2 posMs=20 layoutMs=171 mountMs=194 totalMs=202 sinceOpenMs=821
+2026-08-03 21:21:52.793 Vibe[10041:1917922] [ChatOpen] seed-profile chat=176cdf92eec5 sizeCalls=400 sizeMs=19 trust=0 sig=0 cacheHit=0 measure=0 measureMs=0 configure=25 configureMs=21 cell=25 cellMs=125 insetMs=10 contentMs=9 offsetMs=0
+2026-08-03 21:21:52.793 Vibe[10041:1917922] [VibeCore] seed-prepared chat=176cdf92eec5 hit=0 miss=0 width=424 storePrepared=24 storeHit=3 storeMiss=230
+2026-08-03 21:21:52.794 Vibe[10041:1917922] [ChatOpen] viewport-cover seed chat=176cdf92eec5 rows=201 cells=25 cover=86% off=6483 contentH=7439 boundsH=956 span=6462…7360
+2026-08-03 21:21:52.794 Vibe[10041:1917922] [ChatOpen] viewport-vis seed chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=Y defersPresentation=Y
+2026-08-03 21:21:52.794 Vibe[10041:1917922] [ChatOpen] viewport-occluded seed chat=176cdf92eec5 above-list=[UIImageView(a=1.00 bg=0.00 contents=Y 440x956)]
+2026-08-03 21:21:52.794 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=176cdf92eec5 staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:21:52.794 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=176cdf92eec5 — reconciling from engine
+2026-08-03 21:21:52.794 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=200 action=apply-pending chat=176cdf92eec5
+2026-08-03 21:21:52.794 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=200 (core window drives the list)
+2026-08-03 21:21:52.799 Vibe[10041:1917922] [ChatOpen] flush-stages chat=176cdf92eec5 visible=201 windowed=201 parsedAll=201 progress=0 usage=[] thinking=[] inboxMode=N inbox=[] afterInbox=201 afterBridgeFresh=201 final=201
+2026-08-03 21:21:52.818 Vibe[10041:1917922] [MusicList] setRows chat=176cdf92eec5 rows=201 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:21:52.819 Vibe[10041:1917922] [ChatOpen] viewport RESTORE chat=176cdf92eec5 reason=bottom-already-settled
+2026-08-03 21:21:52.819 Vibe[10041:1917922] [ChatOpen] reopen-snapshot REMOVE chat=176cdf92eec5 reason=reconcile-match overlay=440x956 cv=440x956
+2026-08-03 21:21:52.819 Vibe[10041:1917922] [ChatOpen] presentation-reconcile chat=176cdf92eec5 rows=201 equal=Y structural=N mode=match changed=0 ms=25 sinceOpenMs=847
+2026-08-03 21:21:52.819 Vibe[10041:1917922] [ChatOpen] viewport-cover complete chat=176cdf92eec5 rows=201 cells=25 cover=86% off=6483 contentH=7439 boundsH=956 span=6462…7360
+2026-08-03 21:21:52.819 Vibe[10041:1917922] [ChatOpen] viewport-vis complete chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:21:52.837 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:52.838 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:52.838 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=mount rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:21:52.838 Vibe[10041:1917922] [VibeCore] authority LIVE chat=176cdf92eec5 rows=200 engine=1060 (core window drives the list)
+2026-08-03 21:21:52.867 Vibe[10041:1917922] [VibeCore] window chat=176cdf92eec5 rows=200 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:52.868 Vibe[10041:1917922] [VibeCore] host MOUNT chat=176cdf92eec5 reason=engineReconcile gen=45 rows=200 (geometry LIVE, order/content engine)
+2026-08-03 21:21:52.868 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=176cdf92eec5 stage=mount rows=200 differed=200 worst=2-b082dec64661 core=55.0 list=34.0
+2026-08-03 21:21:53.041 Vibe[10041:1919120] [VibeCore] prepared chat=176cdf92eec5 rows=200 sized=200 deferred=0 width=424 ms=109 reason=settle total=25
+2026-08-03 21:21:53.045 Vibe[10041:1917922] [ChatOpen] reopen-snapshot CAPTURE chat=176cdf92eec5 size=440x956 atBottom=Y luma=224
+2026-08-03 21:21:53.447 Vibe[10041:1917922] [ChatOpen] viewport-cover settled chat=176cdf92eec5 rows=201 cells=25 cover=86% off=6483 contentH=7439 boundsH=956 span=6462…7360
+2026-08-03 21:21:53.448 Vibe[10041:1917922] [ChatOpen] viewport-vis settled chat=176cdf92eec5 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:21:53.636 Vibe[10041:1917922] [KbViewport] PERSIST chat=176cdf92eec5 kb=0 insetB=0 off=6483 contentH=7439 boundsH=956 atBottom=Y anchor=none screenY=0
+2026-08-03 21:21:53.741 Vibe[10041:1919120] [ChatOpen] heights PERSIST chat=176cdf92eec5 total=1477 carried=1477 fresh=200 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:21:54.761 Vibe[10041:1917922] [AgentRoute] ChatRoute(row:) chatId=9f16e186e367 title=Codex isGroup=N isChannel=N peerUserId=22222222-2222-2222-2222-222222222222 peerAgentId=nil isAgentFriend=true resolvedBridge=codex members=0 myRole=member initial=0
+2026-08-03 21:21:54.777 Vibe[10041:1917922] [ChatOpen] host-stage ChatMainView.init totalMs=8 listMs=2 configureMs=3 sinceTapMs=15
+2026-08-03 21:21:54.785 Vibe[10041:1917922] [WhoAmI] ChatMainView.setGroupMembers chatMembers=0 me=CFAC3A0D prevRole=<nil> nextRole=<nil> source=not-in-roster flipped=N isAdmin=N sample=[]
+2026-08-03 21:21:54.795 Vibe[10041:1917922] [ChatOpen] heights RESTORE chat=9f16e186e367 entries=53
+2026-08-03 21:21:54.795 Vibe[10041:1917922] [ChatOpen] engine-bind chat=9f16e186e367 heightsMs=9 warmRestoreMs=0 hydrateMs=0 totalMs=10
+2026-08-03 21:21:54.814 Vibe[10041:1917922] [ChatOpen] host-stage viewDidLoad applyRouteMs=36 sinceTapMs=53
+2026-08-03 21:21:54.817 Vibe[10041:1917922] [ChatOpen] reopen-snapshot MISS chat=9f16e186e367 reason=cache-miss diskFile=N sinceOpenMs=31
+2026-08-03 21:21:54.825 Vibe[10041:1917922] [ChatOpen] reopen-snapshot MISS chat=9f16e186e367 reason=cache-miss diskFile=N sinceOpenMs=39
+2026-08-03 21:21:54.825 Vibe[10041:1917922] [ChatOpen] firstRealBounds EMPTY surface=native_chat_9f16e186e367#list chat=9f16e186e367 — rehydrate
+2026-08-03 21:21:54.825 Vibe[10041:1917922] [ChatOpen] first-layout chat=9f16e186e367 insetMs=0 layoutScrollMs=0 decorateMs=0 totalMs=0 visible=0 sinceOpenMs=39
+2026-08-03 21:21:54.826 Vibe[10041:1917922] [ChatOpen] seed-mount PRESTAGE-ENGINE-TAIL chat=9f16e186e367 rows=1 of 1 fetchMs=0
+2026-08-03 21:21:54.827 Vibe[10041:1917922] [ChatOpen] navigation-prestage chat=9f16e186e367 rows=0 raster=N covered=N frozen=N offset=0 contentH=956 bounds=440x956
+2026-08-03 21:21:54.832 Vibe[10041:1917922] [ChatOpen] host-stage pre-push prestage 54ms chatId=9f16e186e367
+2026-08-03 21:21:54.833 Vibe[10041:1917922] [ChatOpen] host-stage viewWillAppear appearanceMs=0 rowsMs=0 inputMs=0 sinceTapMs=72
+2026-08-03 21:21:54.873 Vibe[10041:1917922] [VibeCore] driver ARMED chat=9f16e186e367
+2026-08-03 21:21:55.380 Vibe[10041:1917922] [ChatOpen] host-stage viewDidAppear sinceTapMs=619
+2026-08-03 21:21:55.409 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=9f16e186e367 staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:21:55.409 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=9f16e186e367 — reconciling from engine
+2026-08-03 21:21:55.409 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=1 action=apply-pending chat=9f16e186e367
+2026-08-03 21:21:55.410 Vibe[10041:1917922] [MusicList] setRows chat=9f16e186e367 rows=0 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:21:55.411 Vibe[10041:1917922] [MusicList] setRows chat=9f16e186e367 rows=0 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:21:56.471 Vibe[10041:1918357] [ChatOpen] heights PERSIST chat=9f16e186e367 total=53 carried=53 fresh=0 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:21:56.683 Vibe[10041:1917922] [AgentRoute] ChatRoute(row:) chatId=e54c01e22038 title=Grok isGroup=N isChannel=N peerUserId=33333333-3333-3333-3333-333333333333 peerAgentId=nil isAgentFriend=true resolvedBridge=grok members=0 myRole=member initial=0
+2026-08-03 21:21:56.699 Vibe[10041:1917922] [ChatOpen] host-stage ChatMainView.init totalMs=7 listMs=2 configureMs=3 sinceTapMs=15
+2026-08-03 21:21:56.708 Vibe[10041:1917922] [WhoAmI] ChatMainView.setGroupMembers chatMembers=0 me=CFAC3A0D prevRole=<nil> nextRole=<nil> source=not-in-roster flipped=N isAdmin=N sample=[]
+2026-08-03 21:21:56.717 Vibe[10041:1917922] [ChatOpen] heights RESTORE chat=e54c01e22038 entries=2
+2026-08-03 21:21:56.717 Vibe[10041:1917922] [ChatOpen] engine-bind chat=e54c01e22038 heightsMs=8 warmRestoreMs=0 hydrateMs=0 totalMs=9
+2026-08-03 21:21:56.725 Vibe[10041:1917922] [ChatOpen] host-stage viewDidLoad applyRouteMs=26 sinceTapMs=42
+2026-08-03 21:21:56.729 Vibe[10041:1917922] [ChatOpen] reopen-snapshot MISS chat=e54c01e22038 reason=cache-miss diskFile=N sinceOpenMs=20
+2026-08-03 21:21:56.738 Vibe[10041:1917922] [ChatOpen] reopen-snapshot MISS chat=e54c01e22038 reason=cache-miss diskFile=N sinceOpenMs=30
+2026-08-03 21:21:56.738 Vibe[10041:1917922] [ChatOpen] firstRealBounds EMPTY surface=native_chat_e54c01e22038#list chat=e54c01e22038 — rehydrate
+2026-08-03 21:21:56.738 Vibe[10041:1917922] [ChatOpen] first-layout chat=e54c01e22038 insetMs=0 layoutScrollMs=0 decorateMs=0 totalMs=0 visible=0 sinceOpenMs=30
+2026-08-03 21:21:56.740 Vibe[10041:1917922] [ChatOpen] seed-mount PRESTAGE-ENGINE-TAIL chat=e54c01e22038 rows=1 of 1 fetchMs=0
+2026-08-03 21:21:56.740 Vibe[10041:1917922] [ChatOpen] navigation-prestage chat=e54c01e22038 rows=0 raster=N covered=N frozen=N offset=0 contentH=956 bounds=440x956
+2026-08-03 21:21:56.745 Vibe[10041:1917922] [ChatOpen] host-stage pre-push prestage 46ms chatId=e54c01e22038
+2026-08-03 21:21:56.747 Vibe[10041:1917922] [ChatOpen] host-stage viewWillAppear appearanceMs=0 rowsMs=0 inputMs=0 sinceTapMs=63
+2026-08-03 21:21:56.796 Vibe[10041:1917922] [VibeCore] driver ARMED chat=e54c01e22038
+2026-08-03 21:21:57.289 Vibe[10041:1917922] [ChatOpen] host-stage viewDidAppear sinceTapMs=605
+2026-08-03 21:21:57.319 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=e54c01e22038 staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:21:57.319 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=e54c01e22038 — reconciling from engine
+2026-08-03 21:21:57.319 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=1 action=apply-pending chat=e54c01e22038
+2026-08-03 21:21:57.320 Vibe[10041:1917922] [MusicList] setRows chat=e54c01e22038 rows=0 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:21:57.321 Vibe[10041:1917922] [MusicList] setRows chat=e54c01e22038 rows=0 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:21:58.088 Vibe[10041:1918376] [ChatOpen] heights PERSIST chat=e54c01e22038 total=2 carried=2 fresh=0 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:21:58.248 Vibe[10041:1917922] [AgentRoute] ChatRoute(row:) chatId=47157fce5863 title=Mahiro isGroup=N isChannel=N peerUserId=ca9154ad-569f-47fe-a452-bdc2c72a5ec4 peerAgentId=5c21b71d-df10-4af9-ade4-18ae6b51d7d6 isAgentFriend=true resolvedBridge=nil members=0 myRole=member initial=16
+2026-08-03 21:21:58.263 Vibe[10041:1917922] [ChatOpen] host-stage ChatMainView.init totalMs=8 listMs=2 configureMs=3 sinceTapMs=16
+2026-08-03 21:21:58.271 Vibe[10041:1917922] [WhoAmI] ChatMainView.setGroupMembers chatMembers=0 me=CFAC3A0D prevRole=<nil> nextRole=<nil> source=not-in-roster flipped=N isAdmin=N sample=[]
+2026-08-03 21:21:58.272 Vibe[10041:1917922] [ChatOpen] viewport LOAD chat=47157fce5863 dropped sameRun=N atBottom=N hasAnchor=Y age=9975s
+2026-08-03 21:21:58.282 Vibe[10041:1917922] [ChatOpen] heights RESTORE chat=47157fce5863 entries=50
+2026-08-03 21:21:58.290 Vibe[10041:1918376] [ChatOpen] reopen-snapshot DISK-HIT chat=47157fce5863 totalMs=17 queueMs=0 readMs=8 decodeMs=3 probeMs=5 publishMs=0 bytes=358553
+2026-08-03 21:21:58.299 Vibe[10041:1917922] [Seed] src=warmSnapshot rows=55 action=stash chat=47157fce5863 (await window attach)
+2026-08-03 21:21:58.299 Vibe[10041:1917922] [ChatOpen] warm-cache DEFER chat=47157fce5863 cached=55 heights=0
+2026-08-03 21:21:58.299 Vibe[10041:1917922] [ChatOpen] engine-bind chat=47157fce5863 heightsMs=8 warmRestoreMs=17 hydrateMs=0 totalMs=27
+2026-08-03 21:21:58.304 Vibe[10041:1917922] [VibeCore] driver ARMED chat=47157fce5863
+2026-08-03 21:21:58.309 Vibe[10041:1917922] [Seed] src=routePreview rows=16 action=keep (have src=warmSnapshot rows=55) chat=47157fce5863
+2026-08-03 21:21:58.309 Vibe[10041:1917922] [ChatOpen] host-stage viewDidLoad applyRouteMs=45 sinceTapMs=61
+2026-08-03 21:21:58.311 Vibe[10041:1917922] [ChatOpen] reopen-snapshot SHOW chat=47157fce5863 img=440x956 cv=0x0 self=0x0 overlay=0x0 insetB=0
+2026-08-03 21:21:58.311 Vibe[10041:1917922] [ChatOpen] cover-gap chat=47157fce5863 emptyMs=-1 sinceOpenMs=39 by=raster
+2026-08-03 21:21:58.318 Vibe[10041:1917922] [ChatOpen] firstRealBounds seed-deferred chat=47157fce5863 — shell committed uncovered=N
+2026-08-03 21:21:58.318 Vibe[10041:1917922] [ChatOpen] first-layout chat=47157fce5863 insetMs=0 layoutScrollMs=0 decorateMs=0 totalMs=0 visible=0 sinceOpenMs=46
+2026-08-03 21:21:58.319 Vibe[10041:1917922] [ChatOpen] navigation-prestage chat=47157fce5863 rows=0 raster=Y covered=Y frozen=N offset=0 contentH=956 bounds=440x956
+2026-08-03 21:21:58.323 Vibe[10041:1917922] [ChatOpen] host-stage pre-push prestage 59ms chatId=47157fce5863
+2026-08-03 21:21:58.324 Vibe[10041:1917922] [ChatOpen] host-stage viewWillAppear appearanceMs=0 rowsMs=0 inputMs=0 sinceTapMs=77
+2026-08-03 21:21:58.368 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:58.408 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:58.408 Vibe[10041:1917922] [VibeCore] authority LIVE chat=47157fce5863 rows=55 engine=55 (core window drives the list)
+2026-08-03 21:21:58.409 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=55 action=stash chat=47157fce5863 (await window attach)
+2026-08-03 21:21:58.410 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:58.410 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:58.858 Vibe[10041:1917922] [ChatOpen] host-stage viewDidAppear sinceTapMs=610
+2026-08-03 21:21:58.884 Vibe[10041:1917922] [ChatOpen] seed-mount PUSH-COVERED chat=47157fce5863 rows=55 waitMs=474
+2026-08-03 21:21:58.987 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=55 action=mount chat=47157fce5863
+2026-08-03 21:21:58.987 Vibe[10041:1917922] [ChatOpen] presentation-seed chat=47157fce5863 visible=59 retained=55 cachedHeights=53 sizing=estimated window=full normMs=0 parseMs=4 filterMs=1 posMs=41 layoutMs=52 mountMs=94 totalMs=102 sinceOpenMs=715
+2026-08-03 21:21:58.987 Vibe[10041:1917922] [ChatOpen] seed-profile chat=47157fce5863 sizeCalls=110 sizeMs=40 trust=50 sig=0 cacheHit=0 measure=0 measureMs=0 configure=4 configureMs=10 cell=4 cellMs=31 insetMs=37 contentMs=3 offsetMs=0
+2026-08-03 21:21:58.987 Vibe[10041:1917922] [VibeCore] seed-prepared chat=47157fce5863 hit=0 miss=55 width=424 storePrepared=25 storeHit=3 storeMiss=285
+2026-08-03 21:21:58.988 Vibe[10041:1917922] [ChatOpen] viewport-cover seed chat=47157fce5863 rows=59 cells=4 cover=91% off=11630 contentH=12586 boundsH=956 span=11163…12507
+2026-08-03 21:21:58.988 Vibe[10041:1917922] [ChatOpen] viewport-vis seed chat=47157fce5863 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=Y defersPresentation=Y
+2026-08-03 21:21:58.988 Vibe[10041:1917922] [ChatOpen] viewport-occluded seed chat=47157fce5863 above-list=[UIImageView(a=1.00 bg=0.00 contents=Y 440x956)]
+2026-08-03 21:21:58.988 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=47157fce5863 staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:21:58.988 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=47157fce5863 — reconciling from engine
+2026-08-03 21:21:58.988 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=55 action=apply-pending chat=47157fce5863
+2026-08-03 21:21:58.988 Vibe[10041:1917922] [VibeCore] authority LIVE chat=47157fce5863 rows=55 engine=55 (core window drives the list)
+2026-08-03 21:21:58.991 Vibe[10041:1917922] [ChatOpen] flush-stages chat=47157fce5863 visible=59 windowed=59 parsedAll=59 progress=0 usage=[] thinking=[] inboxMode=N inbox=[] afterInbox=59 afterBridgeFresh=59 final=59
+2026-08-03 21:21:58.995 Vibe[10041:1917922] [MusicList] setRows chat=47157fce5863 rows=59 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:21:58.995 Vibe[10041:1917922] [ChatOpen] viewport RESTORE chat=47157fce5863 reason=bottom-already-settled
+2026-08-03 21:21:58.995 Vibe[10041:1917922] [ChatOpen] reopen-snapshot REMOVE chat=47157fce5863 reason=reconcile-match overlay=440x956 cv=440x956
+2026-08-03 21:21:58.995 Vibe[10041:1917922] [ChatOpen] presentation-reconcile chat=47157fce5863 rows=59 equal=Y structural=N mode=match changed=0 ms=6 sinceOpenMs=723
+2026-08-03 21:21:58.995 Vibe[10041:1917922] [ChatOpen] viewport-cover complete chat=47157fce5863 rows=59 cells=4 cover=91% off=11630 contentH=12586 boundsH=956 span=11163…12507
+2026-08-03 21:21:58.995 Vibe[10041:1917922] [ChatOpen] viewport-vis complete chat=47157fce5863 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:21:59.007 Vibe[10041:1917922] [CellFit] slot-repair chat=47157fce5863 key=8-16f4a794ac1d kind=document me=N origin=cache slack=+200 vis=visible of=2
+2026-08-03 21:21:59.007 Vibe[10041:1917922] [CellFit] slot-repair chat=47157fce5863 key=d-658344959dec kind=document me=N origin=cache slack=-46 vis=visible of=2
+2026-08-03 21:21:59.011 Vibe[10041:1917922] [HeightShift] correct chat=47157fce5863 key=8-16f4a794ac1d kind=document me=N origin=exact-measure was=612 now=412 dh=-200 vis=visible via=slot-repair
+2026-08-03 21:21:59.013 Vibe[10041:1917922] [HeightShift] correct chat=47157fce5863 key=d-658344959dec kind=document me=N origin=exact-measure was=273 now=319 dh=+46 vis=visible via=slot-repair
+2026-08-03 21:21:59.036 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.036 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.037 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=7-40ef583b903e core=515.0 list=315.5
+2026-08-03 21:21:59.037 Vibe[10041:1917922] [VibeCore] authority LIVE chat=47157fce5863 rows=55 engine=55 (core window drives the list)
+2026-08-03 21:21:59.096 Vibe[10041:1917922] [ChatOpen] height-audit chat=47157fce5863 stale=41 of 48 shifted=16 dh=-430 (version=0 state=0 sig=41 flipped=[agentUsername=41,plainContent=41,status=41,replyPreviewTitle=41,replyPreviewText=41,isAgentMessage=41])
+2026-08-03 21:21:59.122 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.122 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.122 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.123 Vibe[10041:1917922] [ChatOpen] date-pin chat=47157fce5863 label=1 August state=STUCK pills=1 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:21:59.141 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.142 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.142 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.174 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.174 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.174 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.222 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.222 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.223 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.224 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.224 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.225 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.247 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.247 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.247 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.277 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.277 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.277 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.299 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.299 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.299 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.322 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.322 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.322 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.346 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.346 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.346 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.367 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.368 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.368 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.424 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.425 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.425 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.428 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.428 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.428 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.455 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.455 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.455 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.480 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.481 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.481 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.523 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.523 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.523 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:21:59.530 Vibe[10041:1918357] [ChatEngine] backfillNewest START chatId=47157fce5863 trigger=chat_joined
+2026-08-03 21:21:59.598 Vibe[10041:1917922] [ChatOpen] viewport-cover settled chat=47157fce5863 rows=59 cells=4 cover=99% off=10920 contentH=12002 boundsH=956 span=10733…11923
+2026-08-03 21:21:59.598 Vibe[10041:1917922] [ListShift] chat=47157fce5863 complete→settled drift=280.0pt blame=height caused=[] dContentH=-584 dRows=0 dInsetT=0 dInsetB=0 anchor=m-434abb7c-4c9
+2026-08-03 21:21:59.598 Vibe[10041:1917922] [ChatOpen] viewport-vis settled chat=47157fce5863 list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=0 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:21:59.783 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:21:59.783 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:21:59.783 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:22:00.291 Vibe[10041:1918357] [ChatEngine] backfillNewest OK chatId=47157fce5863 trigger=chat_joined fetched=55 ins=0 upd=1 retiredLive=0
+2026-08-03 21:22:00.291 Vibe[10041:1918357] [ChatDelta] backfill chat=47157fce5863 gen=1 ins=0 upd=1 del=0
+2026-08-03 21:22:00.337 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:22:00.338 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:22:00.338 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:22:00.569 Vibe[10041:1917922] [VibeCore] authority LIVE chat=47157fce5863 rows=55 engine=55 (core window drives the list)
+2026-08-03 21:22:00.577 Vibe[10041:1917922] [KbViewport] PERSIST chat=47157fce5863 kb=0 insetB=0 off=11046 contentH=12002 boundsH=956 atBottom=Y anchor=none screenY=0
+2026-08-03 21:22:00.578 Vibe[10041:1919108] [ChatOpen] heights PERSIST chat=47157fce5863 total=55 carried=0 fresh=55 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:22:00.578 Vibe[10041:1917922] [VibeCore] window chat=47157fce5863 rows=55 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:22:00.578 Vibe[10041:1917922] [VibeCore] host MOUNT chat=47157fce5863 reason=engineReconcile gen=1 rows=55 (geometry LIVE, order/content engine)
+2026-08-03 21:22:00.578 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=47157fce5863 stage=mount rows=55 differed=55 worst=c-40b4fcbe9614 core=491.0 list=319.0
+2026-08-03 21:22:00.595 Vibe[10041:1919106] [VibeCore] prepared chat=47157fce5863 rows=55 sized=55 deferred=0 width=424 ms=292 reason=persist total=26
+2026-08-03 21:22:01.313 Vibe[10041:1917922] [ChatHold] longPress began point={365.33333333333331, 11512.666666666666} index=57 cellTransform=[1, 0, 0, 1, 0, 0]
+2026-08-03 21:22:01.606 Vibe[10041:1917922] [ChatHold] longPress delayed cancel moved=30.92643601264974
+2026-08-03 21:22:02.194 Vibe[10041:1917922] [ChatHold] longPress end state=3 overlay=false
+2026-08-03 21:22:03.301 Vibe[10041:1917922] [KbViewport] PERSIST chat=47157fce5863 kb=0 insetB=0 off=10041 contentH=12002 boundsH=956 atBottom=N anchor=a0303265 screenY=-408
+2026-08-03 21:22:03.309 Vibe[10041:1917922] [KbViewport] PERSIST chat=47157fce5863 kb=0 insetB=0 off=10041 contentH=12002 boundsH=956 atBottom=N anchor=a0303265 screenY=-408
+2026-08-03 21:22:06.763 Vibe[10041:1917922] [KbViewport] PERSIST chat=47157fce5863 kb=0 insetB=0 off=8565 contentH=12002 boundsH=956 atBottom=N anchor=51b424f3 screenY=-122
+ad vibe agent stll has delay o push and another agent chat list has slight shift first was agent cell has oe border that should be removed from cell 3 i felt slight scroll applied maybe it was a little logging is 1:1917922] [ChatOpen] date-pin chat=47157fce5863 label=1 August state=STUCK pills=2 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:22:48.780 Vibe[10041:1917922] [ChatOpen] date-pin chat=47157fce5863 label=31 July state=riding pills=1 slotY=124 pillY=107 safeTop=0 padTop=130
+2026-08-03 21:22:48.793 Vibe[10041:1917922] [ChatOpen] date-pin chat=47157fce5863 label=31 July state=STUCK pills=1 slotY=124 pillY=124 safeTop=0 padTop=130
+2026-08-03 21:22:49.025 Vibe[10041:1917922] [KbViewport] PERSIST chat=47157fce5863 kb=0 insetB=0 off=7417 contentH=12002 boundsH=956 atBottom=N anchor=07c38b28 screenY=-25
+2026-08-03 21:22:49.031 Vibe[10041:1917922] [KbViewport] PERSIST chat=47157fce5863 kb=0 insetB=0 off=7417 contentH=12002 boundsH=956 atBottom=N anchor=07c38b28 screenY=-25
+2026-08-03 21:22:49.482 Vibe[10041:1917922] [KbViewport] PERSIST chat=47157fce5863 kb=0 insetB=0 off=7417 contentH=12002 boundsH=956 atBottom=N anchor=07c38b28 screenY=-25
+2026-08-03 21:22:49.482 Vibe[10041:1917922] [ChatOpen] reopen-snapshot CAPTURE-MID chat=47157fce5863 anchor=07c38b28 screenY=-25 luma=244
+2026-08-03 21:22:49.611 Vibe[10041:1919177] [VibeCore] prepared chat=47157fce5863 rows=59 sized=59 deferred=0 width=424 ms=278 reason=settle total=27
+2026-08-03 21:22:50.066 Vibe[10041:1919369] [ChatOpen] heights PERSIST chat=47157fce5863 total=55 carried=0 fresh=55 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:22:50.067 Vibe[10041:1917922] [VibeUITrace] AppDelegate willResignActive
+2026-08-03 21:22:52.022 Vibe[10041:1917922] [VibeUITrace] AppDelegate didBecomeActive
+2026-08-03 21:22:52.030 Vibe[10041:1919177] [LanBridge] start: already active (state=authenticated("Vibe Bridge (Mohammadshayanis-MacBook-Pro.local)")) — no-op
+2026-08-03 21:22:53.344 Vibe[10041:1917922] [Launch] /api/chats rows=15 in 1131ms
+2026-08-03 21:22:53.346 Vibe[10041:1917922] [ChatOpen] reopen-snapshot PREWARM-PLAN warm=[47157fce5863,e54c01e22038,9f16e186e367,176cdf92eec5,63f5b27bf064,saved_messag] dropped=9 (mru=12 home=14)
+2026-08-03 21:22:53.371 Vibe[10041:1919368] [ChatOpen] reopen-snapshot PREWARM-MISS chat=e54c01e22038 reason=no-file
+2026-08-03 21:22:53.372 Vibe[10041:1917922] [ChatOpen] reopen-snapshot PREWARM chat=47157fce5863 theme=dark
+2026-08-03 21:22:53.385 Vibe[10041:1917922] [ChatOpen] reopen-snapshot PREWARM chat=9f16e186e367 theme=dark
+2026-08-03 21:22:53.385 Vibe[10041:1919368] [ChatOpen] reopen-snapshot PREWARM-MISS chat=176cdf92eec5 reason=no-file
+2026-08-03 21:22:53.411 Vibe[10041:1919533] [Launch] history prefetch kicked=14 of 14 in 0ms
+2026-08-03 21:22:53.440 Vibe[10041:1919368] [ChatOpen] reopen-snapshot PREWARM-MISS chat=176cdf92eec5 reason=no-file
+2026-08-03 21:22:55.015 Vibe[10041:1917922] [AgentRoute] ChatRoute(row:) chatId=vibe title=Vibe AI isGroup=N isChannel=N peerUserId=nil peerAgentId=nil isAgentFriend=true resolvedBridge=nil members=0 myRole=<nil> initial=0
+2026-08-03 21:22:55.028 Vibe[10041:1917922] [ChatOpen] host-stage ChatMainView.init totalMs=6 listMs=2 configureMs=2 sinceTapMs=12
+2026-08-03 21:22:55.038 Vibe[10041:1917922] [AgentOpen] view-init transportOnly=Y setupMs=1 persistedStateMs=1 chromeMs=3 rowsMs=0 totalMs=5
+2026-08-03 21:22:55.053 Vibe[10041:1917922] [ChatOpen] heights RESTORE chat=vibe_agent entries=139
+2026-08-03 21:22:55.053 Vibe[10041:1917922] [ChatOpen] engine-bind chat=vibe_agent heightsMs=10 warmRestoreMs=0 hydrateMs=0 totalMs=11
+2026-08-03 21:22:55.060 Vibe[10041:1917922] [AgentOpen] viewDidLoad bodyMs=21 sinceInitMs=21
+2026-08-03 21:22:55.064 Vibe[10041:1919368] [ChatOpen] reopen-snapshot DISK-HIT chat=vibe_agent totalMs=20 queueMs=0 readMs=8 decodeMs=2 probeMs=9 publishMs=0 bytes=474633
+2026-08-03 21:22:55.064 Vibe[10041:1917922] [ChatNativeAgent] connecting socketURL=wss://api.vibegram.io/socket topic=agent:cfac3a0d-c764-473c-9940-33fca418834a hasToken=true
+2026-08-03 21:22:55.067 Vibe[10041:1917922] [ChatOpen] reopen-snapshot SHOW chat=vibe_agent img=440x956 cv=0x0 self=0x0 overlay=0x0 insetB=0
+2026-08-03 21:22:55.067 Vibe[10041:1917922] [ChatOpen] cover-gap chat=vibe_agent emptyMs=-1 sinceOpenMs=24 by=raster
+2026-08-03 21:22:55.074 Vibe[10041:1917922] [VibeCore] driver ARMED chat=vibe_agent
+2026-08-03 21:22:55.091 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=150 action=mount chat=vibe_agent
+2026-08-03 21:22:55.091 Vibe[10041:1917922] [ChatOpen] presentation-seed chat=vibe_agent visible=140 retained=150 cachedHeights=0 sizing=estimated window=full normMs=0 parseMs=6 filterMs=3 posMs=0 layoutMs=0 mountMs=0 totalMs=11 sinceOpenMs=48
+2026-08-03 21:22:55.091 Vibe[10041:1917922] [ChatOpen] seed-profile chat=vibe_agent sizeCalls=0 sizeMs=0 trust=0 sig=0 cacheHit=0 measure=0 measureMs=0 configure=0 configureMs=0 cell=0 cellMs=0 insetMs=0 contentMs=0 offsetMs=0
+2026-08-03 21:22:55.091 Vibe[10041:1917922] [VibeCore] seed-prepared chat=vibe_agent hit=0 miss=0 width=0 storePrepared=27 storeHit=3 storeMiss=285
+2026-08-03 21:22:55.092 Vibe[10041:1917922] [ChatOpen] reopen-snapshot REMOVE chat=vibe_agent reason=seed-mounted overlay=0x0 cv=0x0
+2026-08-03 21:22:55.097 Vibe[10041:1917922] [AgentOpen] initial-stage reason=first-layout rows=150 bounds=440x956 ms=25
+2026-08-03 21:22:55.328 Vibe[10041:1917922] [CellPerf] configure 8ms item=139 key=988222CBE-turn agent=Y nodes=1 chars=1689
+2026-08-03 21:22:55.414 Vibe[10041:1917922] [VibeAgentKitStreamingText] layout visible=1657 target=1657 displayed=1657 bounds=332.0x1511.0 active=false window=yes
+2026-08-03 21:22:55.415 Vibe[10041:1917922] [VibeAgentKitStreamingText] layout visible=120 target=120 displayed=120 bounds=332.0x68.0 active=false window=yes
+2026-08-03 21:22:55.424 Vibe[10041:1917922] [ChatOpen] first-layout chat=vibe_agent insetMs=7 layoutScrollMs=0 decorateMs=0 totalMs=7 visible=8 sinceOpenMs=382
+2026-08-03 21:22:55.428 Vibe[10041:1917922] [ChatOpen] navigation-prestage chat=vibe_agent rows=140 raster=N covered=N frozen=Y offset=14542 contentH=15498 bounds=440x956
+2026-08-03 21:22:55.434 Vibe[10041:1917922] [AgentOpen] host-stage pre-push prestage 395ms
+2026-08-03 21:22:56.047 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=vibe_agent staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:22:56.047 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=vibe_agent — reconciling from engine
+2026-08-03 21:22:56.047 Vibe[10041:1917922] [ChatOpen] viewport-cover complete chat=vibe_agent rows=140 cells=8 cover=90% off=14542 contentH=15498 boundsH=956 span=14518…15419
+2026-08-03 21:22:56.047 Vibe[10041:1917922] [ChatOpen] viewport-vis complete chat=vibe_agent list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=1 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:22:56.047 Vibe[10041:1919535] [HistoryStore] restore MISS chat=vibe_agent — SQLite holds 0 rows and no legacy blob
+2026-08-03 21:22:56.594 Vibe[10041:1917922] [ChatOpen] reopen-snapshot CAPTURE chat=vibe_agent size=440x956 atBottom=Y luma=230
+2026-08-03 21:22:56.667 Vibe[10041:1917922] [ChatOpen] viewport-cover settled chat=vibe_agent rows=140 cells=8 cover=90% off=14542 contentH=15498 boundsH=956 span=14518…15419
+2026-08-03 21:22:56.667 Vibe[10041:1917922] [ChatOpen] viewport-vis settled chat=vibe_agent list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=1 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:22:56.706 Vibe[10041:1917922] [ChatNativeAgent] socket open — joining topic=agent:cfac3a0d-c764-473c-9940-33fca418834a
+2026-08-03 21:22:56.719 Vibe[10041:1919535] [VibeCore] prepared chat=vibe_agent rows=140 sized=137 deferred=3 width=424 ms=254 reason=settle total=28
+2026-08-03 21:22:57.025 Vibe[10041:1917922] [ChatNativeAgent] join OK topic=agent:cfac3a0d-c764-473c-9940-33fca418834a pendingSends=0
+2026-08-03 21:22:57.228 Vibe[10041:1919178] [ChatOpen] heights PERSIST chat=vibe_agent total=139 carried=0 fresh=139 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:22:57.281 Vibe[10041:1917922] [AgentRoute] ChatRoute(row:) chatId=3e13f843ac0c title=Leorre isGroup=N isChannel=N peerUserId=fd12b979-8f2b-417b-8c39-fb8590f26442 peerAgentId=d3e1bf9b-5692-4764-a9d8-7d5981f7d679 isAgentFriend=true resolvedBridge=nil members=0 myRole=member initial=16
+2026-08-03 21:22:57.289 Vibe[10041:1917922] [ChatOpen] host-stage ChatMainView.init totalMs=3 listMs=1 configureMs=1 sinceTapMs=7
+2026-08-03 21:22:57.293 Vibe[10041:1917922] [WhoAmI] ChatMainView.setGroupMembers chatMembers=0 me=CFAC3A0D prevRole=<nil> nextRole=<nil> source=not-in-roster flipped=N isAdmin=N sample=[]
+2026-08-03 21:22:57.294 Vibe[10041:1917922] [ChatOpen] viewport LOAD chat=3e13f843ac0c dropped sameRun=N atBottom=Y hasAnchor=N age=25651s
+2026-08-03 21:22:57.296 Vibe[10041:1917922] [ChatOpen] heights RESTORE chat=3e13f843ac0c entries=26
+2026-08-03 21:22:57.299 Vibe[10041:1917922] [Seed] src=warmSnapshot rows=22 action=stash chat=3e13f843ac0c (await window attach)
+2026-08-03 21:22:57.299 Vibe[10041:1917922] [ChatOpen] warm-cache DEFER chat=3e13f843ac0c cached=22 heights=0
+2026-08-03 21:22:57.299 Vibe[10041:1917922] [ChatOpen] engine-bind chat=3e13f843ac0c heightsMs=1 warmRestoreMs=3 hydrateMs=0 totalMs=5
+2026-08-03 21:22:57.303 Vibe[10041:1919178] [ChatOpen] reopen-snapshot DISK-HIT chat=3e13f843ac0c totalMs=8 queueMs=0 readMs=1 decodeMs=2 probeMs=4 publishMs=0 bytes=548613
+2026-08-03 21:22:57.305 Vibe[10041:1917922] [VibeCore] driver ARMED chat=3e13f843ac0c
+2026-08-03 21:22:57.307 Vibe[10041:1917922] [Seed] src=routePreview rows=16 action=keep (have src=warmSnapshot rows=22) chat=3e13f843ac0c
+2026-08-03 21:22:57.307 Vibe[10041:1917922] [ChatOpen] host-stage viewDidLoad applyRouteMs=18 sinceTapMs=26
+2026-08-03 21:22:57.310 Vibe[10041:1917922] [ChatOpen] reopen-snapshot SHOW chat=3e13f843ac0c img=440x956 cv=0x0 self=0x0 overlay=0x0 insetB=0
+2026-08-03 21:22:57.310 Vibe[10041:1917922] [ChatOpen] cover-gap chat=3e13f843ac0c emptyMs=-1 sinceOpenMs=16 by=raster
+2026-08-03 21:22:57.317 Vibe[10041:1917922] [ChatOpen] firstRealBounds seed-deferred chat=3e13f843ac0c — shell committed uncovered=N
+2026-08-03 21:22:57.317 Vibe[10041:1917922] [ChatOpen] first-layout chat=3e13f843ac0c insetMs=0 layoutScrollMs=0 decorateMs=0 totalMs=0 visible=0 sinceOpenMs=23
+2026-08-03 21:22:57.318 Vibe[10041:1917922] [ChatOpen] navigation-prestage chat=3e13f843ac0c rows=0 raster=Y covered=Y frozen=N offset=0 contentH=956 bounds=440x956
+2026-08-03 21:22:57.322 Vibe[10041:1917922] [ChatOpen] host-stage pre-push prestage 33ms chatId=3e13f843ac0c
+2026-08-03 21:22:57.324 Vibe[10041:1917922] [ChatOpen] host-stage viewWillAppear appearanceMs=0 rowsMs=0 inputMs=0 sinceTapMs=43
+2026-08-03 21:22:57.378 Vibe[10041:1917922] [VibeCore] window chat=3e13f843ac0c rows=22 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:22:57.381 Vibe[10041:1917922] [VibeCore] host MOUNT chat=3e13f843ac0c reason=engineReconcile gen=1 rows=22 (geometry LIVE, order/content engine)
+2026-08-03 21:22:57.382 Vibe[10041:1917922] [VibeCore] authority LIVE chat=3e13f843ac0c rows=22 engine=22 (core window drives the list)
+2026-08-03 21:22:57.382 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=22 action=stash chat=3e13f843ac0c (await window attach)
+2026-08-03 21:22:57.382 Vibe[10041:1917922] [VibeCore] window chat=3e13f843ac0c rows=22 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:22:57.383 Vibe[10041:1917922] [VibeCore] host MOUNT chat=3e13f843ac0c reason=engineReconcile gen=1 rows=22 (geometry LIVE, order/content engine)
+2026-08-03 21:22:57.873 Vibe[10041:1917922] [ChatOpen] host-stage viewDidAppear sinceTapMs=592
+2026-08-03 21:22:57.892 Vibe[10041:1917922] [ChatOpen] seed-mount PUSH-COVERED chat=3e13f843ac0c rows=22 waitMs=510
+2026-08-03 21:22:57.993 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=22 action=mount chat=3e13f843ac0c
+2026-08-03 21:22:57.993 Vibe[10041:1917922] [ChatOpen] presentation-seed chat=3e13f843ac0c visible=24 retained=22 cachedHeights=22 sizing=estimated window=full normMs=0 parseMs=1 filterMs=0 posMs=3 layoutMs=94 mountMs=98 totalMs=100 sinceOpenMs=699
+2026-08-03 21:22:57.993 Vibe[10041:1917922] [ChatOpen] seed-profile chat=3e13f843ac0c sizeCalls=44 sizeMs=3 trust=22 sig=0 cacheHit=0 measure=0 measureMs=0 configure=10 configureMs=12 cell=10 cellMs=67 insetMs=1 contentMs=2 offsetMs=0
+2026-08-03 21:22:57.993 Vibe[10041:1917922] [VibeCore] seed-prepared chat=3e13f843ac0c hit=0 miss=22 width=424 storePrepared=28 storeHit=3 storeMiss=443
+2026-08-03 21:22:57.994 Vibe[10041:1917922] [ChatOpen] viewport-cover seed chat=3e13f843ac0c rows=24 cells=10 cover=89% off=3859 contentH=4815 boundsH=956 span=3615…4736
+2026-08-03 21:22:57.994 Vibe[10041:1917922] [ChatOpen] viewport-vis seed chat=3e13f843ac0c list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=1 clear=0) snapshotOverlay=Y defersPresentation=Y
+2026-08-03 21:22:57.994 Vibe[10041:1917922] [ChatOpen] viewport-occluded seed chat=3e13f843ac0c above-list=[UIImageView(a=1.00 bg=0.00 contents=Y 440x956)]
+2026-08-03 21:22:57.994 Vibe[10041:1917922] [ChatOpen] safe-bottom FINAL chat=3e13f843ac0c staged=34.0 actual=34.0 delta=+0.0
+2026-08-03 21:22:57.994 Vibe[10041:1917922] [ChatOpen] presentation-complete chat=3e13f843ac0c — reconciling from engine
+2026-08-03 21:22:57.994 Vibe[10041:1917922] [Seed] src=engineSnapshot rows=22 action=apply-pending chat=3e13f843ac0c
+2026-08-03 21:22:57.994 Vibe[10041:1917922] [VibeCore] authority LIVE chat=3e13f843ac0c rows=22 engine=22 (core window drives the list)
+2026-08-03 21:22:57.995 Vibe[10041:1917922] [ChatOpen] flush-stages chat=3e13f843ac0c visible=24 windowed=24 parsedAll=24 progress=0 usage=[] thinking=[] inboxMode=N inbox=[] afterInbox=24 afterBridgeFresh=24 final=24
+2026-08-03 21:22:57.996 Vibe[10041:1917922] [MusicList] setRows chat=3e13f843ac0c rows=24 musicCandidates=0 registered=0 persistedTotal=0
+2026-08-03 21:22:57.996 Vibe[10041:1917922] [ChatOpen] viewport RESTORE chat=3e13f843ac0c reason=bottom-already-settled
+2026-08-03 21:22:57.996 Vibe[10041:1917922] [ChatOpen] reopen-snapshot REMOVE chat=3e13f843ac0c reason=reconcile-match overlay=440x956 cv=440x956
+2026-08-03 21:22:57.996 Vibe[10041:1917922] [ChatOpen] presentation-reconcile chat=3e13f843ac0c rows=24 equal=Y structural=N mode=match changed=0 ms=2 sinceOpenMs=702
+2026-08-03 21:22:57.997 Vibe[10041:1917922] [ChatOpen] viewport-cover complete chat=3e13f843ac0c rows=24 cells=10 cover=89% off=3859 contentH=4815 boundsH=956 span=3615…4736
+2026-08-03 21:22:57.997 Vibe[10041:1917922] [ChatOpen] viewport-vis complete chat=3e13f843ac0c list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=1 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:22:58.004 Vibe[10041:1917922] [VibeCore] window chat=3e13f843ac0c rows=22 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:22:58.004 Vibe[10041:1917922] [VibeCore] host MOUNT chat=3e13f843ac0c reason=engineReconcile gen=1 rows=22 (geometry LIVE, order/content engine)
+2026-08-03 21:22:58.004 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=3e13f843ac0c stage=mount rows=22 differed=22 worst=a-106f36cd6e79 core=415.0 list=350.0
+2026-08-03 21:22:58.004 Vibe[10041:1917922] [VibeCore] authority LIVE chat=3e13f843ac0c rows=22 engine=22 (core window drives the list)
+2026-08-03 21:22:58.025 Vibe[10041:1917922] [ChatOpen] height-audit chat=3e13f843ac0c stale=18 of 22 shifted=1 dh=-1 (version=0 state=0 sig=18 flipped=[status=18,agentId=18,agentActionSourceText=18,replyPreviewText=18,plainContent=18,agentName=18])
+2026-08-03 21:22:58.038 Vibe[10041:1917922] [VibeCore] authority LIVE chat=3e13f843ac0c rows=22 engine=22 (core window drives the list)
+2026-08-03 21:22:58.041 Vibe[10041:1917922] [VibeCore] window chat=3e13f843ac0c rows=22 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:22:58.041 Vibe[10041:1917922] [VibeCore] host MOUNT chat=3e13f843ac0c reason=engineReconcile gen=1 rows=22 (geometry LIVE, order/content engine)
+2026-08-03 21:22:58.041 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=3e13f843ac0c stage=mount rows=22 differed=22 worst=2-fef051287704 core=319.0 list=254.0
+2026-08-03 21:22:58.045 Vibe[10041:1917922] [VibeCore] window chat=3e13f843ac0c rows=22 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:22:58.045 Vibe[10041:1917922] [VibeCore] host MOUNT chat=3e13f843ac0c reason=engineReconcile gen=1 rows=22 (geometry LIVE, order/content engine)
+2026-08-03 21:22:58.045 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=3e13f843ac0c stage=mount rows=22 differed=22 worst=2-fef051287704 core=319.0 list=254.0
+2026-08-03 21:22:58.128 Vibe[10041:1917922] [VibeCore] authority LIVE chat=3e13f843ac0c rows=22 engine=22 (core window drives the list)
+2026-08-03 21:22:58.135 Vibe[10041:1917922] [VibeCore] window chat=3e13f843ac0c rows=22 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:22:58.135 Vibe[10041:1917922] [VibeCore] host MOUNT chat=3e13f843ac0c reason=engineReconcile gen=1 rows=22 (geometry LIVE, order/content engine)
+2026-08-03 21:22:58.135 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=3e13f843ac0c stage=mount rows=22 differed=22 worst=2-fef051287704 core=319.0 list=254.0
+2026-08-03 21:22:58.261 Vibe[10041:1917922] [VibeCore] authority LIVE chat=3e13f843ac0c rows=22 engine=22 (core window drives the list)
+2026-08-03 21:22:58.266 Vibe[10041:1917922] [VibeCore] window chat=3e13f843ac0c rows=22 decryptFailed=0 emptyNoMedia=0
+2026-08-03 21:22:58.266 Vibe[10041:1917922] [VibeCore] host MOUNT chat=3e13f843ac0c reason=engineReconcile gen=1 rows=22 (geometry LIVE, order/content engine)
+2026-08-03 21:22:58.266 Vibe[10041:1917922] [VibeCore] geometry DIFFERS chat=3e13f843ac0c stage=mount rows=22 differed=22 worst=2-fef051287704 core=319.0 list=254.0
+2026-08-03 21:22:58.596 Vibe[10041:1919368] [ChatEngine] backfillNewest START chatId=3e13f843ac0c trigger=chat_joined
+2026-08-03 21:22:58.605 Vibe[10041:1917922] [ChatOpen] viewport-cover settled chat=3e13f843ac0c rows=24 cells=10 cover=89% off=3858 contentH=4814 boundsH=956 span=3614…4735
+2026-08-03 21:22:58.605 Vibe[10041:1917922] [ChatOpen] viewport-vis settled chat=3e13f843ac0c list(a=1.00 h=N speed=1.0) cv(a=1.00 h=N speed=1.0) host(a=1.00 h=N) window=Y cells(hidden=0 clear=0 ghost=0) bubbles(hidden=1 clear=0) snapshotOverlay=N defersPresentation=N
+2026-08-03 21:22:59.317 Vibe[10041:1919368] [ChatEngine] backfillNewest OK chatId=3e13f843ac0c trigger=chat_joined fetched=22 ins=0 upd=0 retiredLive=0
+2026-08-03 21:22:59.402 Vibe[10041:1919178] [VibeCore] prepared chat=3e13f843ac0c rows=22 sized=22 deferred=0 width=424 ms=80 reason=persist total=29
+2026-08-03 21:22:59.496 Vibe[10041:1919178] [VibeCore] prepared chat=3e13f843ac0c rows=24 sized=24 deferred=0 width=424 ms=81 reason=settle total=30
+2026-08-03 21:22:59.527 Vibe[10041:1917922] [ChatOpen] reopen-snapshot CAPTURE chat=3e13f843ac0c size=440x956 atBottom=Y luma=132
+2026-08-03 21:22:59.597 Vibe[10041:1919178] [ChatOpen] heights PERSIST chat=3e13f843ac0c total=26 carried=4 fresh=22 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:23:00.095 Vibe[10041:1917922] [KbViewport] PERSIST chat=3e13f843ac0c kb=0 insetB=0 off=3858 contentH=4814 boundsH=956 atBottom=Y anchor=none screenY=0
+2026-08-03 21:23:00.107 Vibe[10041:1919538] [ChatOpen] heights PERSIST chat=3e13f843ac0c total=26 carried=4 fresh=22 rejLive=0 rejStream=0 rejGuess=0 rejKeys=[]
+2026-08-03 21:23:31.946 Vibe[10041:1917922] [VibeUITrace] AppDelegate willResignActive
+2026-08-03 21:23:32.760 Vibe[10041:1917922] [VibeUITrace] AppDelegate didEnterBackground

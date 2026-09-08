@@ -1,0 +1,18 @@
+{
+  "id": 103,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Shipped profile/media/search/toast UX pass: shared content stays embedded with category pills and no View all; hero bottom has a deeper image blur plus page-color dissolve; action SF Symbols spring on tap; normal-chat search field has real geometry and a persistent bottom count/up/down navigator replacing the composer; profile thumbnails preserve their UIImageView into the existing chat zoom viewer; global toast morphs in place with inferred info/success/error/progress animated glyphs. Unsigned generic iOS source build green through agix; physical device and simulator services were unavailable in the sandbox, so Assets.xcassets and signing were excluded only for validation.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787885565,
+  "updated_at": 1787885565
+}

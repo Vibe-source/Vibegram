@@ -1,0 +1,18 @@
+{
+  "id": 114,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Profile hero edge now keeps the base image opaque and overlays only the final 18pt with a 52pt blur; removed both LinearGradient edge masks. Generic unsigned iOS Swift build is green with Assets.xcassets excluded because CoreSimulatorService has no available runtime.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787920848,
+  "updated_at": 1787920848
+}

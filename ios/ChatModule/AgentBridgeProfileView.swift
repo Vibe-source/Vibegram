@@ -32,13 +32,20 @@ enum AgentBridgeProfile {
       model.status = snapshot
       model.selectedRepository = AgentBridgeSelectionStore.ensureValidSelection(from: snapshot.repositories)
     }
-    let host = UIHostingController(rootView: AgentBridgeConnectionSheet(model: model))
+    let isDark = presenter.traitCollection.userInterfaceStyle == .dark
+    let host = UIHostingController(
+      rootView: AgentBridgeConnectionSheet(model: model)
+        .preferredColorScheme(isDark ? .dark : .light)
+    )
+    host.view.backgroundColor = .clear
+    host.view.tintColor = isDark ? .white : .black
+    host.overrideUserInterfaceStyle = isDark ? .dark : .light
     host.modalPresentationStyle = .pageSheet
     if let sheet = host.sheetPresentationController {
-      sheet.detents = [.large()]
-      sheet.selectedDetentIdentifier = .large
+      sheet.detents = [.medium(), .large()]
+      sheet.selectedDetentIdentifier = .medium
       sheet.prefersGrabberVisible = true
-      sheet.preferredCornerRadius = 28
+      sheet.preferredCornerRadius = 22
     }
     presenter.present(host, animated: true)
   }
@@ -59,75 +66,56 @@ struct AgentBridgeConnectionSheet: View {
 
   private var palette: AppThemePalette { AppThemePalette.resolve(for: colorScheme) }
 
+  private var rowFill: Color {
+    colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.04)
+  }
+
+  private var transportPreferenceText: String {
+    switch transportPreference {
+    case .auto: return "Auto"
+    case .local: return "Local"
+    case .cloud: return "Cloud"
+    }
+  }
+
+  private var transportPreferenceIcon: String {
+    switch transportPreference {
+    case .auto: return "arrow.triangle.2.circlepath"
+    case .local: return "wifi"
+    case .cloud: return "cloud"
+    }
+  }
+
+  private var sheetTint: Color {
+    colorScheme == .dark ? Color.white : Color.black
+  }
+
   var body: some View {
     NavigationStack {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-          VStack(alignment: .leading, spacing: 7) {
-            Text("\(model.displayName) computer")
-              .font(.system(size: 28, weight: .bold))
-              .foregroundStyle(palette.text)
-            Text("\(model.displayName) runs on your own computer with your own subscription. Pair once, then keep using the same Mac from your phone.")
-              .font(.system(size: 15))
-              .foregroundStyle(palette.secondaryText)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-
-          connectionCard
-
-          transportCard
-
-          VStack(alignment: .leading, spacing: 11) {
-            infoRow(
-              icon: "lock.shield",
-              title: "Private by default",
-              body: "Pairing is revocable and only your account can authorize a computer."
+      List {
+        Section {
+          if model.status.connected, let device = model.status.devices.first {
+            statusRow(
+              icon: "laptopcomputer",
+              title: device.label,
+              subtitle: "Connected",
+              subtitleColor: .green,
+              showsDot: true
             )
-            infoRow(
-              icon: "qrcode.viewfinder",
-              title: "Scan the bridge QR",
-              body: "On your Mac, run the bridge command. It prints a QR code; scanning it here opens the camera view."
+          } else if model.status.paired {
+            statusRow(
+              icon: "laptopcomputer.slash",
+              title: model.status.devices.first?.label ?? "Your computer",
+              subtitle: "Paired — bridge offline",
+              subtitleColor: palette.secondaryText
             )
-            infoRow(
-              icon: "arrow.triangle.2.circlepath",
-              title: model.status.paired || model.status.connected ? "Reconnect anytime" : "Connect once",
-              body: model.status.paired || model.status.connected
-                ? "Reconnect scans a fresh QR without changing your chat history or selected repository."
-                : "After pairing, the app waits for the bridge daemon to come online."
+          } else {
+            statusRow(
+              icon: "laptopcomputer.slash",
+              title: "No computer connected",
+              subtitle: "Pair one to start",
+              subtitleColor: palette.secondaryText
             )
-          }
-
-          if model.status.paired || model.status.connected {
-            Button(role: .destructive) {
-              disconnect()
-            } label: {
-              Label("Disconnect current computer", systemImage: "xmark.circle")
-                .font(.system(size: 15, weight: .semibold))
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .disabled(isWorking)
-            .padding(14)
-            .background(
-              RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(palette.card)
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(palette.border.opacity(0.8), lineWidth: 0.7)
-            )
-          }
-
-          if let errorMessage {
-            Text(errorMessage)
-              .font(.system(size: 13))
-              .foregroundStyle(palette.danger)
-              .fixedSize(horizontal: false, vertical: true)
-              .padding(14)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                  .fill(palette.danger.opacity(0.10))
-              )
           }
 
           Button {
@@ -136,35 +124,122 @@ struct AgentBridgeConnectionSheet: View {
             HStack(spacing: 10) {
               if model.isAuthorizing || isWorking {
                 ProgressView()
-                  .tint(.white)
+                  .tint(sheetTint)
               } else {
                 Image(systemName: "qrcode.viewfinder")
-                  .font(.system(size: 18, weight: .semibold))
+                  .font(.system(size: 17, weight: .semibold))
               }
               Text(model.status.paired || model.status.connected ? "Scan QR to reconnect" : "Scan QR to connect")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
             }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-            .frame(height: 52)
-            .background(palette.accent)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .frame(maxWidth: .infinity, alignment: .center)
           }
           .disabled(isWorking || model.isAuthorizing)
-          .padding(.top, 2)
-          .padding(.bottom, 18)
+          .foregroundColor(sheetTint)
+        } header: {
+          Text("Computer")
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 18)
+        .listRowBackground(rowFill)
+
+        Section {
+          HStack {
+            Text("Connection")
+              .font(.system(size: 16, weight: .regular))
+              .foregroundStyle(palette.text)
+            Spacer()
+            Menu {
+              Button {
+                transportPreference = .auto
+                AgentBridgeTransport.preference = .auto
+                LanBridgeService.shared.applyPreference(.auto)
+              } label: {
+                Label("Auto", systemImage: "arrow.triangle.2.circlepath")
+              }
+              Button {
+                transportPreference = .local
+                AgentBridgeTransport.preference = .local
+                LanBridgeService.shared.applyPreference(.local)
+              } label: {
+                Label("Local", systemImage: "wifi")
+              }
+              Button {
+                transportPreference = .cloud
+                AgentBridgeTransport.preference = .cloud
+                LanBridgeService.shared.applyPreference(.cloud)
+              } label: {
+                Label("Cloud", systemImage: "cloud")
+              }
+            } label: {
+              HStack(spacing: 6) {
+                Image(systemName: transportPreferenceIcon)
+                  .font(.system(size: 14, weight: .medium))
+                Text(transportPreferenceText)
+                Image(systemName: "chevron.up.chevron.down")
+                  .font(.system(size: 11, weight: .bold))
+              }
+              .font(.system(size: 15, weight: .medium))
+              .foregroundStyle(sheetTint)
+            }
+          }
+
+          HStack(spacing: 9) {
+            lanStatusIndicator
+            Text(lanStatusText)
+              .font(.system(size: 13.5, weight: .medium))
+              .foregroundStyle(palette.text)
+              .lineLimit(1)
+            Spacer(minLength: 0)
+          }
+          .padding(.vertical, 2)
+        } header: {
+          Text("Connection")
+        }
+        .listRowBackground(rowFill)
+
+        if let errorMessage {
+          Section {
+            Text(errorMessage)
+              .font(.system(size: 13))
+              .foregroundStyle(palette.danger)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          .listRowBackground(rowFill)
+        }
+
+        if model.status.paired || model.status.connected {
+          Section {
+            Button(role: .destructive) {
+              disconnect()
+            } label: {
+              HStack(spacing: 10) {
+                Image(systemName: "xmark.circle")
+                  .font(.system(size: 17, weight: .semibold))
+                Text("Disconnect computer")
+                  .font(.system(size: 16, weight: .semibold))
+              }
+              .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .disabled(isWorking)
+            .foregroundColor(palette.danger)
+          }
+          .listRowBackground(rowFill)
+        }
       }
-      .background(palette.background.ignoresSafeArea())
+      .listStyle(.insetGrouped)
+      .scrollContentBackground(.hidden)
+      .background(Color.clear)
+      .navigationTitle("\(model.displayName) computer")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
           Button("Done") { dismiss() }
         }
       }
+      .tint(sheetTint)
     }
+    .presentationDetents([.medium, .large])
+    .presentationDragIndicator(.visible)
+    .presentationBackground(.ultraThinMaterial)
     .onAppear {
       model.startPolling()
       // Kick off local-network discovery of the paired Mac. First run here triggers the
@@ -191,123 +266,32 @@ struct AgentBridgeConnectionSheet: View {
     }
   }
 
+  /// A quiet spinner while the link is coming up, a green dot when it's direct, and a
+  /// muted dot otherwise — no wording needed to read the state at a glance.
   @ViewBuilder
-  private var connectionCard: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Computer")
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(palette.secondaryText)
-      if model.status.connected, let device = model.status.devices.first {
-        statusRow(
-          icon: "laptopcomputer",
-          title: device.label,
-          subtitle: "Connected",
-          subtitleColor: .green,
-          showsDot: true
-        )
-      } else if model.status.paired {
-        statusRow(
-          icon: "laptopcomputer.slash",
-          title: model.status.devices.first?.label ?? "Your computer",
-          subtitle: "Paired — bridge offline",
-          subtitleColor: palette.secondaryText
-        )
-      } else {
-        statusRow(
-          icon: "laptopcomputer.slash",
-          title: "No computer connected",
-          subtitle: "Pair one to start",
-          subtitleColor: palette.secondaryText
-        )
-      }
-    }
-    .padding(16)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 20, style: .continuous)
-        .fill(palette.card)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 20, style: .continuous)
-        .stroke(palette.border.opacity(0.75), lineWidth: 0.7)
-    )
-  }
-
-  // Auto / Local / Cloud transport control. Auto uses the direct Wi-Fi link to the Mac when
-  // reachable and the cloud relay otherwise; the status line reflects live LAN discovery.
-  @ViewBuilder
-  private var transportCard: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Connection")
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(palette.secondaryText)
-
-      Picker("Connection", selection: $transportPreference) {
-        Text("Auto").tag(AgentBridgeTransportPreference.auto)
-        Text("Local").tag(AgentBridgeTransportPreference.local)
-        Text("Cloud").tag(AgentBridgeTransportPreference.cloud)
-      }
-      .pickerStyle(.segmented)
-      .onChange(of: transportPreference) { newValue in
-        AgentBridgeTransport.preference = newValue
-        LanBridgeService.shared.applyPreference(newValue)
-      }
-
-      HStack(spacing: 8) {
-        Circle()
-          .fill(lanStatusColor)
-          .frame(width: 8, height: 8)
-        Text(lanStatusText)
-          .font(.system(size: 13, weight: .medium))
-          .foregroundStyle(palette.text)
-      }
-
-      Text(transportHintText)
-        .font(.system(size: 12))
-        .foregroundStyle(palette.secondaryText)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .padding(16)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 20, style: .continuous)
-        .fill(palette.card)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 20, style: .continuous)
-        .stroke(palette.border.opacity(0.75), lineWidth: 0.7)
-    )
-  }
-
-  private var lanStatusColor: Color {
+  private var lanStatusIndicator: some View {
     switch lanState {
-    case .authenticated: return .green
-    case .found, .connecting: return .orange
-    case .failed: return palette.danger
-    default: return palette.secondaryText.opacity(0.6)
+    case .searching, .found, .connecting:
+      ProgressView()
+        .controlSize(.mini)
+        .tint(palette.secondaryText)
+    case .authenticated:
+      Circle().fill(Color.green).frame(width: 8, height: 8)
+    default:
+      Circle().fill(palette.secondaryText.opacity(0.5)).frame(width: 8, height: 8)
     }
   }
 
+  /// Short, human, jargon-free. Traffic always rides the cloud when there's no direct
+  /// link, so anything that isn't a live direct link simply reads "Cloud".
   private var lanStatusText: String {
     switch lanState {
-    case .unavailable: return "Local link needs the sync key"
-    case .idle: return transportPreference == .cloud ? "Cloud relay (Local off)" : "Local link idle"
-    case .searching: return "Searching for your Mac on Wi-Fi…"
-    case .found(let name): return "Found \(name) — connecting…"
-    case .connecting: return "Connecting to your Mac…"
-    case .authenticated(let name): return "Local link ready · \(name)"
-    case .failed: return "Local link unavailable — using cloud"
-    }
-  }
-
-  private var transportHintText: String {
-    switch transportPreference {
-    case .auto:
-      return "Uses the direct Wi-Fi link to your Mac when you're on the same network, and the cloud relay when you're away."
-    case .local:
-      return "Direct to your Mac on the same Wi-Fi only — fastest and most private. Won't connect when you're away."
-    case .cloud:
-      return "Always via the cloud relay. Works from anywhere, at the cost of a round-trip through the server."
+    case .authenticated(let name): return "Direct · \(name)"
+    case .searching: return "Looking for your Mac…"
+    case .found(let name): return "Connecting to \(name)…"
+    case .connecting: return "Connecting…"
+    case .idle: return transportPreference == .cloud ? "Cloud" : "Ready"
+    case .failed, .unavailable: return "Cloud"
     }
   }
 
@@ -321,7 +305,7 @@ struct AgentBridgeConnectionSheet: View {
     HStack(spacing: 12) {
       Image(systemName: icon)
         .font(.system(size: 20, weight: .medium))
-        .foregroundStyle(palette.accent)
+        .foregroundStyle(palette.text.opacity(0.85))
         .frame(width: 28)
       VStack(alignment: .leading, spacing: 3) {
         Text(title)
@@ -340,23 +324,6 @@ struct AgentBridgeConnectionSheet: View {
     .padding(.vertical, 2)
   }
 
-  private func infoRow(icon: String, title: String, body: String) -> some View {
-    HStack(alignment: .top, spacing: 12) {
-      Image(systemName: icon)
-        .font(.system(size: 16, weight: .semibold))
-        .foregroundStyle(palette.accent)
-        .frame(width: 22, height: 22)
-      VStack(alignment: .leading, spacing: 3) {
-        Text(title)
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(palette.text)
-        Text(body)
-          .font(.system(size: 13))
-          .foregroundStyle(palette.secondaryText)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-    }
-  }
 
   private func disconnect() {
     guard let config = AppSessionConfig.current else {
@@ -391,6 +358,11 @@ struct AgentBridgeHistorySession: Identifiable, Hashable {
   let isRunning: Bool
   let taskId: String?
   let sessionId: String?
+  /// Bridge-reported model id for this session (live task or archived transcript).
+  var model: String? = nil
+  /// Bridge-reported thinking/reasoning effort (`low`…`max`). Nil when unknown —
+  /// never invent a mobile default for archived rows.
+  var reasoningEffort: String? = nil
   /// Non-nil when this session's run is blocked on a still-pending ask/command
   /// approval ("ask" | "command" | "plan") — the bridge badges it in the list reply.
   var pendingAskKind: String? = nil
@@ -413,6 +385,46 @@ struct AgentBridgeHistorySession: Identifiable, Hashable {
     let path = projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
     if !path.isEmpty { return URL(fileURLWithPath: path).lastPathComponent }
     return "Computer"
+  }
+
+  /// Compact human label for the history row, e.g. `Opus 4.6 · High Thinking`.
+  /// Omits the thinking segment when effort is missing or unmapped.
+  func configurationLabel(provider: String) -> String? {
+    AgentBridgeSessionConfiguration.compactLabel(
+      provider: provider,
+      model: model,
+      reasoningEffort: reasoningEffort
+    )
+  }
+}
+
+/// Shared formatter for bridge-reported model + thinking effort.
+enum AgentBridgeSessionConfiguration {
+  /// `Opus 4.6 · High Thinking` / `GPT-5.6 · Medium Thinking` / model-only when effort unknown.
+  static func compactLabel(
+    provider: String,
+    model: String?,
+    reasoningEffort: String?
+  ) -> String? {
+    let modelId = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let modelPart: String? = {
+      guard !modelId.isEmpty else { return nil }
+      let title = AgentBridgeSelectionStore.modelTitle(provider: provider, model: modelId)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      return title.isEmpty ? modelId : title
+    }()
+    let effortPart: String? = {
+      guard let level = AgentBridgeIntelligenceLevel.fromProviderEffort(reasoningEffort) else {
+        return nil
+      }
+      return "\(level.title) Thinking"
+    }()
+    switch (modelPart, effortPart) {
+    case let (m?, e?): return "\(m) · \(e)"
+    case let (m?, nil): return m
+    case let (nil, e?): return e
+    default: return nil
+    }
   }
 }
 
@@ -652,6 +664,11 @@ struct AgentBridgeHistoryInlineView: View {
   @State private var loading = true
   @State private var errorMessage: String?
   @State private var pendingRequestId: String?
+  /// Connection notifications and SwiftUI lifecycle updates can arrive together when
+  /// History opens. Keep one list request active so they do not fan out into dozens of
+  /// identical bridge reads before the first reply settles the view.
+  @State private var listRequestInFlight = false
+  @State private var lastListRequestAt: Date?
   
   @State private var requestStartAt: Date?
   @State private var hasReceivedResponse = false
@@ -716,7 +733,9 @@ struct AgentBridgeHistoryInlineView: View {
 
   var body: some View {
     Group {
-      if visibleSessions.isEmpty && (loading || isCheckingConnection) {
+      // Do not expose a lone synthetic running-task row while the real history
+      // list is still loading. That caused the visible one-row → full-list jump.
+      if sessions.isEmpty && (loading || isCheckingConnection) {
         AgentBridgeHistoryListSkeleton()
       } else if visibleSessions.isEmpty {
         // Empty state (only after we've actually checked — see isCheckingConnection)
@@ -801,7 +820,7 @@ struct AgentBridgeHistoryInlineView: View {
         hasConnectedBefore = true
         resolvedConnected = true
         // Connection just came in — if we had an error or empty state, retry.
-        if visibleSessions.isEmpty || errorMessage != nil {
+        if sessions.isEmpty || errorMessage != nil {
           requestList()
         }
       }
@@ -886,11 +905,14 @@ struct AgentBridgeHistoryInlineView: View {
   /// Re-opening the history must NOT flash the skeleton when we already have rows.
   /// Seed from the last payload the engine cached, then refresh quietly in place.
   private func seedThenRefresh() {
-    if visibleSessions.isEmpty,
-      let payload = ChatEngine.shared.latestAgentBridgeHistory(chatId: chatId),
+    if sessions.isEmpty,
+      let payload = ChatEngine.shared.latestAgentBridgeHistoryList(
+        chatId: chatId,
+        provider: provider
+      ),
       (payload["mode"] as? String ?? "list") == "list"
     {
-      let cached = (payload["sessions"] as? [[String: Any]] ?? []).compactMap { Self.parseSession($0) }
+      let cached = Self.sessionItems(from: payload["sessions"]).compactMap { Self.parseSession($0) }
       if !cached.isEmpty {
         sessions = cached
         loading = false
@@ -927,10 +949,19 @@ struct AgentBridgeHistoryInlineView: View {
                 .controlSize(.small)
                 .tint(.green)
             }
-            Text(session.topic)
-              .font(.system(size: 18, weight: .regular))
-              .foregroundStyle(palette.text)
-              .lineLimit(2)
+            if let topic = visibleTopic(session.topic) {
+              Text(topic)
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(palette.text)
+                .lineLimit(2)
+            }
+          }
+          if let config = session.configurationLabel(provider: provider) {
+            Text(config)
+              .font(.system(size: 12.5, weight: .medium))
+              .foregroundStyle(palette.secondaryText)
+              .lineLimit(1)
+              .accessibilityLabel("Session configuration: \(config)")
           }
           HStack(spacing: 6) {
             // A run blocked on an Approve/Deny (ask/command/plan) outranks the plain
@@ -967,7 +998,35 @@ struct AgentBridgeHistoryInlineView: View {
     .buttonStyle(.plain)
   }
 
+  /// Hide transport/action copy that older payloads used as a synthetic title. It is
+  /// not conversation history and should never become a visible fallback row label.
+  private func visibleTopic(_ raw: String) -> String? {
+    let topic = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !topic.isEmpty else { return nil }
+    let normalized = topic.lowercased()
+    if normalized == "load session in chat" || normalized == "load this session in chat" {
+      return nil
+    }
+    return topic
+  }
+
   private func requestList() {
+    let now = Date()
+    if listRequestInFlight {
+      // A missing reply must still be recoverable; anything newer is the same load.
+      if let started = requestStartAt, now.timeIntervalSince(started) < 8.0 {
+        return
+      }
+      listRequestInFlight = false
+    }
+    // A few adjacent lifecycle callbacks can arrive after a reply. One short cooldown
+    // keeps those callbacks from immediately issuing another identical list request.
+    if let previous = lastListRequestAt, now.timeIntervalSince(previous) < 0.75 {
+      return
+    }
+    listRequestInFlight = true
+    lastListRequestAt = now
+
     // Only show the skeleton on a cold load. With rows already on screen (cached or a
     // prior fetch) we refresh silently so re-opening never flashes back to a spinner.
     if visibleSessions.isEmpty { loading = true }
@@ -993,25 +1052,28 @@ struct AgentBridgeHistoryInlineView: View {
       // is deliberately wider than a cold read of a large ~/.claude/projects so we don't
       // mint a fresh requestId (and a duplicate bridge read) while a reply is in flight.
       DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) {
-        if self.loading && !self.hasReceivedResponse && self.requestStartAt == start {
+        if !self.hasReceivedResponse && self.requestStartAt == start {
           print("[AgentBridgeHistory] ⚠️ Timed out waiting for response! Retrying...")
+          self.listRequestInFlight = false
           self.requestList()
         }
       }
     } else if notReadyRetries < Self.maxNotReadyRetries {
-      // The push was refused because the transport/bridge topic isn't joined YET (a cold
-      // launch connects async) — NOT because the computer is offline. Hold the skeleton
-      // and retry as the transport warms up, instead of flashing a disconnected/empty
-      // state the user has to escape by reopening the panel. Give up (surface the real
-      // not-connected message) only after several attempts.
+      // `requestAgentBridgeHistory` initiates the chat-topic join when needed.
+      // Wait for the positive JOIN notification and retry immediately from there;
+      // the delayed retry is only a fallback if that notification is lost.
       notReadyRetries += 1
-      loading = visibleSessions.isEmpty
-      print("[AgentBridgeHistory] ⏳ Transport not ready (attempt \(notReadyRetries)) — keeping skeleton, retrying")
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+      loading = sessions.isEmpty
+      listRequestInFlight = false
+      lastListRequestAt = nil
+      let reason = (result["reason"] as? String) ?? "not_ready"
+      print("[AgentBridgeHistory] ⏳ Waiting for chat topic join (attempt \(notReadyRetries), reason=\(reason))")
+      DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
         guard self.requestStartAt == start, !self.hasReceivedResponse else { return }
         self.requestList()
       }
     } else {
+      listRequestInFlight = false
       loading = false
       errorMessage = "Your computer isn't connected right now. Connect it, then try again."
     }
@@ -1025,11 +1087,22 @@ struct AgentBridgeHistoryInlineView: View {
     // now that the transport is usable. Guarded so it only rescues a STALLED load: skip while
     // a retry cycle is mid-flight (`loading`) so the connection flap can't spawn parallel
     // request chains, and skip once we already have a reply (`hasReceivedResponse`).
-    if reason == "chatChannelStateChanged" || reason == "connectionStateChanged" {
+    if reason == "chatChannelStateChanged" {
       let changed = (note.userInfo?["chatId"] as? String)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
       let mine = changed == nil || changed?.isEmpty == true || changed == chatId
-      if mine, !loading, (errorMessage != nil || !hasReceivedResponse) {
+      if mine, !hasReceivedResponse, !listRequestInFlight {
+        // Older transports may still reject instead of queueing. In that fallback
+        // case, a successful JOIN is the earliest safe moment to retry.
+        notReadyRetries = 0
+        lastListRequestAt = nil
+        print("[AgentBridgeHistory] ⚡️ Chat topic joined — requesting list now")
+        requestList()
+      }
+      return
+    }
+    if reason == "connectionStateChanged" {
+      if !loading, errorMessage != nil || !hasReceivedResponse {
         notReadyRetries = 0
         requestList()
       }
@@ -1038,7 +1111,10 @@ struct AgentBridgeHistoryInlineView: View {
     guard
       let info = note.userInfo,
       (info["reason"] as? String) == "agentBridgeHistory",
-      let payload = ChatEngine.shared.latestAgentBridgeHistory(chatId: chatId)
+      let payload = ChatEngine.shared.latestAgentBridgeHistoryList(
+        chatId: chatId,
+        provider: provider
+      )
     else { return }
 
     // A `detail` (transcript) reply is cached under the SAME chatId key, so the
@@ -1076,32 +1152,85 @@ struct AgentBridgeHistoryInlineView: View {
     hasReceivedResponse = true
     loading = false
     notReadyRetries = 0
+    listRequestInFlight = false
     pendingRequestId = nil
-    let raw = payload["sessions"] as? [[String: Any]] ?? []
+    let raw = Self.sessionItems(from: payload["sessions"])
     sessions = raw.compactMap { item in
       Self.parseSession(item)
     }
+    let rowSummary = sessions.prefix(3).map { session in
+      "\(session.id.prefix(8)){count=\(session.messageCount),live=\(session.isRunning ? "Y" : "N"),title=\(session.topic.prefix(48))}"
+    }.joined(separator: " | ")
+    let taskSummary = runningTasks
+      .filter { task in
+        let taskProvider = task.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let providerMatches = taskProvider.isEmpty || taskProvider == provider.lowercased()
+        let chatMatches = task.chatId.isEmpty || chatId.isEmpty || task.chatId == chatId
+        return providerMatches && chatMatches
+      }
+      .map { task in
+        let sessionId = task.sessionId?.isEmpty == false ? task.sessionId! : "-"
+        let matched = sessions.contains(where: { $0.id == sessionId })
+        return "\(task.taskId.prefix(12)){session=\(sessionId.prefix(8)),matched=\(matched ? "Y" : "N"),title=\(task.topic.prefix(48))}"
+      }
+      .joined(separator: " | ")
+    print(
+      "[AgentBridgeHistory] 📋 Parsed rows=\(sessions.count) tasks=\(runningTasks.count) " +
+        "top=[\(rowSummary)] taskLinks=[\(taskSummary)]"
+    )
     if sessions.isEmpty && (payload["ok"] as? Bool) == false {
       errorMessage = (payload["error"] as? String) ?? "Couldn't read history from your computer."
     }
   }
 
   private func mergedSessions() -> [AgentBridgeHistorySession] {
+    let listedById = Dictionary(
+      sessions.map { ($0.id, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    func firstText(_ values: String?...) -> String {
+      for value in values {
+        let text = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !text.isEmpty { return text }
+      }
+      return ""
+    }
     let running = runningTasks.compactMap { task -> AgentBridgeHistorySession? in
       let normalizedProvider = task.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
       if !normalizedProvider.isEmpty && normalizedProvider != provider.lowercased() { return nil }
       if !task.chatId.isEmpty && !chatId.isEmpty && task.chatId != chatId { return nil }
       let id = task.sessionId?.isEmpty == false ? task.sessionId! : "running:\(task.taskId)"
+      let listed = listedById[id]
+      // Live task model/effort wins when present; otherwise keep archived metadata.
+      let mergedModel = firstText(task.model, listed?.model)
+      let mergedEffort = firstText(task.effectiveReasoningEffort, listed?.reasoningEffort)
       return AgentBridgeHistorySession(
         id: id,
-        topic: task.topic,
-        projectName: task.projectName ?? task.repoName ?? "",
-        projectPath: task.project ?? task.cwd ?? "",
-        updatedAt: task.startedAt ?? "",
-        messageCount: 0,
+        // A matching history row is the conversation source of truth: it carries
+        // the original user-derived title and parsed message count. The running
+        // status overlay should add live metadata, never replace those fields with
+        // a transient progress label and zero messages.
+        topic: firstText(listed?.topic, task.topic, "Running task"),
+        projectName: firstText(
+          listed?.projectName,
+          task.projectName,
+          task.repoName
+        ),
+        projectPath: firstText(
+          listed?.projectPath,
+          task.project,
+          task.cwd
+        ),
+        updatedAt: firstText(task.startedAt, listed?.updatedAt),
+        // Even before the rollout file is visible, a running task already has its
+        // originating user prompt. Never paint the misleading "0 messages" state.
+        messageCount: max(1, listed?.messageCount ?? 0),
         isRunning: true,
         taskId: task.taskId,
-        sessionId: task.sessionId
+        sessionId: task.sessionId,
+        model: mergedModel.isEmpty ? nil : mergedModel,
+        reasoningEffort: mergedEffort.isEmpty ? nil : mergedEffort,
+        pendingAskKind: listed?.pendingAskKind
       )
     }
     // A running-task entry shadows its badged list twin (dedup below keeps the running
@@ -1136,6 +1265,12 @@ struct AgentBridgeHistoryInlineView: View {
     // desktop's own terminal, which never enter the bridge's runningTasks list.
     // Honor either key so older bridges (no `live`) still parse.
     let live = (item["live"] as? Bool) ?? (item["isRunning"] as? Bool) ?? false
+    let model = Self.nonEmptyString(item["model"])
+    let reasoningEffort = Self.nonEmptyString(
+      item["reasoningEffort"]
+        ?? item["reasoning_effort"]
+        ?? item["agentBridgeReasoningEffort"]
+    )
     return AgentBridgeHistorySession(
       id: id,
       topic: (item["topic"] as? String) ?? "Untitled",
@@ -1146,12 +1281,45 @@ struct AgentBridgeHistoryInlineView: View {
       isRunning: live,
       taskId: nil,
       sessionId: id,
+      model: model,
+      reasoningEffort: reasoningEffort,
       pendingAskKind: {
         let kind = ((item["pendingAskKind"] as? String) ?? "")
           .trimmingCharacters(in: .whitespacesAndNewlines)
         return kind.isEmpty ? nil : kind
       }()
     )
+  }
+
+  private static func nonEmptyString(_ value: Any?) -> String? {
+    if let text = value as? String {
+      let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? nil : trimmed
+    }
+    if let number = value as? NSNumber {
+      let text = number.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+      return text.isEmpty ? nil : text
+    }
+    return nil
+  }
+
+  /// `JSONSerialization` normally bridges a nested list directly to
+  /// `[[String: Any]]`, but Foundation can surface Phoenix payload arrays as
+  /// `[Any]`/`NSDictionary` on a physical device. Normalize both shapes before
+  /// parsing so a valid bridge reply never leaves the History sheet on its skeleton.
+  static func sessionItems(from raw: Any?) -> [[String: Any]] {
+    if let sessions = raw as? [[String: Any]] { return sessions }
+    guard let values = raw as? [Any] else { return [] }
+    return values.compactMap { value in
+      if let session = value as? [String: Any] { return session }
+      guard let dictionary = value as? NSDictionary else { return nil }
+      var session: [String: Any] = [:]
+      for (key, value) in dictionary {
+        guard let key = key as? String else { continue }
+        session[key] = value
+      }
+      return session.isEmpty ? nil : session
+    }
   }
 
   static func relativeDate(_ iso: String) -> String? {
@@ -1252,6 +1420,8 @@ struct AgentBridgeRuntimeView: UIViewControllerRepresentable {
     )
     controller.agentBridgeChatId = chatId
     controller.agentBridgeProvider = provider
+    controller.runModel = session.model
+    controller.runReasoningEffort = session.reasoningEffort
     controller.avatarTitle = AgentBridgeProfile.displayName(for: provider)
     controller.avatarChatId = chatId
     controller.onNewChat = { [weak coordinator] in coordinator?.startNewChat() }
@@ -1303,6 +1473,12 @@ struct AgentBridgeRuntimeView: UIViewControllerRepresentable {
       metadata["agentBridgeRepoName"] = repo.name
       metadata["agentBridgeRepoPath"] = repo.path
       metadata["agentBridgeCwd"] = repo.cwd
+      if let computerId = repo.computerId, !computerId.isEmpty {
+        metadata["agentBridgeComputerId"] = computerId
+      }
+      if let computerLabel = repo.computerLabel, !computerLabel.isEmpty {
+        metadata["agentBridgeComputerLabel"] = computerLabel
+      }
     }
     metadata["agentBridgeWorkMode"] = AgentBridgeSelectionStore.selectedWorkMode().rawValue
     metadata.merge(

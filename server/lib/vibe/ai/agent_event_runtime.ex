@@ -1,5 +1,8 @@
 defmodule Vibe.AI.AgentEventRuntime do
-  @moduledoc false
+  @moduledoc """
+  Event-inbox runtime for provider agent events, including progressive `message.stream`
+  delivery.
+  """
 
   import Ecto.Query, warn: false
   import Plug.Crypto, only: [secure_compare: 2]
@@ -15,37 +18,453 @@ defmodule Vibe.AI.AgentEventRuntime do
   alias Vibe.AgentRun
   alias Vibe.AgentRunbook
   alias Vibe.Agents
+  alias Vibe.AI.AgentDecisions
   alias Vibe.Chat
   alias Vibe.Chat.AgentMessageCrypto
+  alias Vibe.Chat.Message
   alias Vibe.Notifications
+  alias Vibe.ProviderContent
   alias Vibe.Repo
+  alias Vibe.RepoRLS
 
   @safe_action_types ~w[post_message post_checklist request_confirmation set_thread_status]
   @high_priority_keywords ~w[failed failure blocked fraud urgent escalated chargeback liquidation stop_loss]
   @batch_summary_event_line_limit 12
+  @stream_table :vibe_agent_event_streams
+  @stream_event_type "message.stream"
+  @max_event_params_bytes 512 * 1024
+  @max_stream_params_bytes 256 * 1024
+  @max_rich_text_chars 32_000
+  @max_attachment_count 10
+  @max_attachment_url_chars 2_048
 
   def ingest(%Agent{} = agent, params, opts \\ []) when is_map(params) do
     secret = Keyword.get(opts, :secret)
+    event_type = normalize_string(params["eventType"] || params["event_type"])
 
     Logger.info(
       "[InboxBanner] ingest agent_id=#{inspect(agent.id)} " <>
         "raw_approval_rules_event_inbox=#{inspect(get_in(agent.approval_rules || %{}, ["event_inbox"]))} " <>
-        "params_event_type=#{inspect(Map.get(params, "eventType") || Map.get(params, :eventType))}"
+        "params_event_type=#{inspect(event_type)}"
     )
 
-    with {:ok, integration} <- resolve_integration(agent, params, secret),
-         {:ok, normalized} <- normalize_event(agent, integration, params),
-         :ok <- ensure_destination_chat(agent, normalized.destination_chat_id),
-         {:ok, result} <- persist_event(agent, integration, normalized) do
-      Logger.info(
-        "[InboxBanner] ingest result agent_id=#{inspect(agent.id)} " <>
-          "decision=#{inspect(Map.get(result, :decision))} " <>
-          "messagePosted=#{inspect(Map.get(result, :messagePosted))} " <>
-          "status=#{inspect(Map.get(result, :status))}"
-      )
+    with {:ok, integration} <- resolve_integration(agent, params, secret) do
+      if event_type == @stream_event_type do
+        handle_message_stream(agent, integration, params)
+      else
+        with {:ok, normalized} <- normalize_event(agent, integration, params),
+             :ok <- ensure_destination_chat(agent, normalized.destination_chat_id),
+             :ok <- ensure_event_trigger(agent, normalized.destination_chat_id),
+             {:ok, result} <- persist_event(agent, integration, normalized) do
+          Logger.info(
+            "[InboxBanner] ingest result agent_id=#{inspect(agent.id)} " <>
+              "decision=#{inspect(Map.get(result, :decision))} " <>
+              "messagePosted=#{inspect(Map.get(result, :messagePosted))} " <>
+              "status=#{inspect(Map.get(result, :status))}"
+          )
 
-      {:ok, result}
+          {:ok, result}
+        end
+      end
     end
+  end
+
+  # ── message.stream pure helpers (public for unit tests; no DB) ─────────────
+
+  @doc """
+  Normalize a `message.stream` params map into a frame struct.
+  """
+  def normalize_stream_params(params) when is_map(params) do
+    stream_id = normalize_string(params["streamId"] || params["stream_id"])
+    seq = normalize_integer(params["seq"])
+    text = normalize_rich_text(params["text"] || params["message"]) || ""
+
+    content =
+      cond do
+        is_map(params["content"]) -> params["content"]
+        is_map(params["providerContent"]) -> params["providerContent"]
+        true -> nil
+      end
+
+    done = normalize_boolean(params["done"]) == true
+
+    destination_chat_id =
+      normalize_string(params["destinationChatId"] || params["destination_chat_id"])
+
+    cond do
+      not json_size_within?(params, @max_stream_params_bytes) ->
+        {:error, :stream_payload_too_large}
+
+      is_nil(stream_id) ->
+        {:error, :missing_stream_id}
+
+      is_nil(seq) ->
+        {:error, :missing_seq}
+
+      true ->
+        {:ok,
+         %{
+           stream_id: stream_id,
+           seq: seq,
+           text: text,
+           content: content,
+           done: done,
+           destination_chat_id: destination_chat_id
+         }}
+    end
+  end
+
+  def normalize_stream_params(_), do: {:error, :missing_stream_id}
+
+  @doc """
+  Pure stream-frame state machine.
+  """
+  def stream_frame_decision(nil, %{seq: seq, done: false} = frame) when is_integer(seq) do
+    {:create, %{message_id: nil, last_seq: seq, done: false}, frame}
+  end
+
+  def stream_frame_decision(nil, %{seq: seq, done: true} = frame) when is_integer(seq) do
+    {:create_finalize, %{message_id: nil, last_seq: seq, done: true}, frame}
+  end
+
+  def stream_frame_decision(%{done: true}, _frame) do
+    {:ignore, :stream_done}
+  end
+
+  def stream_frame_decision(%{last_seq: last_seq}, %{seq: seq})
+      when is_integer(last_seq) and is_integer(seq) and seq <= last_seq do
+    {:ignore, :stale_seq}
+  end
+
+  def stream_frame_decision(%{} = state, %{seq: seq, done: false} = frame)
+      when is_integer(seq) do
+    {:update, %{state | last_seq: seq, done: false}, frame}
+  end
+
+  def stream_frame_decision(%{} = state, %{seq: seq, done: true} = frame)
+      when is_integer(seq) do
+    {:finalize, %{state | last_seq: seq, done: true}, frame}
+  end
+
+  def stream_frame_decision(_state, _frame), do: {:ignore, :invalid_frame}
+
+  @doc """
+  Pure final-frame content handling.
+  """
+  def finalize_stream_content(text, nil) when is_binary(text), do: {:ok, text, nil}
+
+  def finalize_stream_content(text, content) when is_binary(text) and is_map(content) do
+    case ProviderContent.parse(content) do
+      {:ok, normalized} ->
+        attrs = ProviderContent.to_message_attrs(normalized)
+        body = normalize_string(attrs["text"]) || text
+        {:ok, body, normalized}
+
+      {:error, reason} ->
+        {:error, {:invalid_content, reason}, text}
+    end
+  end
+
+  def finalize_stream_content(text, _) when is_binary(text), do: {:ok, text, nil}
+
+  def finalize_stream_content(text, content) do
+    finalize_stream_content(to_string(text || ""), content)
+  end
+
+  @doc """
+  Normalizes event attachments from both the legacy top-level field and the
+  provider event payload's `data.attachments` field.
+  """
+  def normalize_event_attachments(params) when is_map(params) do
+    payload = params["data"] || params["payload"] || %{}
+
+    List.wrap(params["attachments"])
+    |> Kernel.++(List.wrap(payload["attachments"] || payload[:attachments]))
+    |> normalize_attachments()
+  end
+
+  def normalize_event_attachments(_), do: %{"items" => []}
+
+
+  defp handle_message_stream(%Agent{} = agent, integration, params) do
+    ensure_stream_table!()
+
+    with {:ok, frame0} <- normalize_stream_params(params),
+         {:ok, frame} <- resolve_stream_destination(frame0, agent, integration),
+         :ok <- ensure_destination_chat(agent, frame.destination_chat_id),
+         :ok <- ensure_event_trigger(agent, frame.destination_chat_id) do
+      key = stream_state_key(agent.id, frame.stream_id)
+      state = stream_lookup(key)
+      decision = stream_frame_decision(state, frame)
+
+      case decision do
+        {:ignore, reason} ->
+          {:ok,
+           %{
+             success: true,
+             ignored: true,
+             reason: reason,
+             streamId: frame.stream_id,
+             seq: frame.seq,
+             messageId: state && state.message_id,
+             done: frame.done
+           }}
+
+        {:create, next_state, frame} ->
+          apply_stream_create(agent, key, next_state, frame, streaming?: true)
+
+        {:update, next_state, frame} ->
+          apply_stream_update(agent, key, state, next_state, frame, finalize?: false)
+
+        {:finalize, next_state, frame} ->
+          apply_stream_update(agent, key, state, next_state, frame, finalize?: true)
+
+        {:create_finalize, next_state, frame} ->
+          apply_stream_create(agent, key, next_state, frame, streaming?: false, finalize?: true)
+      end
+    end
+  end
+
+  defp resolve_stream_destination(frame, agent, integration) do
+    dest =
+      frame.destination_chat_id ||
+        (integration && integration.default_destination_chat_id) ||
+        agent.default_destination_chat_id ||
+        owner_dm_chat_id(agent)
+
+    case normalize_string(dest) do
+      nil -> {:error, :missing_destination_chat}
+      chat_id -> {:ok, %{frame | destination_chat_id: chat_id}}
+    end
+  end
+
+  defp apply_stream_create(agent, key, next_state, frame, opts) do
+    streaming? = Keyword.get(opts, :streaming?, true)
+    finalize? = Keyword.get(opts, :finalize?, false)
+
+    {text, content_meta, content_error} =
+      if finalize? do
+        case finalize_stream_content(frame.text, frame.content) do
+          {:ok, body, meta} -> {body, meta, nil}
+          {:error, err, body} -> {body, nil, err}
+        end
+      else
+        {frame.text, nil, nil}
+      end
+
+    metadata =
+      stream_message_metadata(agent, streaming?: streaming? and not finalize?)
+      |> maybe_put_content(content_meta)
+
+    case post_chat_message(agent, frame.destination_chat_id, text, metadata, nil) do
+      {:ok, %{message_id: message_id} = posted} ->
+        stored = %{next_state | message_id: message_id}
+        stream_put(key, stored)
+
+        result = %{
+          success: true,
+          ignored: false,
+          streamId: frame.stream_id,
+          seq: frame.seq,
+          messageId: message_id,
+          messagePosted: true,
+          done: frame.done,
+          timestamp: posted.timestamp
+        }
+
+        if content_error, do: {:error, content_error}, else: {:ok, result}
+
+      error ->
+        error
+    end
+  end
+
+  defp apply_stream_update(agent, key, state, next_state, frame, opts) do
+    finalize? = Keyword.get(opts, :finalize?, false)
+    message_id = state.message_id
+
+    if not is_binary(message_id) do
+      {:error, :stream_message_missing}
+    else
+      {text, content_meta, content_error} =
+        if finalize? do
+          case finalize_stream_content(frame.text, frame.content) do
+            {:ok, body, meta} -> {body, meta, nil}
+            {:error, err, body} -> {body, nil, err}
+          end
+        else
+          {frame.text, nil, nil}
+        end
+
+      edited_at = System.system_time(:millisecond)
+
+      case update_stream_message(
+             agent,
+             frame.destination_chat_id,
+             message_id,
+             text,
+             streaming?: not finalize?,
+             content: content_meta,
+             edited_at: edited_at
+           ) do
+        {:ok, message} ->
+          stream_put(key, %{next_state | message_id: message_id})
+
+          broadcast_stream_edited(
+            agent,
+            frame.destination_chat_id,
+            message_id,
+            text,
+            edited_at,
+            message
+          )
+
+          result = %{
+            success: true,
+            ignored: false,
+            streamId: frame.stream_id,
+            seq: frame.seq,
+            messageId: message_id,
+            messagePosted: true,
+            done: frame.done,
+            editedAt: edited_at
+          }
+
+          if content_error, do: {:error, content_error}, else: {:ok, result}
+
+        error ->
+          error
+      end
+    end
+  end
+
+  defp stream_message_metadata(agent, opts) do
+    streaming? = Keyword.get(opts, :streaming?, false)
+
+    agent_username =
+      case agent.agent_user do
+        %{username: username} when is_binary(username) -> username
+        _ -> nil
+      end
+
+    %{
+      "isAgentMessage" => true,
+      "agentName" => agent.display_name,
+      "agentId" => agent.id,
+      "agentUserId" => agent.agent_user_id,
+      "agentUsername" => agent_username,
+      "agentHandle" => if(agent_username, do: "@#{agent_username}", else: nil),
+      "streaming" => streaming?,
+      "eventType" => @stream_event_type
+    }
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Map.new()
+    |> then(fn meta ->
+      if streaming?, do: meta, else: Map.delete(meta, "streaming")
+    end)
+  end
+
+  defp maybe_put_content(metadata, nil), do: metadata
+
+  defp maybe_put_content(metadata, content) when is_map(content),
+    do: Map.put(metadata, "content", content)
+
+  defp update_stream_message(agent, chat_id, message_id, text, opts) do
+    streaming? = Keyword.get(opts, :streaming?, false)
+    content = Keyword.get(opts, :content)
+    edited_at = Keyword.get(opts, :edited_at) || System.system_time(:millisecond)
+    encrypted = AgentMessageCrypto.encrypt_for_storage(text || "")
+
+    RepoRLS.with_user(agent.agent_user_id, fn ->
+      with {:ok, uuid} <- Ecto.UUID.cast(message_id),
+           %Message{} = message <-
+             Repo.one(from(m in Message, where: m.id == ^uuid and m.chat_id == ^chat_id)),
+           true <- message.from_id == agent.agent_user_id do
+        metadata =
+          (message.metadata || %{})
+          |> Map.merge(%{
+            "isAgentMessage" => true,
+            "agentName" => agent.display_name,
+            "agentId" => agent.id,
+            "agentUserId" => agent.agent_user_id
+          })
+          |> then(fn meta ->
+            if streaming? do
+              Map.put(meta, "streaming", true)
+            else
+              Map.delete(meta, "streaming")
+            end
+          end)
+          |> maybe_put_content(content)
+
+        next_ts = max(message.timestamp || 0, edited_at)
+
+        message
+        |> Message.changeset(%{
+          encrypted_content: encrypted,
+          metadata: metadata,
+          timestamp: next_ts
+        })
+        |> Repo.update()
+      else
+        :error -> {:error, :invalid_id}
+        nil -> {:error, :not_found}
+        false -> {:error, :forbidden}
+      end
+    end)
+  end
+
+  defp broadcast_stream_edited(agent, chat_id, message_id, plain_text, edited_at, message) do
+    payload = %{
+      chatId: chat_id,
+      messageId: message_id,
+      encryptedContent: plain_text || "",
+      editedAt: edited_at,
+      editedBy: agent.agent_user_id,
+      plainContent: plain_text,
+      plaintext: plain_text,
+      message:
+        message
+        |> Chat.client_message_payload()
+        |> Chat.mirrored_message_payload()
+    }
+
+    VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "message-edited", payload)
+    Chat.broadcast_user_chat_event(chat_id, "message-edited", payload)
+  end
+
+  defp stream_state_key(agent_id, stream_id), do: {agent_id, stream_id}
+
+  defp ensure_stream_table! do
+    case :ets.whereis(@stream_table) do
+      :undefined ->
+        try do
+          :ets.new(@stream_table, [
+            :named_table,
+            :public,
+            :set,
+            read_concurrency: true,
+            write_concurrency: true
+          ])
+        rescue
+          ArgumentError -> :ok
+        end
+
+      _tid ->
+        :ok
+    end
+  end
+
+  defp stream_lookup(key) do
+    case :ets.lookup(@stream_table, key) do
+      [{^key, state}] -> state
+      _ -> nil
+    end
+  end
+
+  defp stream_put(key, state) do
+    true = :ets.insert(@stream_table, {key, state})
+    :ok
   end
 
   def execute_approved_task(%Agent{} = agent, %AgentApprovalTask{} = task) do
@@ -142,12 +561,8 @@ defmodule Vibe.AI.AgentEventRuntime do
             |> Repo.insert!()
 
           {thread, event, message_payload} =
-            case policy.post_event_message? do
+            case policy.post_event_message? or attachment_items?(normalized.attachments) do
               true ->
-                # In batched_summary mode, still post each event but SILENTLY so
-                # it populates the dedicated Inbox view (clients route eventThread
-                # messages out of the transcript) without a push per event. The
-                # periodic batched summary still posts normally with a push.
                 silent? = not post_individual_event_message?(policy, inbox_config)
 
                 {:ok, message_payload} =
@@ -258,10 +673,11 @@ defmodule Vibe.AI.AgentEventRuntime do
               }
 
             {:error, reason} ->
-              Repo.rollback(reason)
+              {:runtime_error, reason}
           end
         end)
         |> case do
+          {:ok, {:runtime_error, reason}} -> {:error, reason}
           {:ok, result} -> {:ok, result}
           {:error, reason} -> {:error, reason}
         end
@@ -308,7 +724,7 @@ defmodule Vibe.AI.AgentEventRuntime do
       normalize_string(params["source"]) || (integration && integration.source_type) || "internal"
 
     title = normalize_rich_text(params["title"])
-    text = normalize_rich_text(params["text"] || params["message"])
+    text = normalize_rich_text(params["text"] || params["message"] || params["body"])
     payload = normalize_payload(params["data"] || params["payload"])
     occurred_at = parse_datetime(params["timestamp"]) || DateTime.utc_now()
 
@@ -326,36 +742,59 @@ defmodule Vibe.AI.AgentEventRuntime do
     destination_chat_id =
       normalize_string(params["destinationChatId"] || params["destination_chat_id"]) ||
         (integration && integration.default_destination_chat_id) ||
-        agent.default_destination_chat_id
+        agent.default_destination_chat_id ||
+        owner_dm_chat_id(agent)
 
-    cond do
-      is_nil(event_type) ->
-        {:error, :missing_event_type}
+    _ignored_callback = params["callbackUrl"] || params["callback_url"]
 
-      is_nil(destination_chat_id) ->
-        {:error, :missing_destination_chat}
+    with :ok <- validate_event_params_size(params),
+         {:ok, declaration} <- AgentDecisions.normalize_declaration(params) do
+      cond do
+        is_nil(event_type) ->
+          {:error, :missing_event_type}
 
-      true ->
-        {:ok,
-         %{
-           event_id: event_id,
-           event_type: event_type,
-           source: source,
-           title: title || humanize_event_type(event_type),
-           text: text,
-           payload: payload,
-           attachments: normalize_attachments(params["attachments"]),
-           occurred_at: occurred_at,
-           thread_key: thread_key,
-           destination_chat_id: destination_chat_id
-         }}
+        is_nil(destination_chat_id) ->
+          {:error, :missing_destination_chat}
+
+        true ->
+          {:ok,
+           %{
+             event_id: event_id,
+             event_type: event_type,
+             source: source,
+             title: title || humanize_event_type(event_type),
+             text: text,
+             payload: payload,
+             attachments: normalize_event_attachments(params),
+             occurred_at: occurred_at,
+             thread_key: thread_key,
+             destination_chat_id: destination_chat_id,
+             declaration: declaration
+           }}
+      end
     end
   end
+
+  defp owner_dm_chat_id(%Agent{owner_user_id: owner, agent_user_id: agent_user})
+       when is_binary(owner) and is_binary(agent_user) do
+    case Chat.ensure_dm_chat(owner, agent_user) do
+      {:ok, chat_id, _status} -> chat_id
+      _ -> nil
+    end
+  end
+
+  defp owner_dm_chat_id(_agent), do: nil
 
   defp ensure_destination_chat(%Agent{} = agent, chat_id) do
     if Chat.is_participant?(chat_id, agent.agent_user_id),
       do: :ok,
       else: {:error, :chat_not_attached}
+  end
+
+  defp ensure_event_trigger(%Agent{} = agent, chat_id) do
+    if Chat.channel_agent_event_enabled?(chat_id, agent),
+      do: :ok,
+      else: {:error, :event_trigger_not_enabled}
   end
 
   defp upsert_thread!(
@@ -418,6 +857,7 @@ defmodule Vibe.AI.AgentEventRuntime do
     priority = classify_priority(normalized)
     autonomy = effective_autonomy(agent, integration)
     estimated_cost_cents = estimated_cost_cents(runbook)
+    declaration = Map.get(normalized, :declaration)
 
     cond do
       not event_type_enabled?(agent, integration, normalized.event_type) ->
@@ -436,6 +876,16 @@ defmodule Vibe.AI.AgentEventRuntime do
           reason: "noise_suppressed",
           post_event_message?: false,
           estimated_cost_cents: 0
+        }
+
+      match?(%{actions: [_ | _]}, declaration) ->
+        %{
+          mode: "approval_required",
+          priority: priority,
+          reason: "sender_declared_actions",
+          post_event_message?: true,
+          estimated_cost_cents: estimated_cost_cents,
+          declaration: declaration
         }
 
       budget_exceeded?(agent, integration, estimated_cost_cents) ->
@@ -622,9 +1072,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     build_event_inbox_config(merged)
   end
 
-  # Normalized inbox config. Supports two summary schedules:
-  #   * "interval" — post a summary every `summary_window_hours` (rolling window)
-  #   * "daily"    — post a summary at fixed clock times (`summary_times`, UTC minutes)
   defp build_event_inbox_config(merged) when is_map(merged) do
     %{
       mode: normalize_event_inbox_mode(merged["mode"] || merged[:mode]),
@@ -689,9 +1136,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     end
   end
 
-  # Accepts a list of clock times ("HH:MM" strings or integer hours/minutes) and
-  # returns a sorted, de-duped list of minutes-from-midnight (UTC). Invalid or
-  # empty input yields []; callers fall back to the interval schedule when empty.
   defp normalize_summary_times(value) do
     value
     |> List.wrap()
@@ -733,8 +1177,6 @@ defmodule Vibe.AI.AgentEventRuntime do
 
   defp parse_summary_time(_), do: nil
 
-  # True when a fixed-time summary is due: some configured clock time has elapsed
-  # since the pending batch started and on/before the current event time.
   defp daily_summary_due?(_pending_started_at, _occurred_at, []), do: false
 
   defp daily_summary_due?(pending_started_at, occurred_at, minutes_list) do
@@ -744,7 +1186,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     end
   end
 
-  # Most recent scheduled datetime at or before `now` across the configured times.
   defp last_scheduled_at(now, minutes_list) do
     today = DateTime.to_date(now)
 
@@ -983,48 +1424,75 @@ defmodule Vibe.AI.AgentEventRuntime do
   end
 
   defp create_approval(agent, integration, thread, event, runbook, normalized, policy) do
-    requested_action =
-      case runbook_action_payload(normalized, runbook) do
-        {:ok, payload} -> payload
-        {:error, _} -> fallback_requested_action(normalized)
+    declaration = Map.get(policy, :declaration) || Map.get(normalized, :declaration)
+
+    if match?(%{actions: [_ | _]}, declaration) do
+      with {:ok, details} <-
+             AgentDecisions.create_declared_decision(
+               agent,
+               thread,
+               event,
+               normalized,
+               declaration,
+               policy
+             ) do
+        run =
+          create_run!(agent, integration, thread, event, runbook, policy, %{
+            result: %{
+              approvalTaskId: details.approval_task.id,
+              source: "declared",
+              actionMode: declaration.action_mode
+            }
+          })
+
+        {:ok, Map.put(details, :run, run)}
       end
+    else
+      requested_action =
+        case runbook_action_payload(normalized, runbook) do
+          {:ok, payload} -> payload
+          {:error, _} -> fallback_requested_action(normalized)
+        end
 
-    task =
-      %AgentApprovalTask{}
-      |> AgentApprovalTask.changeset(%{
-        agent_id: agent.id,
-        thread_id: thread.id,
-        event_id: event.id,
-        runbook_id: runbook && runbook.id,
-        chat_id: thread.chat_id,
-        requested_action: requested_action,
-        rationale: "Approval required for #{normalized.event_type}",
-        status: "pending"
-      })
-      |> Repo.insert!()
+      task =
+        %AgentApprovalTask{}
+        |> AgentApprovalTask.changeset(%{
+          agent_id: agent.id,
+          thread_id: thread.id,
+          event_id: event.id,
+          runbook_id: runbook && runbook.id,
+          chat_id: thread.chat_id,
+          requested_action: requested_action,
+          rationale: "Approval required for #{normalized.event_type}",
+          status: "pending",
+          source: "runbook",
+          action_mode: "single"
+        })
+        |> Repo.insert!()
 
-    _ =
-      post_system_followup(
-        agent,
-        thread,
-        "Approval needed for #{normalized.title || normalized.event_type}. Open the task to approve or reject.",
-        %{
-          "approvalTaskId" => task.id,
-          "eventThreadId" => thread.id,
-          "eventId" => event.id,
-          "status" => "pending_approval"
-        }
-      )
+      _ =
+        post_system_followup(
+          agent,
+          thread,
+          "Approval needed for #{normalized.title || normalized.event_type}. Open the task to approve or reject.",
+          %{
+            "approvalTaskId" => task.id,
+            "eventThreadId" => thread.id,
+            "eventId" => event.id,
+            "status" => "pending_approval"
+          }
+        )
 
-    run =
-      create_run!(agent, integration, thread, event, runbook, policy, %{
-        result: %{
-          approvalTaskId: task.id,
-          requestedAction: requested_action
-        }
-      })
+      run =
+        create_run!(agent, integration, thread, event, runbook, policy, %{
+          result: %{
+            approvalTaskId: task.id,
+            requestedAction: requested_action
+          }
+        })
 
-    {:ok, %{status: "approval_required", run: run, approval_task: task}}
+      {:ok, %{status: "approval_required", run: run, approval_task: task}}
+    end
   end
 
   defp runbook_action_payload(normalized, %AgentRunbook{} = runbook) do
@@ -1168,18 +1636,75 @@ defmodule Vibe.AI.AgentEventRuntime do
       "attachments" => normalize_attachments_payload(normalized.attachments)
     }
 
+    post_event_body_and_attachments(
+      agent,
+      thread.chat_id,
+      body,
+      caption_body(title, detail),
+      metadata,
+      normalize_attachments_payload(normalized.attachments),
+      silent
+    )
+  end
+
+  defp caption_body(title, nil), do: title
+  defp caption_body(title, detail), do: "#{title}\n\n#{detail}"
+
+  defp post_event_body_and_attachments(
+         agent,
+         chat_id,
+         _body,
+         caption,
+         metadata,
+         [first | rest],
+         false
+       ) do
     with {:ok, primary_message} <-
-           maybe_post_event_summary(agent, thread.chat_id, body, metadata, nil, silent),
-         {:ok, _attachment_messages} <-
-           post_event_attachments(
+           post_attachment_message(
              agent,
-             thread.chat_id,
-             normalize_attachments_payload(normalized.attachments),
+             chat_id,
+             merged_attachment_caption(caption, first),
              metadata,
-             nil,
-             silent
-           ) do
+             first,
+             nil
+           ),
+         {:ok, _attachment_messages} <-
+           post_event_attachments(agent, chat_id, rest, metadata, nil, false) do
       {:ok, primary_message}
+    end
+  end
+
+  defp post_event_body_and_attachments(
+         agent,
+         chat_id,
+         body,
+         _caption,
+         metadata,
+         attachments,
+         silent
+       ) do
+    with {:ok, primary_message} <-
+           maybe_post_event_summary(agent, chat_id, body, metadata, nil, silent),
+         {:ok, _attachment_messages} <-
+           post_event_attachments(agent, chat_id, attachments, metadata, nil, silent) do
+      {:ok, primary_message}
+    end
+  end
+
+  @doc false
+  def merged_attachment_caption(body, attachment) do
+    case {normalize_string(body), attachment_own_caption(attachment)} do
+      {nil, nil} ->
+        nil
+
+      {text, nil} ->
+        text
+
+      {nil, caption} ->
+        caption
+
+      {text, caption} ->
+        if String.contains?(text, caption), do: text, else: "#{text}\n\n#{caption}"
     end
   end
 
@@ -1202,10 +1727,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     timestamp = System.system_time(:millisecond)
     message_type = Keyword.get(opts, :type, "text")
     media_url = Keyword.get(opts, :media_url)
-    # Silent posts still broadcast over the open chat channel (so the Inbox view
-    # can update in real time) but skip Home/new-message fanout and push
-    # notifications. Used for individual inbox items in batched_summary mode so
-    # the inbox is populated without behaving like normal chat traffic.
     silent = Keyword.get(opts, :silent, false)
 
     metadata =
@@ -1284,6 +1805,8 @@ defmodule Vibe.AI.AgentEventRuntime do
 
         VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "message", payload)
 
+        mirrored_message = Chat.mirrored_message_payload(payload)
+
         Chat.get_all_participant_settings(chat_id)
         |> Enum.each(fn participant ->
           if participant.user_id != agent.agent_user_id do
@@ -1295,7 +1818,8 @@ defmodule Vibe.AI.AgentEventRuntime do
                 from_id: agent.agent_user_id,
                 message_id: message_id,
                 timestamp: timestamp,
-                muted: participant.muted || false
+                muted: participant.muted || false,
+                message: mirrored_message
               })
             end
 
@@ -1331,45 +1855,16 @@ defmodule Vibe.AI.AgentEventRuntime do
   defp post_event_attachments(_agent, _chat_id, [], _metadata, _reply_to_id, _silent),
     do: {:ok, []}
 
-  defp post_event_attachments(agent, chat_id, attachments, metadata, reply_to_id, silent) do
+  defp post_event_attachments(agent, chat_id, attachments, metadata, reply_to_id, _silent) do
     attachments
     |> Enum.reduce_while({:ok, []}, fn attachment, {:ok, acc} ->
-      attachment_metadata =
-        metadata
-        |> Map.put("attachment", attachment)
-        |> maybe_put("fileName", normalize_string(attachment["name"] || attachment[:name]))
-        |> maybe_put(
-          "fileSize",
-          normalize_integer(attachment["fileSize"] || attachment[:fileSize])
-        )
-        |> maybe_put(
-          "duration",
-          normalize_number(attachment["duration"] || attachment[:duration])
-        )
-        |> maybe_put(
-          "mimeType",
-          normalize_string(attachment["mimeType"] || attachment[:mimeType])
-        )
-        |> maybe_put(
-          "isVideoNote",
-          normalize_boolean(attachment["isVideoNote"] || attachment[:isVideoNote])
-        )
-        |> maybe_put("caption", normalize_string(attachment["caption"] || attachment[:caption]))
-
-      caption =
-        normalize_string(
-          attachment["caption"] || attachment[:caption] || attachment["text"] || attachment[:text]
-        ) || ""
-
-      case post_chat_message(
+      case post_attachment_message(
              agent,
              chat_id,
-             caption,
-             attachment_metadata,
-             reply_to_id,
-             type: attachment_message_type(attachment),
-             media_url: attachment["url"],
-             silent: silent
+             attachment_own_caption(attachment),
+             metadata,
+             attachment,
+             reply_to_id
            ) do
         {:ok, message_payload} ->
           {:cont, {:ok, acc ++ [message_payload]}}
@@ -1378,6 +1873,47 @@ defmodule Vibe.AI.AgentEventRuntime do
           {:halt, error}
       end
     end)
+  end
+
+  defp post_attachment_message(agent, chat_id, caption, metadata, attachment, reply_to_id) do
+    attachment_metadata =
+      metadata
+      |> Map.put("eventInboxRole", "attachment")
+      |> Map.put("hiddenFromTranscript", false)
+      |> Map.put("attachment", attachment)
+      |> maybe_put("fileName", attachment_file_name(attachment))
+      |> maybe_put(
+        "fileSize",
+        normalize_integer(attachment["fileSize"] || attachment[:fileSize])
+      )
+      |> maybe_put(
+        "duration",
+        normalize_number(attachment["duration"] || attachment[:duration])
+      )
+      |> maybe_put("mimeType", attachment_mime_type(attachment))
+      |> maybe_put(
+        "isVideoNote",
+        normalize_boolean(attachment["isVideoNote"] || attachment[:isVideoNote])
+      )
+      |> maybe_put("caption", caption)
+
+    post_chat_message(
+      agent,
+      chat_id,
+      caption || "",
+      attachment_metadata,
+      reply_to_id,
+      type: attachment_message_type(attachment),
+      media_url: attachment["url"],
+      silent: false
+    )
+  end
+
+  defp attachment_own_caption(attachment) do
+    normalize_string(
+      attachment["caption"] || attachment[:caption] || attachment["title"] ||
+        attachment[:title] || attachment["text"] || attachment[:text]
+    )
   end
 
   defp touch_integration!(%AgentIntegration{} = integration) do
@@ -1441,18 +1977,28 @@ defmodule Vibe.AI.AgentEventRuntime do
 
   defp normalize_attachments(value) when is_list(value) do
     items =
-      Enum.map(value, fn item ->
+      value
+      |> Enum.take(@max_attachment_count)
+      |> Enum.filter(&is_map/1)
+      |> Enum.map(fn item ->
         %{
           "type" => normalize_string(item["type"] || item[:type]),
           "url" =>
             normalize_string(item["url"] || item[:url] || item["mediaUrl"] || item[:mediaUrl]),
           "name" =>
-            normalize_string(item["name"] || item[:name] || item["fileName"] || item[:fileName]),
+            normalize_string(
+              item["name"] || item[:name] || item["fileName"] || item[:fileName] ||
+                item["filename"] || item[:filename]
+            ),
           "mimeType" =>
             normalize_string(
-              item["mimeType"] || item[:mimeType] || item["mime_type"] || item[:mime_type]
+              item["mimeType"] || item[:mimeType] || item["mime_type"] || item[:mime_type] ||
+                item["mime"] || item[:mime]
             ),
-          "caption" => normalize_rich_text(item["caption"] || item[:caption]),
+          "caption" =>
+            normalize_rich_text(
+              item["caption"] || item[:caption] || item["title"] || item[:title]
+            ),
           "text" => normalize_rich_text(item["text"] || item[:text]),
           "duration" => normalize_number(item["duration"] || item[:duration]),
           "fileSize" =>
@@ -1468,7 +2014,7 @@ defmodule Vibe.AI.AgentEventRuntime do
         |> Enum.reject(fn {_k, v} -> is_nil(v) end)
         |> Map.new()
       end)
-      |> Enum.filter(&is_binary(&1["url"]))
+      |> Enum.filter(&(is_binary(&1["url"]) and valid_attachment_url?(&1["url"])))
 
     %{"items" => items}
   end
@@ -1477,6 +2023,9 @@ defmodule Vibe.AI.AgentEventRuntime do
 
   defp normalize_attachments_payload(%{"items" => items}) when is_list(items), do: items
   defp normalize_attachments_payload(_), do: []
+
+  defp attachment_items?(%{"items" => items}) when is_list(items), do: items != []
+  defp attachment_items?(_), do: false
 
   defp normalize_rich_text(value) do
     value
@@ -1498,7 +2047,35 @@ defmodule Vibe.AI.AgentEventRuntime do
         |> String.replace(~r/[ \t]+\n/u, "\n")
         |> String.replace(~r/\n{3,}/u, "\n\n")
         |> String.trim()
+        |> String.slice(0, @max_rich_text_chars)
         |> normalize_string()
+    end
+  end
+
+  defp valid_attachment_url?(url) when is_binary(url) do
+    byte_size(url) <= @max_attachment_url_chars and
+      case URI.parse(url) do
+        %URI{scheme: scheme, host: host}
+        when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+          true
+
+        _ ->
+          false
+      end
+  end
+
+  defp valid_attachment_url?(_), do: false
+
+  defp validate_event_params_size(params) do
+    if json_size_within?(params, @max_event_params_bytes),
+      do: :ok,
+      else: {:error, :event_payload_too_large}
+  end
+
+  defp json_size_within?(value, max_bytes) do
+    case Jason.encode_to_iodata(value) do
+      {:ok, iodata} -> IO.iodata_length(iodata) <= max_bytes
+      {:error, _} -> false
     end
   end
 
@@ -1615,7 +2192,7 @@ defmodule Vibe.AI.AgentEventRuntime do
   end
 
   defp infer_attachment_message_type(attachment) do
-    mime_type = normalize_string(attachment["mimeType"] || attachment[:mimeType]) || ""
+    mime_type = attachment_mime_type(attachment) || ""
     url = normalize_string(attachment["url"] || attachment[:url]) || ""
     lowered_mime = String.downcase(mime_type)
     lowered_url = String.downcase(url)
@@ -1639,6 +2216,69 @@ defmodule Vibe.AI.AgentEventRuntime do
 
       true ->
         "file"
+    end
+  end
+
+  @doc false
+  def attachment_file_name(attachment) do
+    normalize_string(attachment["name"] || attachment[:name]) ||
+      file_name_from_url(normalize_string(attachment["url"] || attachment[:url]))
+  end
+
+  defp file_name_from_url(nil), do: nil
+
+  defp file_name_from_url(url) do
+    case URI.parse(url).path do
+      nil ->
+        nil
+
+      path ->
+        case path |> Path.basename() |> URI.decode() |> normalize_string() do
+          nil -> nil
+          "/" -> nil
+          name -> if named_file?(name), do: name
+        end
+    end
+  end
+
+  defp named_file?(name) do
+    case Path.extname(name) do
+      "" -> false
+      ext -> String.match?(ext, ~r/^\.[A-Za-z0-9]{1,8}$/)
+    end
+  end
+
+  @doc false
+  def attachment_mime_type(attachment) do
+    normalize_string(attachment["mimeType"] || attachment[:mimeType]) ||
+      mime_type_from_extension(attachment_file_name(attachment))
+  end
+
+  defp mime_type_from_extension(nil), do: nil
+
+  defp mime_type_from_extension(name) do
+    case name |> Path.extname() |> String.downcase() do
+      ".pdf" -> "application/pdf"
+      ".png" -> "image/png"
+      ".jpg" -> "image/jpeg"
+      ".jpeg" -> "image/jpeg"
+      ".webp" -> "image/webp"
+      ".heic" -> "image/heic"
+      ".gif" -> "image/gif"
+      ".mp4" -> "video/mp4"
+      ".mov" -> "video/quicktime"
+      ".mp3" -> "audio/mpeg"
+      ".m4a" -> "audio/mp4"
+      ".ogg" -> "audio/ogg"
+      ".wav" -> "audio/wav"
+      ".csv" -> "text/csv"
+      ".txt" -> "text/plain"
+      ".zip" -> "application/zip"
+      ".doc" -> "application/msword"
+      ".docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ".xls" -> "application/vnd.ms-excel"
+      ".xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      _ -> nil
     end
   end
 
@@ -1888,10 +2528,6 @@ defmodule Vibe.AI.AgentEventRuntime do
 
   defp summarize_payload_line(payload) when map_size(payload) == 0, do: nil
 
-  # Fallback bubble text when a connected app sends an event without its own
-  # `text`. Stays project-agnostic: it just renders whatever keys arrived in a
-  # readable way. Values are formatted defensively so lists/maps never get
-  # interpolated into a mangled blob (e.g. ["a","b"] becoming "ab").
   defp summarize_payload_line(payload) do
     payload
     |> Enum.take(4)

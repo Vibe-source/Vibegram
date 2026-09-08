@@ -4,26 +4,31 @@ defmodule Vibe.AI.SubagentRegistry do
   alias Vibe.AI.Agent, as: ChatAgent
   alias Vibe.AI.AgentBuilder
 
+  # Specialists are OPTIONAL.
   @subagents %{
     "builder_assistant" => %{
       id: "builder_assistant",
       label: "Builder Assistant",
-      description: "Creates, updates, publishes, and explains Vibe standalone agents."
+      description:
+        "Multi-step agent creation, complex reconfiguration, publish/delete workflows — not simple one-field edits."
     },
     "integration_advisor" => %{
       id: "integration_advisor",
       label: "Integration Advisor",
-      description: "Prepares invoke URLs, events URLs, chat ids, and agent integration guidance."
+      description:
+        "Deep integration setup (invoke/events URLs, secrets, multi-room attach) when direct config tools are not enough."
     },
     "music_specialist" => %{
       id: "music_specialist",
       label: "Music Specialist",
-      description: "Handles music discovery and playback related tasks."
+      description:
+        "Complex multi-track / playlist-scale music research only. Single songs and share URLs stay on the primary agent."
     },
     "document_specialist" => %{
       id: "document_specialist",
       label: "Document Specialist",
-      description: "Handles document, web, and image analysis tasks."
+      description:
+        "Multi-document or multi-source research synthesis only. One web lookup or one file stays on the primary agent."
     }
   }
 
@@ -117,7 +122,7 @@ defmodule Vibe.AI.SubagentRegistry do
               wrap_callback(spec, callback),
               user_id,
               chat_id,
-              "You are the music specialist for Vibe AI. Focus only on music discovery and playback tasks. Use the smallest response necessary.",
+              "You are the music specialist for Vibe AI, used only for complex multi-track or playlist-scale work. Use search_music directly. Keep replies minimal; the UI renders playable cells.",
               ["search_music"]
             )
 
@@ -128,7 +133,7 @@ defmodule Vibe.AI.SubagentRegistry do
               wrap_callback(spec, callback),
               user_id,
               chat_id,
-              "You are the document and research specialist for Vibe AI. Focus on search, image analysis, and document analysis. Use the smallest response necessary.",
+              "You are the document/research specialist for Vibe AI, used only for multi-source synthesis. Prefer the fewest tool calls needed. One lookup tasks should already have been handled by the primary agent.",
               ["search_google", "analyze_image", "analyze_document"]
             )
         end
@@ -235,7 +240,6 @@ defmodule Vibe.AI.SubagentRegistry do
         callback.(event)
 
       %{type: :text, content: content} ->
-        # Forward subagent text chunks so the frontend shows streaming activity
         callback.(%{
           type: :subagent,
           event: "text",
@@ -290,8 +294,8 @@ defmodule Vibe.AI.SubagentRegistry do
 
         cond do
           is_nil(job) -> fallback_sentence(trimmed)
-          detail == "" -> "#{job}..."
-          true -> "#{job} #{truncate_detail(detail)}..."
+          detail == "" -> "#{job}…"
+          true -> "#{job} #{truncate_detail(detail)}…"
         end
 
       _ ->
@@ -300,11 +304,9 @@ defmodule Vibe.AI.SubagentRegistry do
   end
 
   defp fallback_sentence(""), do: nil
-  defp fallback_sentence(text), do: "#{truncate_detail(text)}..."
+  defp fallback_sentence(text), do: "#{truncate_detail(text)}…"
 
-  # Progress chips must stay short — they render in a single-line shimmer row.
-  # Keep at most a few words of detail and trim any dangling partial word.
-  @progress_detail_limit 36
+  @progress_detail_limit 20
 
   defp truncate_detail(detail) do
     detail
@@ -318,20 +320,16 @@ defmodule Vibe.AI.SubagentRegistry do
     if String.length(text) <= limit do
       text
     else
-      text
-      |> String.slice(0, limit)
-      |> String.replace(~r/\s+\S*$/u, "")
-      |> String.trim()
-      |> case do
-        "" -> String.slice(text, 0, limit) |> String.trim()
-        shortened -> shortened
-      end
+      cut = text |> String.slice(0, limit) |> String.trim()
+      on_word = cut |> String.replace(~r/\s+\S*$/u, "") |> String.trim()
+
+      if String.length(on_word) >= div(limit * 3, 5), do: on_word, else: cut
     end
   end
 
-  defp fallback_progress_label("builder_assistant"), do: "Reviewing your agent setup..."
-  defp fallback_progress_label("integration_advisor"), do: "Gathering integration details..."
-  defp fallback_progress_label("music_specialist"), do: "Checking music results..."
-  defp fallback_progress_label("document_specialist"), do: "Reviewing documents and research..."
-  defp fallback_progress_label(_id), do: "Working on the request..."
+  defp fallback_progress_label("builder_assistant"), do: "Reviewing agent setup…"
+  defp fallback_progress_label("integration_advisor"), do: "Checking integration…"
+  defp fallback_progress_label("music_specialist"), do: "Checking music…"
+  defp fallback_progress_label("document_specialist"), do: "Reviewing documents…"
+  defp fallback_progress_label(_id), do: "Working on it…"
 end

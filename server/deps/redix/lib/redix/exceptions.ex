@@ -1,0 +1,109 @@
+defmodule Redix.Error do
+  @moduledoc """
+  Error returned by Redis.
+
+  This exception represents semantic errors returned by Redis: for example,
+  non-existing commands or operations on keys with the wrong type (`INCR
+  not_an_integer`).
+  """
+
+  defexception [:message]
+
+  @typedoc """
+  The type for this exception struct.
+  """
+  @type t() :: %__MODULE__{message: binary()}
+end
+
+defmodule Redix.ConnectionError do
+  @moduledoc """
+  Error in the connection to Redis.
+
+  This exception represents errors in the connection to Redis: for example,
+  request timeouts, disconnections, and similar.
+
+  ## Exception fields
+
+  See `t:t/0`.
+
+  ## Error reasons
+
+  The `:reason` field can assume a few Redix-specific values:
+
+    * `:closed`: when the connection to Redis is closed (and Redix is
+      reconnecting) and the user attempts to talk to Redis
+
+    * `:disconnected`: when the connection drops while a request to Redis is in
+      flight.
+
+    * `:timeout`: when Redis doesn't reply to the request in time.
+
+    * `:health_check_timeout`: when the `:health_check_interval` option is set and an
+      in-flight command goes unanswered for longer than that interval, so Redix closes
+      the connection and reconnects.
+
+    * `:no_replica_connection`: when a `Redix.Cluster` command with `route: :replica`
+      finds no reachable replica for the slot, most often because the cluster wasn't
+      started with `read_from_replicas: true`.
+
+  """
+
+  @typedoc """
+  The type for this exception struct.
+
+  This exception has the following public fields:
+
+    * `:reason` - the error reason. It can be one of the Redix-specific
+      reasons described in the "Error reasons" section below, or any error
+      reason returned by functions in the `:gen_tcp` module (see the
+      [`:inet.posix/0`](http://www.erlang.org/doc/man/inet.html#type-posix) type) or
+      `:ssl` module.
+
+  """
+  @type t() :: %__MODULE__{reason: atom() | {:wrong_role, binary()}}
+
+  defexception [:reason]
+
+  @impl true
+  def message(%__MODULE__{reason: reason}) do
+    format_reason(reason)
+  end
+
+  # :inet.format_error/1 doesn't format closed messages.
+  defp format_reason(:tcp_closed), do: "TCP connection closed"
+  defp format_reason(:ssl_closed), do: "SSL connection closed"
+
+  # Manually returned by us when the connection is closed and someone tries to
+  # send a command to Redis.
+  defp format_reason(:closed), do: "the connection to Redis is closed"
+
+  # Returned by Redix.Cluster when a `route: :replica` command finds no reachable
+  # replica (often because the cluster wasn't started with read_from_replicas: true).
+  defp format_reason(:no_replica_connection),
+    do:
+      "no replica connection available for the slot (was the cluster started with read_from_replicas: true?)"
+
+  # Returned during sentinel connections when the server has an
+  # unexpected role (for example, "master" instead of "slave").
+  defp format_reason({:wrong_role, role}), do: "wrong role: #{role}"
+
+  # Returned when a health check fails: an in-flight command went unanswered for
+  # longer than the :health_check_interval, so Redix tore the connection down.
+  defp format_reason(:health_check_timeout),
+    do: "a command went unanswered for longer than the configured :health_check_interval"
+
+  if System.otp_release() >= "26" do
+    defp format_reason(reason) when is_atom(reason) do
+      reason |> :inet.format_error() |> List.to_string()
+    end
+  else
+    defp format_reason(reason) when is_atom(reason) do
+      case :inet.format_error(reason) do
+        ~c"unknown POSIX error" = message -> "#{message}: #{reason}"
+        message -> List.to_string(message)
+      end
+    end
+  end
+
+  defp format_reason(reason), do: inspect(reason)
+end

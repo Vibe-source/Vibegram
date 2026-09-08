@@ -1,0 +1,72 @@
+{
+  "session": "01a042ce-54bb-7302-8479-6fa06bc73df2",
+  "task": "Uh, there is a problem with our Linx caching an…",
+  "steps": [
+    {
+      "what": "Server: tombstone view-once/TTL media instead of deleting; persist expiry",
+      "id": "1",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Client: consume only after successful display; tombstone vs TTL split; persist ids",
+      "id": "2",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Video viewer: displayed callback, restricted chrome, live TTL timer",
+      "id": "3",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Engine: apply mediaExpired edits without resurrecting media; skip view-once deletes",
+      "id": "4",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Shader: smaller denser particles with coherent shared flow",
+      "id": "5",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Protected image chrome: treat TTL as protected; expire tombstones the row",
+      "id": "6",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "agix build + Rust rebuild only if core changed; append memory",
+      "id": "7",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787828489
+}

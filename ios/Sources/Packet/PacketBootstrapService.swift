@@ -1,25 +1,14 @@
 import Foundation
 
+/// Pulls the proxy entries the server offers into Settings → Proxy. Runs direct: it is a
+/// list of hops to try, so fetching it through a hop that may be down would be circular.
 enum PacketBootstrapService {
-  static func cachedPayload() -> PacketBootstrapPayload? {
-    PacketBootstrapPayload.fromConfig(ChatEngineStore.shared.getConfig())
-  }
-
   static func prefetchIfNeeded(config: AppSessionConfig) async {
-    guard config.transportMode != .offline, config.transportMode != .bridgeText else {
-      return
-    }
+    guard config.transportMode == .direct else { return }
     _ = try? await refresh(config: config)
   }
 
-  static func cachedOrRefresh(config: AppSessionConfig) async throws -> PacketBootstrapPayload {
-    if let cached = cachedPayload() {
-      try cached.validate()
-      return cached
-    }
-    return try await refresh(config: config)
-  }
-
+  @discardableResult
   static func refresh(config: AppSessionConfig) async throws -> PacketBootstrapPayload {
     guard let url = config.bootstrapURL else {
       throw PacketRuntimeError.invalidBootstrap("packet bootstrap url invalid")
@@ -43,15 +32,9 @@ enum PacketBootstrapService {
     }
 
     let payload = try JSONDecoder().decode(PacketBootstrapPayload.self, from: data)
-    try payload.validate()
-    ChatEngineStore.shared.updateConfig([
-      "packetBootstrap": payload.storedBootstrapObject(),
-      "packetTicket": payload.packetTicket,
-      "packetStatus": payload.packetStatus ?? "bootstrap_ready",
-      "packetProxyHost": payload.proxyHost,
-      "activePacketBridgeId": payload.activePacketBridgeId ?? payload.usableDescriptor?.id,
-      "packetLastError": nil,
-    ])
+    if let serverProfiles = payload.packetProxyProfiles {
+      PacketProxyStore.shared.mergeServerProfiles(serverProfiles)
+    }
     return payload
   }
 }

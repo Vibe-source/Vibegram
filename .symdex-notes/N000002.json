@@ -1,0 +1,17 @@
+{
+  "id": 2,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "updateHeaderTexts assigns text/font/spacing/isHidden only on change (setTextIfNeeded/setFontIfNeeded/setHiddenIfNeeded). An unchanged assignment still invalidates chatHeaderStack's Auto Layout engine and makes the next systemLayoutSizeFitting in layoutChrome a full re-solve.",
+  "selector": "ios/ChatModule/ChatMainView.swift::ChatMainView.updateHeaderTexts",
+  "path": "ios/ChatModule/ChatMainView.swift",
+  "fqn": "ChatMainView.updateHeaderTexts",
+  "line": 4403,
+  "anchor_hash": "03810835cd62e961d84d9e1f7b3d6c11042a8e26b15f1101c207167bc7fff03b",
+  "branch": "core/timeline-p4",
+  "commit": "55313ddbe0caf6ab5cfd6f3ad89323e50231f276",
+  "agent": "",
+  "created_at": 1786284211,
+  "updated_at": 1786284211
+}

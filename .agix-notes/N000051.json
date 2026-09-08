@@ -1,0 +1,18 @@
+{
+  "id": 51,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "New Contact save no longer POSTs /chat or refreshes Home. Sheet closes immediately and the contact profile opens; empty 1:1 DMs stay off Home until a real message exists. Chat/Call pills on that profile open the chat without the old 180ms delay.",
+  "selector": "ios/Sources/App/AppHomeView.swift::NewContactSearchView",
+  "path": "ios/Sources/App/AppHomeView.swift",
+  "fqn": "NewContactSearchView",
+  "line": 14744,
+  "anchor_hash": "356173691a81f57a239386d5cca070661f7cc8f8d2c96717455ec1724efcb36a",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787754317,
+  "updated_at": 1787754317
+}

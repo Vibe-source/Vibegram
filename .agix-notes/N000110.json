@@ -1,0 +1,18 @@
+{
+  "id": 110,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "VibeMediaVault identity ignores mediaKey: the key decrypts, it does not address. Rows that lost their key (failed MLS open, core frame) used to miss cached bytes -> blur + re-download + quarantine. One-time re-download of files cached under the old keyed slot is accepted.",
+  "selector": "docs/contributing.md::Contributing Guide > Coding Standards > Swift",
+  "path": "docs/contributing.md",
+  "fqn": "Contributing Guide > Coding Standards > Swift",
+  "line": 202,
+  "anchor_hash": "ac489313ae960469ab900b3c01928370b36920c79efea1c1161ed15703617ea6",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787919610,
+  "updated_at": 1787919610
+}

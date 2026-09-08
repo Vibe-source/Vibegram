@@ -1,0 +1,18 @@
+{
+  "id": 64,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "DONE + BUILD SUCCEEDED (xcodebuild generic/platform=iOS, Debug): (1) typing expiry — ChatEngine gained peerTypingSeenAtMsByChatId/peerTypingExpiryMs(6500)/expirePeerTypingLocked/schedulePeerTypingExpiryLocked, the typing frame branch stamps and schedules, sendTypingState re-pushes a live typing after typingRefreshMs(3500), and ChatListView.inputBarTextDidChange arms a 5s idle stop-typing (typingIdleStopWorkItem). (2) reaction/meta overlap — measureMessageBubbleLayout reserves reactionSize.width + bubbleMetaInlineSpacing + meta.total via reactionRowWidth, reactionBadgeFrame takes trailingReserve, ChatListCell.layoutSubviews centres the meta on the strip row and passes the reserve. (3) height invalidation — chatListRowSignatureFields appends ('reactions', emoji x count) LAST, bubbleLayoutRevision bumped to r9-reaction-row-meta. (4) chip tap toggles the reaction off (ChatReactionChipView.onTap -> strip.onTap -> cell.onReactionTap -> ChatListView.toggleReactionFromChip) plus a 1.2s alpha reveal fallback so a dropped flight cannot leave a chip invisible. STILL OPEN: cross-device live reaction refresh, and the RTL send-morph shift.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787761684,
+  "updated_at": 1787761684
+}

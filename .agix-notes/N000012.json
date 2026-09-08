@@ -1,0 +1,18 @@
+{
+  "id": 12,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "Removed Endpoint Plug.Static /uploads — it ran before the authenticated /uploads/agent-docs route and would serve /app/uploads without auth. Legacy download_legacy_document remains.",
+  "selector": "server/lib/vibe_web/endpoint.ex::VibeWeb.Endpoint",
+  "path": "server/lib/vibe_web/endpoint.ex",
+  "fqn": "VibeWeb.Endpoint",
+  "line": 1,
+  "anchor_hash": "e8b0ebe6fa0a0d62f0bf7ebbb87e250ecb2467210f99e7b71d5d4153020baac9",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787743237,
+  "updated_at": 1787743237
+}

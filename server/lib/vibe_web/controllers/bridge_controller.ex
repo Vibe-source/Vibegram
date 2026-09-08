@@ -77,21 +77,11 @@ defmodule VibeWeb.BridgeController do
   end
 
   def packet_bootstrap(conn, _params) do
-    case PacketBootstrap.issue_for_user(conn.assigns.current_user) do
-      {:ok, payload} ->
-        conn
-        |> put_resp_header("cache-control", "no-store")
-        |> json(payload)
+    {:ok, payload} = PacketBootstrap.issue_for_user(conn.assigns.current_user)
 
-      {:error, :packet_server_url_missing} ->
-        conn |> put_status(:service_unavailable) |> json(%{error: "packet_server_url_missing"})
-
-      {:error, :packet_signing_secret_missing} ->
-        conn |> put_status(:service_unavailable) |> json(%{error: "packet_signing_secret_missing"})
-
-      {:error, reason} ->
-        conn |> put_status(:unprocessable_entity) |> json(%{error: to_string(reason)})
-    end
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    |> json(payload)
   end
 
   def register_relay(conn, params) do
@@ -104,7 +94,8 @@ defmodule VibeWeb.BridgeController do
     name = normalize_string(params["name"]) || "Relay"
     invite_code = normalize_string(params["inviteCode"] || params["invite_code"])
 
-    with {:ok, descriptor} <- normalize_relay_descriptor(relay_id, params) do
+    with {:ok, descriptor} <- normalize_relay_descriptor(relay_id, params),
+         :ok <- ensure_relay_writable(relay_id, user.id) do
       share_data =
         descriptor
         |> Jason.encode!()
@@ -112,67 +103,106 @@ defmodule VibeWeb.BridgeController do
 
       share_link = "vibe://bridge?d=#{share_data}"
 
-      relay_updates = %{
-        invite_code: invite_code,
-        name: name,
+      relay_body = %{
+        relay_id: relay_id,
         user_id: user.id,
+        invite_code: invite_code,
+        invite_key: nil,
+        is_public: false,
+        name: name,
+        max_peers: 5,
+        current_peers: 0,
+        region: "unknown",
+        started_at: System.system_time(:second),
+        last_heartbeat_at: System.system_time(:second),
+        capabilities: descriptor[:capabilities] || [],
         external_ip: descriptor[:host],
         bridge_url: descriptor[:baseUrl],
         share_link: share_link,
-        bridge_descriptor: descriptor,
-        capabilities: descriptor[:capabilities] || []
+        bridge_descriptor: descriptor
       }
 
-      case RelayRegistry.update_relay(relay_id, relay_updates) do
-        :ok ->
-          :ok
+      relay_result =
+        case RelayRegistry.get_relay(relay_id) do
+          :not_found ->
+            case RelayRegistry.register_relay(relay_body) do
+              :ok -> :ok
+              {:error, :forbidden} -> {:error, :forbidden}
+              {:error, reason} -> {:error, reason}
+            end
 
-        :not_found ->
-          RelayRegistry.register_relay(%{
+          {:ok, _existing} ->
+            RelayRegistry.update_relay(
+              relay_id,
+              %{
+                invite_code: invite_code,
+                name: name,
+                external_ip: descriptor[:host],
+                bridge_url: descriptor[:baseUrl],
+                share_link: share_link,
+                bridge_descriptor: descriptor,
+                capabilities: descriptor[:capabilities] || [],
+                last_heartbeat_at: System.system_time(:second)
+              },
+              as_user: user.id
+            )
+        end
+
+      case relay_result do
+        :ok ->
+          VibeWeb.Endpoint.broadcast!("relay:directory", "relay_updated", %{
             relay_id: relay_id,
-            user_id: user.id,
-            invite_code: invite_code,
-            invite_key: nil,
-            is_public: false,
             name: name,
-            max_peers: 5,
             current_peers: 0,
-            region: "unknown",
-            started_at: System.system_time(:second),
-            last_heartbeat_at: System.system_time(:second),
-            capabilities: descriptor[:capabilities] || [],
+            invite_code: invite_code,
             external_ip: descriptor[:host],
             bridge_url: descriptor[:baseUrl],
             share_link: share_link,
             bridge_descriptor: descriptor
           })
+
+          json(conn, %{
+            relayId: relay_id,
+            userId: user.id,
+            externalIp: descriptor[:host],
+            bridgeUrl: descriptor[:baseUrl],
+            shareLink: share_link,
+            shareData: share_data,
+            descriptor: descriptor,
+            name: name,
+            inviteCode: invite_code
+          })
+
+        {:error, :forbidden} ->
+          conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+
+        {:error, reason} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{error: to_string(reason)})
+
+        :not_found ->
+          conn |> put_status(:not_found) |> json(%{error: "relay_not_found"})
       end
-
-      VibeWeb.Endpoint.broadcast!("relay:directory", "relay_updated", %{
-        relay_id: relay_id,
-        name: name,
-        current_peers: 0,
-        invite_code: invite_code,
-        external_ip: descriptor[:host],
-        bridge_url: descriptor[:baseUrl],
-        share_link: share_link,
-        bridge_descriptor: descriptor
-      })
-
-      json(conn, %{
-        relayId: relay_id,
-        userId: user.id,
-        externalIp: descriptor[:host],
-        bridgeUrl: descriptor[:baseUrl],
-        shareLink: share_link,
-        shareData: share_data,
-        descriptor: descriptor,
-        name: name,
-        inviteCode: invite_code
-      })
     else
+      {:error, :forbidden} ->
+        conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+
       {:error, reason} ->
         conn |> put_status(:unprocessable_entity) |> json(%{error: to_string(reason)})
+    end
+  end
+
+  # Reject cross-user takeover of an existing relay id.
+  defp ensure_relay_writable(relay_id, user_id) do
+    case RelayRegistry.get_relay(relay_id) do
+      :not_found ->
+        :ok
+
+      {:ok, existing} ->
+        if RelayRegistry.relay_user_id(existing) == user_id do
+          :ok
+        else
+          {:error, :forbidden}
+        end
     end
   end
 
@@ -182,7 +212,8 @@ defmodule VibeWeb.BridgeController do
 
     with code when is_binary(code) <- invite_code,
          {:ok, relay} <- RelayRegistry.find_by_invite_code(code),
-         descriptor when is_map(descriptor) <- relay[:bridge_descriptor] || relay["bridge_descriptor"] do
+         descriptor when is_map(descriptor) <-
+           relay[:bridge_descriptor] || relay["bridge_descriptor"] do
       json(conn, %{
         inviteCode: code,
         relayId: relay[:relay_id] || relay["relay_id"],
@@ -215,10 +246,12 @@ defmodule VibeWeb.BridgeController do
         params["packet_descriptor"]
 
     with descriptor when is_map(descriptor) <- decode_descriptor(raw),
-         base_url when is_binary(base_url) <- normalize_string(descriptor["baseUrl"] || descriptor["base_url"]),
+         base_url when is_binary(base_url) <-
+           normalize_string(descriptor["baseUrl"] || descriptor["base_url"]),
          true <- String.starts_with?(String.downcase(base_url), "https://"),
          {:ok, uri} <- validate_public_https_uri(base_url),
-         pins when is_list(pins) and pins != [] <- normalize_pin_list(descriptor["spkiPins"] || descriptor["spki_pins"]),
+         pins when is_list(pins) and pins != [] <-
+           normalize_pin_list(descriptor["spkiPins"] || descriptor["spki_pins"]),
          expires_at when is_integer(expires_at) <-
            normalize_integer(descriptor["expiresAt"] || descriptor["expires_at"]),
          :ok <- validate_future_expiry(expires_at, now_ms) do
@@ -260,9 +293,14 @@ defmodule VibeWeb.BridgeController do
     uri = URI.parse(base_url)
 
     cond do
-      is_nil(uri.host) -> {:error, :bridge_descriptor_host_missing}
-      uri.host in ["127.0.0.1", "0.0.0.0", "::1", "localhost"] -> {:error, :bridge_descriptor_host_invalid}
-      true -> {:ok, uri}
+      is_nil(uri.host) ->
+        {:error, :bridge_descriptor_host_missing}
+
+      uri.host in ["127.0.0.1", "0.0.0.0", "::1", "localhost"] ->
+        {:error, :bridge_descriptor_host_invalid}
+
+      true ->
+        {:ok, uri}
     end
   end
 

@@ -1,5 +1,26 @@
 import UIKit
 
+/// Which part of a message cell a long press landed on.
+enum ChatContextMenuHoldTarget: Equatable {
+  case bubble
+  case reaction(emoji: String)
+}
+
+/// Emoji arrive with and without presentation selectors depending on the source
+/// (catalog literal, server payload, core engine), so compare on this form only.
+enum ChatReactionKey {
+  static func normalized(_ emoji: String) -> String {
+    emoji
+      .replacingOccurrences(of: "\u{FE0E}", with: "")
+      .replacingOccurrences(of: "\u{FE0F}", with: "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  static func matches(_ lhs: String, _ rhs: String) -> Bool {
+    normalized(lhs) == normalized(rhs)
+  }
+}
+
 final class ChatListRegistry {
   static let shared = ChatListRegistry()
 
@@ -69,6 +90,12 @@ struct BubbleShape {
 }
 
 struct ChatListRow {
+  struct Reaction: Equatable, Hashable {
+    let emoji: String
+    let count: Int
+    let isSelected: Bool
+  }
+
   struct AgentProgressNode: Equatable {
     let id: String
     let label: String
@@ -96,6 +123,8 @@ struct ChatListRow {
     /// Plaintext detail body (Grok exposed CoT, compacting notes). Live path may ship
     /// this without encrypted agentActionsEnc; tap thinking opens a sheet with it.
     var detail: String? = nil
+    /// Runtime tool name (`computer_run`, `browser_open`, …) — anchors the computer band.
+    var tool: String? = nil
   }
 
   struct AgentRuntimeCommand: Equatable {
@@ -144,6 +173,70 @@ struct ChatListRow {
     let status: String?
   }
 
+  /// Compact status for one under-hood (or lead) worker in a supervisor team run.
+  struct TeamWorkerStatus: Equatable {
+    let worker: String
+    let label: String
+    let status: String
+    let startedAt: Int64?
+    let finishedAt: Int64?
+    let durationMs: Int?
+    let summary: String?
+    let taskId: String?
+    let lastLabel: String?
+
+    var isRunning: Bool {
+      let s = status.lowercased()
+      return s == "running" || s == "pending" || s == "starting"
+    }
+
+    /// Compact chip text: "Claude · running · reading" or "Grok · done · 2m".
+    var compactLine: String {
+      let name = label.isEmpty ? worker.capitalized : label
+      let s = status.lowercased()
+      if s == "done" || s == "completed" {
+        if let ms = durationMs, ms > 0 {
+          return "\(name) · done · \(Self.formatDuration(ms))"
+        }
+        return "\(name) · done"
+      }
+      if s == "failed" || s == "error" {
+        return "\(name) · failed"
+      }
+      if s == "skipped" {
+        return "\(name) · skipped"
+      }
+      // Watchdog transitions: a usage-limited slice restarted on another
+      // provider, or a run torn down mid-flight.
+      if s == "reassigned" {
+        if let last = lastLabel, !last.isEmpty {
+          let short = last.count > 28 ? String(last.prefix(28)) + "…" : last
+          return "\(name) · \(short)"
+        }
+        return "\(name) · reassigned"
+      }
+      if s == "cancelled" || s == "canceled" {
+        return "\(name) · cancelled"
+      }
+      if let last = lastLabel, !last.isEmpty {
+        let short = last.count > 28 ? String(last.prefix(28)) + "…" : last
+        return "\(name) · \(s.isEmpty ? "running" : s) · \(short)"
+      }
+      return "\(name) · \(s.isEmpty ? "running" : s)"
+    }
+
+    static func formatDuration(_ ms: Int) -> String {
+      let totalSec = max(0, ms / 1000)
+      if totalSec < 60 { return "\(totalSec)s" }
+      let m = totalSec / 60
+      let s = totalSec % 60
+      if m < 60 { return s == 0 ? "\(m)m" : "\(m)m \(s)s" }
+      let h = m / 60
+      let rm = m % 60
+      return rm == 0 ? "\(h)h" : "\(h)h \(rm)m"
+    }
+  }
+
   struct AgentRuntimeSummary: Equatable {
     let taskId: String?
     let provider: String?
@@ -152,6 +245,8 @@ struct ChatListRow {
     let cwd: String?
     let workMode: String?
     let model: String?
+    /// Bridge-reported thinking/reasoning effort for this run (`low`…`max`).
+    let reasoningEffort: String?
     let advisor: String?
     let permissionMode: String?
     let sessionId: String?
@@ -172,6 +267,46 @@ struct ChatListRow {
     let mcpServers: [AgentRuntimeMCPServer]
     let agents: [String]
     let skills: [String]
+    let teamMode: String?
+    let teamRunId: String?
+    let teamWorker: String?
+    let teamWorkers: [String]
+    let leadWorker: String?
+    let teamRole: String?
+    let suppressVisible: Bool
+    // Supervisor team runs render NO agent text bubble — only the progress runner
+    // cell + per-worker rows. The lead's final summary is the only prose. Server
+    // sets this true when teamMode == supervisor.
+    let suppressAllText: Bool
+    let teamWorkersStatus: [TeamWorkerStatus]
+    let computerId: String?
+    let computerLabel: String?
+
+    /// One-line strip for the lead cell: "Claude · running · … · Grok · done · 2m"
+    var teamProgressStrip: String? {
+      guard !teamWorkersStatus.isEmpty else { return nil }
+      let parts = teamWorkersStatus.map(\.compactLine)
+      return parts.joined(separator: "  ·  ")
+    }
+
+    /// Run-phase headline derived from the roster states (team-architecture-v2):
+    /// lead alone planning → workers building → lead verifying/integrating.
+    var teamPhaseLabel: String? {
+      guard !teamWorkersStatus.isEmpty else { return nil }
+      let leadHandle = (leadWorker ?? "").lowercased()
+      let workers = teamWorkersStatus.filter { $0.worker.lowercased() != leadHandle }
+      guard !workers.isEmpty else { return "Planning…" }
+      let runningCount = workers.filter(\.isRunning).count
+      let anyStarted = workers.contains {
+        !($0.status.lowercased() == "pending" || $0.status.lowercased() == "queued")
+      }
+      if runningCount > 0 {
+        return runningCount == 1 ? "Team building · 1 working" : "Team building · \(runningCount) working"
+      }
+      if !anyStarted { return "Planning…" }
+      // Every worker slice is terminal; the lead is integrating/verifying.
+      return "Verifying…"
+    }
   }
 
   struct AgentCardDestination: Codable, Equatable {
@@ -212,9 +347,14 @@ struct ChatListRow {
     let promptStatus: String?
     let promptPreview: String?
     let systemPrompt: String?
+    let modelProvider: String?
+    let modelId: String?
     let enabledTools: [String]
     let outputModes: [String]
     let voiceProfile: String?
+    /// `"google"` or `"openai_realtime"` — which speech provider this agent's
+    /// voice output uses. Nil = not yet configured.
+    let voiceProvider: String?
     let callbackURL: String?
     let apiBaseURL: String?
     let invokeURL: String?
@@ -293,9 +433,12 @@ struct ChatListRow {
         promptStatus: parseNonEmptyString(raw["prompt_status"] ?? raw["promptStatus"]),
         promptPreview: parseNonEmptyString(raw["prompt_preview"] ?? raw["promptPreview"]),
         systemPrompt: parseNonEmptyString(raw["system_prompt"] ?? raw["systemPrompt"]),
+        modelProvider: parseNonEmptyString(raw["model_provider"] ?? raw["modelProvider"]),
+        modelId: parseNonEmptyString(raw["model_id"] ?? raw["modelId"]),
         enabledTools: parseStringArray(raw["enabled_tools"] ?? raw["enabledTools"]),
         outputModes: parseStringArray(raw["output_modes"] ?? raw["outputModes"]),
         voiceProfile: parseNonEmptyString(raw["voice_profile"] ?? raw["voiceProfile"]),
+        voiceProvider: parseNonEmptyString(raw["voice_provider"] ?? raw["voiceProvider"]),
         callbackURL: parseNonEmptyString(raw["callback_url"] ?? raw["callbackUrl"]),
         apiBaseURL: parseNonEmptyString(raw["api_base_url"] ?? raw["apiBaseUrl"]),
         invokeURL: parseNonEmptyString(raw["invoke_url"] ?? raw["invokeUrl"]),
@@ -342,7 +485,10 @@ struct ChatListRow {
       if let promptStatus { raw["prompt_status"] = promptStatus }
       if let promptPreview { raw["prompt_preview"] = promptPreview }
       if let systemPrompt { raw["system_prompt"] = systemPrompt }
+      if let modelProvider { raw["model_provider"] = modelProvider }
+      if let modelId { raw["model_id"] = modelId }
       if let voiceProfile { raw["voice_profile"] = voiceProfile }
+      if let voiceProvider { raw["voice_provider"] = voiceProvider }
       if let callbackURL { raw["callback_url"] = callbackURL }
       if let apiBaseURL { raw["api_base_url"] = apiBaseURL }
       if let invokeURL { raw["invoke_url"] = invokeURL }
@@ -379,10 +525,24 @@ struct ChatListRow {
     case video
     case videoNote
     case media
+    case document
     case sticker
   }
 
   let kind: Kind
+  /// Stable identity for this row, for as long as it is the same message.
+  ///
+  /// **Never random.** The previous fallback was `UUID().uuidString` whenever the
+  /// payload arrived without a `key`, which looks harmless and is not: identity
+  /// is what `ChatTimelineLayout` keys its height memo by, so a row with a fresh
+  /// identity on every parse can never be found in the memo, is re-measured on
+  /// every rebuild forever, and is treated as a brand-new row by every diff.
+  ///
+  /// On device that showed as `[TimelineLayout] REBUILD 80ms … measured=1386
+  /// reused=0` — a layout whose entire design is "only re-ask about rows it has
+  /// not seen" re-asking about all of them, ~80ms at a time, repeatedly, some of
+  /// it under the reader's finger. Every derivation below is a pure function of
+  /// the payload, so the same row always yields the same string.
   let key: String
   let label: String
   let text: String
@@ -390,6 +550,7 @@ struct ChatListRow {
   let isMe: Bool
   let status: String?
   let isEdited: Bool
+  let editedAtMs: Int64?
   let isPinned: Bool
   let messageId: String?
   let chatId: String?
@@ -401,17 +562,56 @@ struct ChatListRow {
   let replyToId: String?
   let replyPreviewTitle: String?
   let replyPreviewText: String?
+  /// User id of the author referenced by the reply preview (quoted original).
+  /// Used to resolve that author's banner palette for the compact preview only.
+  let replyPreviewUserId: String?
+
+  /// The row is a reply whose quoted preview has not been resolved yet.
+  ///
+  /// The reply chip is worth roughly 46pt, and it arrives with enrichment rather than
+  /// with the message. A height measured in this state is a guess that WILL change —
+  /// the same category as a square-fallback media height — so it must not be trusted
+  /// or written to disk. Agent rows are excluded because they never render a reply
+  /// band at all and their reply fields flip nil↔value forever, which is exactly why
+  /// `==` already ignores them.
+  var hasUnresolvedReplyPreview: Bool {
+    guard !isAgentMessage, let replyToId, !replyToId.isEmpty else { return false }
+    let hasTitle = !(replyPreviewTitle ?? "").isEmpty
+    let hasText = !(replyPreviewText ?? "").isEmpty
+    return !hasTitle && !hasText
+  }
   let reactionEmoji: String?
+  let reactions: [Reaction]
+  let viewCount: Int?
   let shape: BubbleShape
   let messageType: String
   let mediaUrl: String?
   let localMediaUrl: String?
   let mediaKey: String?
   let thumbnailBase64: String?
+  /// Album art / cover URL for music rows (server sends it as metadata "cover").
+  /// Rendered in the music bubble, the mini player banner, and the full player.
+  let musicCoverURL: String?
+  /// Artist / uploader for music rows (metadata "artist").
+  let musicArtist: String?
+  /// Source platform label for music rows (metadata "source", e.g. soundcloud → SoundCloud).
+  let musicSource: String?
+  /// Telegram-style forward attribution (metadata isForwarded + forwardedFrom*).
+  let isForwarded: Bool
+  let forwardedFromName: String?
+  let forwardedFromAvatar: String?
+  /// Original author id — feeds `ChatAvatarNodeView` palette / URL resolution.
+  let forwardedFromUserId: String?
   let fileName: String?
+  /// Server-declared content type. A document cell cannot label itself from the
+  /// name alone — a printable page arrives with an extensionless url and would
+  /// otherwise claim to be a PDF.
+  let mimeType: String?
   let duration: Double?
   let waveform: [CGFloat]?
   let isVideoNote: Bool
+  let viewOnce: Bool
+  let mediaTtlSeconds: Int?
   let uploadProgress: Double?
   let fileSize: Int64?
   let mediaWidth: Double?
@@ -446,6 +646,16 @@ struct ChatListRow {
   // E2E-encrypted bridge image attachments (phone-held key); rendered locally in the
   // agent surface and relayed to the desktop bridge as opaque ciphertext.
   let agentBridgeAttachmentsEnc: [String]
+  /// Server-persisted JPEG thumbs for multi-image sends (blobs are stripped on persist).
+  let attachmentThumbnailsB64: [String]
+  /// Durable URL per picture for a multi-image send in a plain chat, first entry
+  /// being the message's own `mediaUrl`. Agent sends carry their pictures inline
+  /// as sealed blobs instead, so this stays empty for them.
+  let attachmentUrls: [String]
+  /// Per-picture media key, index-aligned with `attachmentUrls`. Media is
+  /// encrypted per file, so one key cannot open the whole set; an empty string
+  /// marks a picture that was uploaded unencrypted.
+  let attachmentMediaKeys: [String]
   let agentActionSourceText: String?
   let agentRegeneratePrompt: String?
   let agentCard: AgentCard?
@@ -480,6 +690,10 @@ struct ChatListRow {
   // Agent response whose turn errored out — drives the side regenerate button.
   let isAgentError: Bool
 
+  /// Structured service-message node (`metadata.service`) for centred notices
+  /// (join/leave/decision). Nil for ordinary bubbles.
+  let serviceMessage: ChatServiceMessage?
+
   var isAgentMention: Bool {
     return isMe && text.lowercased().contains("@vibe")
   }
@@ -499,9 +713,27 @@ struct ChatListRow {
     if isVideoNote {
       return .videoNote
     }
-    let inferredVideo = isVideoMediaReference(mediaUrl: mediaUrl, fileName: fileName)
-    let inferredImage = isImageMediaReference(mediaUrl: mediaUrl, fileName: fileName)
-    let inferredAudio = isAudioMediaReference(mediaUrl: mediaUrl, fileName: fileName)
+    // Sealed Claude/Codex image blobs (or durable thumbs after reopen) ride on
+    // messages that must render as media, not bare text.
+    //
+    // Explicitly NOT for `messageType == "file"`. A PDF ships a page thumbnail, and a
+    // thumbnail is decoration inside the document plate — not a reason to render the whole
+    // row as a photograph. Worse, whether that thumb is populated depends on which
+    // pipeline produced the row (warm snapshot, engine, durable cache), so the same
+    // message came back `.media` on one pass and `.document` on the next. The two render
+    // at different heights, and a row whose KIND is unstable has a height that oscillates
+    // forever: device run 2026-08-04, chat 47157fce5863, key 8-16f4a794ac1d, correcting
+    // `was=412 now=612` on one open and `was=612 now=412` on the next, visibly, every
+    // time. A genuine image sent as a file is still caught below by `inferredImage`, which
+    // reads the file name and url rather than the presence of a thumb.
+    if messageType != "file", !agentBridgeAttachmentsEnc.isEmpty || !attachmentThumbnailsB64.isEmpty
+    {
+      return .media
+    }
+    let references = ChatMediaReferenceExtensions(mediaUrl: mediaUrl, fileName: fileName)
+    let inferredVideo = references.isVideo
+    let inferredImage = references.isImage
+    let inferredAudio = references.isAudio
     switch messageType {
     case "voice", "music", "mp3", "audio":
       return .voice
@@ -524,7 +756,7 @@ struct ChatListRow {
       if inferredAudio {
         return .voice
       }
-      return isAgentMessage ? .text : .media
+      return .document
     default:
       if inferredVideo {
         return .video
@@ -535,110 +767,86 @@ struct ChatListRow {
       if inferredAudio {
         return .voice
       }
+      let hasAttachmentReference =
+        !(fileName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        || !(mediaUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+      if hasAttachmentReference {
+        return .document
+      }
       return .text
     }
   }
 
-  static func typingIndicator() -> ChatListRow {
-    if let row = ChatListRow(raw: [
-      "kind": "message",
-      "key": "peer-typing-indicator",
-      "message": [
-        "id": "peer-typing-indicator",
-        "text": "Typing...",
-        "timestamp": "",
-        "isMe": false,
-        "type": "typing",
-        "bubbleShape": [
-          "showTail": false,
-          "borderTopLeftRadius": 18,
-          "borderTopRightRadius": 18,
-          "borderBottomLeftRadius": 4,
-          "borderBottomRightRadius": 18,
-        ],
-      ],
-    ]) {
-      return row
-    }
-
-    // Guaranteed fallback for malformed payloads.
-    return ChatListRow(raw: [
-      "kind": "day",
-      "key": "peer-typing-indicator-fallback",
-      "label": "",
-    ])!
-  }
-
-  static func agentProgressIndicator(label: String, tool: String? = nil, status: String? = nil)
-    -> ChatListRow
-  {
-    let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-    let displayLabel = trimmedLabel.isEmpty ? "Working..." : trimmedLabel
-
-    var metadata: [String: Any] = [:]
-    if let tool {
-      let trimmedTool = tool.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !trimmedTool.isEmpty {
-        metadata["tool"] = trimmedTool
-      }
-    }
-    if let status {
-      let trimmedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !trimmedStatus.isEmpty {
-        metadata["status"] = trimmedStatus
-      }
-    }
-
-    var message: [String: Any] = [
-      "text": displayLabel,
-      "timestamp": "",
-      "isMe": false,
-      "type": "agent_progress",
-      "isAgentMessage": true,
-      "agentName": "Vibe AI",
-      "plainContent": displayLabel,
-      "bubbleShape": [
-        "showTail": false,
-        "borderTopLeftRadius": 18,
-        "borderTopRightRadius": 18,
-        "borderBottomLeftRadius": 18,
-        "borderBottomRightRadius": 18,
-      ],
-    ]
-    if !metadata.isEmpty {
-      message["metadata"] = metadata
-    }
-
-    if let row = ChatListRow(raw: [
-      "kind": "message",
-      "key": "agent-progress-indicator",
-      "message": message,
-    ]) {
-      return row
-    }
-
-    return ChatListRow(raw: [
-      "kind": "day",
-      "key": "agent-progress-indicator-fallback",
-      "label": "",
-    ])!
-  }
-
   var shouldShowUploadOverlay: Bool {
-    guard isMe else {
+    guard isMe, messageType != "gif" else {
       return false
     }
     let normalized = status?.lowercased() ?? ""
     return normalized == "sending" || normalized == "pending"
   }
 
+  /// Derives `key` from the payload, deterministically, in every case.
+  ///
+  /// The order is by decreasing confidence, and each step is something that does
+  /// not change while the row is the same row:
+  ///
+  /// 1. the key the sender supplied (`ChatEngine` emits `"m-<messageId>"`);
+  /// 2. the message id, which is what a supplied key is built from anyway;
+  /// 3. the client id, for an outgoing row the server has not acknowledged yet —
+  ///    it survives exactly until the real id arrives, which is the moment the
+  ///    row legitimately becomes a different row;
+  /// 4. the day label, for separators;
+  /// 5. a hash of the payload's identifying fields.
+  ///
+  /// Step 5 is the important one. It replaces a random UUID, and the difference
+  /// is that two parses of the same content now agree. A hash can collide where
+  /// a UUID cannot — but a collision means two rows the payload describes
+  /// identically, which the reader could not tell apart either, whereas the UUID
+  /// guaranteed a miss for *every* row that reached this branch.
+  private static func stableKey(raw: [String: Any], kindRaw: String) -> String {
+    func text(_ value: Any?) -> String? {
+      guard let string = value as? String else { return nil }
+      let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? nil : trimmed
+    }
+    if let supplied = text(raw["key"]) { return supplied }
+
+    let message = raw["message"] as? [String: Any]
+    if let id = text(message?["id"]) ?? text(raw["id"]) { return "m-\(id)" }
+    if let clientId = text(message?["clientId"]) ?? text(raw["clientId"]) {
+      return "c-\(clientId)"
+    }
+    if kindRaw == "day", let label = text(raw["label"]) { return "day-\(label)" }
+
+    // Last resort. Hash the fields that identify a row rather than the whole
+    // payload: status, upload progress and read receipts all mutate on a row
+    // that is still the same row, and folding them in would mint a new identity
+    // every time a checkmark changed — reintroducing the bug this replaces.
+    //
+    // FNV-1a and not `Hasher`. Swift seeds `Hasher` randomly per process, so it
+    // is stable within a launch and different on the next one — and row heights
+    // are persisted to disk under these keys, so a per-launch identity would
+    // hand every relaunch a cold height table while looking correct in testing.
+    let identifying = [
+      kindRaw,
+      text(message?["senderId"]) ?? text(raw["senderUserId"]) ?? "",
+      text(message?["createdAt"]) ?? text(raw["timestamp"]) ?? "",
+      text(message?["content"]) ?? text(raw["text"]) ?? "",
+      text(message?["mediaUrl"]) ?? "",
+    ].joined(separator: "\u{1}")
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    for byte in identifying.utf8 {
+      hash ^= UInt64(byte)
+      hash = hash &* 0x0000_0100_0000_01b3
+    }
+    return "h-\(String(hash, radix: 36))"
+  }
+
   init?(raw: [String: Any]) {
     guard let kindRaw = raw["kind"] as? String else {
       return nil
     }
-    let keyValue =
-      (raw["key"] as? String)?.isEmpty == false ? (raw["key"] as? String)! : UUID().uuidString
-    key = keyValue
+    key = Self.stableKey(raw: raw, kindRaw: kindRaw)
 
     if kindRaw == "day" {
       kind = .day
@@ -648,6 +856,7 @@ struct ChatListRow {
       isMe = false
       status = nil
       isEdited = false
+      editedAtMs = nil
       isPinned = false
       messageId = nil
       chatId = nil
@@ -655,7 +864,10 @@ struct ChatListRow {
       replyToId = nil
       replyPreviewTitle = nil
       replyPreviewText = nil
+      replyPreviewUserId = nil
       reactionEmoji = nil
+      reactions = []
+      viewCount = nil
       shape = BubbleShape(
         isMe: false, showTail: false, borderTopLeftRadius: 18, borderTopRightRadius: 18,
         borderBottomLeftRadius: 18, borderBottomRightRadius: 18)
@@ -664,10 +876,20 @@ struct ChatListRow {
       localMediaUrl = nil
       mediaKey = nil
       thumbnailBase64 = nil
+      musicCoverURL = nil
+      musicArtist = nil
+      musicSource = nil
+      isForwarded = false
+      forwardedFromName = nil
+      forwardedFromAvatar = nil
+      forwardedFromUserId = nil
       fileName = nil
+      mimeType = nil
       duration = nil
       waveform = nil
       isVideoNote = false
+      viewOnce = false
+      mediaTtlSeconds = nil
       uploadProgress = nil
       fileSize = nil
       mediaWidth = nil
@@ -686,6 +908,9 @@ struct ChatListRow {
       agentActionSourceId = nil
       agentBridgeResumeSessionId = nil
       agentBridgeAttachmentsEnc = []
+      attachmentThumbnailsB64 = []
+      attachmentUrls = []
+      attachmentMediaKeys = []
       agentActionSourceText = nil
       agentRegeneratePrompt = nil
       agentCard = nil
@@ -705,6 +930,7 @@ struct ChatListRow {
       hiddenFromTranscript = false
       isDeliveryFailed = false
       isAgentError = false
+      serviceMessage = nil
       return
     }
 
@@ -721,11 +947,19 @@ struct ChatListRow {
       ?? parseNonEmptyString(metadata?["caption"])
       ?? parseNonEmptyString(extra?["caption"])
       ?? ""
-    text = primaryText.isEmpty ? captionText : primaryText
+    // System notices may only carry body in metadata.text.
+    let systemMetaText = parseNonEmptyString(metadata?["text"])
+    text = {
+      if !primaryText.isEmpty { return primaryText }
+      if !captionText.isEmpty { return captionText }
+      return systemMetaText ?? ""
+    }()
     timestamp = (message["timestamp"] as? String) ?? ""
     isMe = (message["isMe"] as? Bool) ?? false
     status = message["status"] as? String
     isEdited = (message["isEdited"] as? Bool) ?? false
+    editedAtMs = Self.int64Value(
+      message["editedAt"] ?? message["edited_at"] ?? metadata?["editedAt"])
     isPinned = (message["isPinned"] as? Bool) ?? false
     messageId = parseNonEmptyString(message["id"])
     chatId =
@@ -767,7 +1001,38 @@ struct ChatListRow {
       in: [replyPreview],
       keys: ["text", "preview"]
     )
-    reactionEmoji = message["reactionEmoji"] as? String
+    replyPreviewUserId = firstNonEmptyString(
+      in: [message, metadata, extra],
+      keys: [
+        "replyPreviewUserId", "reply_preview_user_id",
+        "replyAuthorId", "reply_author_id",
+      ]
+    ) ?? firstNonEmptyString(
+      in: [replyPreview],
+      keys: [
+        "replyPreviewUserId", "reply_preview_user_id",
+        "replyAuthorId", "reply_author_id",
+        "senderId", "sender_id",
+        "userId", "user_id",
+        "from_id", "fromId",
+      ]
+    )
+    let parsedReactions = ((message["reactions"] as? [[String: Any]]) ?? []).compactMap {
+      item -> Reaction? in
+      guard let emoji = parseNonEmptyString(item["emoji"]),
+        let count = Self.intValue(item["count"]), count > 0
+      else { return nil }
+      return Reaction(
+        emoji: emoji,
+        count: count,
+        isSelected: (item["isSelected"] as? Bool) ?? (item["is_selected"] as? Bool) ?? false)
+    }
+    let legacyReaction = parseNonEmptyString(message["reactionEmoji"])
+    reactions = parsedReactions.isEmpty
+      ? legacyReaction.map { [Reaction(emoji: $0, count: 1, isSelected: true)] } ?? []
+      : parsedReactions
+    reactionEmoji = reactions.first?.emoji
+    viewCount = Self.intValue(message["viewCount"] ?? message["view_count"])
     messageType = ((message["type"] as? String) ?? "text").lowercased()
     shape = BubbleShape.from(raw: message["bubbleShape"] as? [String: Any], isMe: isMe)
 
@@ -816,13 +1081,71 @@ struct ChatListRow {
       in: [message, metadata, extra],
       keys: ["thumbnailBase64", "thumbnail_base64"]
     )
+    musicCoverURL = firstNonEmptyString(
+      in: [metadata, message, extra],
+      keys: ["cover", "coverUrl", "cover_url", "artwork", "artworkUrl", "artwork_url", "albumArt", "albumArtUrl"]
+    )
+    musicArtist = firstNonEmptyString(
+      in: [metadata, message, extra],
+      keys: ["artist", "uploader", "channel", "creator"]
+    )
+    if let rawSource = firstNonEmptyString(
+      in: [metadata, message, extra],
+      keys: ["source", "platform", "provider"]
+    ) {
+      let lower = rawSource.lowercased()
+      if lower.contains("soundcloud") {
+        musicSource = "SoundCloud"
+      } else if lower.contains("youtu") {
+        musicSource = "YouTube"
+      } else {
+        musicSource = rawSource.prefix(1).uppercased() + rawSource.dropFirst()
+      }
+    } else {
+      musicSource = nil
+    }
+    let metaIsForwarded =
+      (metadata?["isForwarded"] as? Bool) == true
+      || (metadata?["is_forwarded"] as? Bool) == true
+      || firstNonEmptyString(
+        in: [metadata, message],
+        keys: [
+          "forwardedFromUserId", "forwarded_from_user_id", "forwardedFromName",
+          "forwarded_from_name", "forwardedFromMessageId", "forwarded_from_message_id",
+        ]
+      ) != nil
+    isForwarded = metaIsForwarded
+    forwardedFromName = firstNonEmptyString(
+      in: [metadata, message],
+      keys: ["forwardedFromName", "forwarded_from_name", "forwardedFromTitle", "forwarded_from_title"]
+    )
+    forwardedFromAvatar = firstNonEmptyString(
+      in: [metadata, message],
+      keys: [
+        "forwardedFromAvatar", "forwarded_from_avatar", "forwardedFromAvatarUrl",
+        "forwarded_from_avatar_url",
+      ]
+    )
+    forwardedFromUserId = firstNonEmptyString(
+      in: [metadata, message],
+      keys: ["forwardedFromUserId", "forwarded_from_user_id"]
+    )
     fileName =
       (message["fileName"] as? String)
       ?? (message["file_name"] as? String)
       ?? (metadata?["fileName"] as? String)
       ?? (metadata?["file_name"] as? String)
+      ?? (metadata?["title"] as? String)
+    mimeType =
+      (message["mimeType"] as? String)
+      ?? (message["mime_type"] as? String)
+      ?? (metadata?["mimeType"] as? String)
+      ?? (metadata?["mime_type"] as? String)
+      ?? (metadata?["mime"] as? String)
     duration =
       parseDouble(message["duration"])
+      ?? parseDouble(metadata?["durationSeconds"])
+      ?? parseDouble(metadata?["duration_seconds"])
       ?? parseDouble(metadata?["duration"])
     waveform =
       parseWaveform(message["waveform"])
@@ -831,6 +1154,13 @@ struct ChatListRow {
       (message["isVideoNote"] as? Bool)
       ?? (metadata?["isVideoNote"] as? Bool)
       ?? false
+    viewOnce =
+      parseBool(message["viewOnce"] ?? message["view_once"])
+      ?? parseBool(metadata?["viewOnce"] ?? metadata?["view_once"])
+      ?? false
+    mediaTtlSeconds =
+      parseLong(message["mediaTtlSeconds"] ?? message["media_ttl_seconds"]).map(Int.init)
+      ?? parseLong(metadata?["mediaTtlSeconds"] ?? metadata?["media_ttl_seconds"]).map(Int.init)
     uploadProgress =
       parseDouble(message["uploadProgress"])
       ?? parseDouble(message["upload_progress"])
@@ -925,6 +1255,29 @@ struct ChatListRow {
         + parseStringArray(message["attachmentsEnc"])
         + parseStringArray(message["attachments_enc"])
     )
+    attachmentThumbnailsB64 = uniqueStrings(
+      parseStringArray(metadata?["attachmentThumbnailsB64"])
+        + parseStringArray(metadata?["attachment_thumbnails_b64"])
+        + parseStringArray(message["attachmentThumbnailsB64"])
+        + parseStringArray(message["attachment_thumbnails_b64"])
+    )
+    // NOT de-duplicated, and not concatenated across sources: these two are
+    // index-aligned with each other and with the thumbs, so dropping a repeat or
+    // appending a second source would silently pair a picture with another
+    // picture's key.
+    let parsedAttachmentUrls =
+      parseStringArray(metadata?["attachmentUrls"]).isEmpty
+      ? parseStringArray(message["attachmentUrls"])
+      : parseStringArray(metadata?["attachmentUrls"])
+    let parsedAttachmentKeys =
+      parseStringArray(metadata?["attachmentMediaKeys"]).isEmpty
+      ? parseStringArray(message["attachmentMediaKeys"])
+      : parseStringArray(metadata?["attachmentMediaKeys"])
+    attachmentUrls = parsedAttachmentUrls
+    attachmentMediaKeys =
+      parsedAttachmentKeys.count == parsedAttachmentUrls.count
+      ? parsedAttachmentKeys
+      : Array(repeating: "", count: parsedAttachmentUrls.count)
     agentActionSourceText = firstNonEmptyString(
       in: [metadata, message],
       keys: ["sourceText", "actionSourceText"]
@@ -939,7 +1292,10 @@ struct ChatListRow {
     let rawAgentRuntimeForLog =
       metadata?["agentRuntime"] ?? metadata?["agent_runtime"] ?? message["agentRuntime"]
         ?? message["agent_runtime"]
-    if metadata?["agentWorker"] != nil || rawAgentRuntimeForLog != nil {
+    // Probe only under -VibeVerboseLogs: this init runs for EVERY agent row on EVERY
+    // setRows pass, and an always-on NSLog here (hundreds per streamed frame) is a
+    // measurable share of the main-thread stall users feel as list jank.
+    if VibeDebugLog.verboseEnabled, metadata?["agentWorker"] != nil || rawAgentRuntimeForLog != nil {
       NSLog(
         "[AgentView] rowparse msg=\(parseNonEmptyString(message["id"] ?? message["messageId"]) ?? "?") "
           + "agentWorker=\(metadata?["agentWorker"] ?? "nil") via=\(metadata?["agentWorkerVia"] ?? "nil") "
@@ -951,7 +1307,9 @@ struct ChatListRow {
     // Falls back to the legacy plaintext `agentRuntime` for older messages.
     let decryptedRuntime = AgentRuntimeCrypto.decrypt(
       metadata?["agentRuntimeEnc"] ?? message["agentRuntimeEnc"])
-    if metadata?["agentRuntimeEnc"] != nil || message["agentRuntimeEnc"] != nil {
+    if VibeDebugLog.verboseEnabled,
+      metadata?["agentRuntimeEnc"] != nil || message["agentRuntimeEnc"] != nil
+    {
       NSLog(
         "[AgentView] rowparse enc present decrypted=\(decryptedRuntime != nil) hasKey=\(AgentRuntimeCrypto.hasKey)"
       )
@@ -1018,6 +1376,25 @@ struct ChatListRow {
       (message["isError"] as? Bool)
       ?? (message["is_error"] as? Bool)
       ?? false
+    serviceMessage =
+      ChatServiceMessage.parse(metadata?["service"])
+      ?? ChatServiceMessage.parse(message["service"])
+  }
+
+  private static func intValue(_ value: Any?) -> Int? {
+    if let value = value as? Int { return value }
+    if let value = value as? UInt64 { return Int(clamping: value) }
+    if let value = value as? NSNumber { return value.intValue }
+    if let value = value as? String { return Int(value) }
+    return nil
+  }
+
+  private static func int64Value(_ value: Any?) -> Int64? {
+    if let value = value as? Int64 { return value }
+    if let value = value as? UInt64 { return Int64(clamping: value) }
+    if let value = value as? NSNumber { return value.int64Value }
+    if let value = value as? String { return Int64(value) }
+    return nil
   }
 }
 
@@ -1072,52 +1449,67 @@ private func parseNonEmptyString(_ raw: Any?) -> String? {
   return nil
 }
 
+private let videoMediaExtensions: Set<String> = ["mp4", "mov", "m4v", "avi", "mkv", "webm"]
+private let imageMediaExtensions: Set<String> = [
+  "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp",
+]
+private let audioMediaExtensions: Set<String> = [
+  "mp3", "m4a", "aac", "wav", "aiff", "flac", "ogg", "oga", "opus", "caf", "alac",
+]
+
 private func normalizedMediaExtension(_ value: String?) -> String? {
   guard let value else { return nil }
   let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return nil }
   let pathExtension: String
-  if let url = URL(string: trimmed), !url.pathExtension.isEmpty {
+  // `URL(string:)` is only needed to keep a query string out of the extension. Parsing a
+  // bare file name through it costs the same as parsing a URL, and this runs per row per
+  // sizing pass — `isVideoMediaReference` was the top frame of a 0.44s main-thread hang.
+  if trimmed.contains("?") || trimmed.contains("#"), let url = URL(string: trimmed),
+    !url.pathExtension.isEmpty
+  {
     pathExtension = url.pathExtension
   } else {
     pathExtension = (trimmed as NSString).pathExtension
   }
-  let normalized = pathExtension.replacingOccurrences(of: ".", with: "").lowercased()
+  guard !pathExtension.isEmpty else { return nil }
+  let normalized = pathExtension.hasPrefix(".")
+    ? String(pathExtension.dropFirst()).lowercased() : pathExtension.lowercased()
   return normalized.isEmpty ? nil : normalized
 }
 
+/// Both references' extensions, resolved once. `visualKind` asks three questions about
+/// the same pair, and resolving per question parsed each string three times over.
+struct ChatMediaReferenceExtensions {
+  let fileNameExt: String?
+  let mediaUrlExt: String?
+
+  init(mediaUrl: String?, fileName: String?) {
+    fileNameExt = normalizedMediaExtension(fileName)
+    mediaUrlExt = normalizedMediaExtension(mediaUrl)
+  }
+
+  private func matches(_ set: Set<String>) -> Bool {
+    if let fileNameExt, set.contains(fileNameExt) { return true }
+    if let mediaUrlExt, set.contains(mediaUrlExt) { return true }
+    return false
+  }
+
+  var isVideo: Bool { matches(videoMediaExtensions) }
+  var isImage: Bool { matches(imageMediaExtensions) }
+  var isAudio: Bool { matches(audioMediaExtensions) }
+}
+
 private func isVideoMediaReference(mediaUrl: String?, fileName: String?) -> Bool {
-  let extensions = [
-    normalizedMediaExtension(fileName),
-    normalizedMediaExtension(mediaUrl),
-  ]
-  return extensions.contains(where: { ext in
-    guard let ext else { return false }
-    return ["mp4", "mov", "m4v", "avi", "mkv", "webm"].contains(ext)
-  })
+  ChatMediaReferenceExtensions(mediaUrl: mediaUrl, fileName: fileName).isVideo
 }
 
 private func isImageMediaReference(mediaUrl: String?, fileName: String?) -> Bool {
-  let extensions = [
-    normalizedMediaExtension(fileName),
-    normalizedMediaExtension(mediaUrl),
-  ]
-  return extensions.contains(where: { ext in
-    guard let ext else { return false }
-    return ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"].contains(ext)
-  })
+  ChatMediaReferenceExtensions(mediaUrl: mediaUrl, fileName: fileName).isImage
 }
 
 private func isAudioMediaReference(mediaUrl: String?, fileName: String?) -> Bool {
-  let extensions = [
-    normalizedMediaExtension(fileName),
-    normalizedMediaExtension(mediaUrl),
-  ]
-  return extensions.contains(where: { ext in
-    guard let ext else { return false }
-    return ["mp3", "m4a", "aac", "wav", "aiff", "flac", "ogg", "oga", "opus", "caf", "alac"]
-      .contains(ext)
-  })
+  ChatMediaReferenceExtensions(mediaUrl: mediaUrl, fileName: fileName).isAudio
 }
 
 private func firstNonEmptyString(
@@ -1282,15 +1674,33 @@ func chatListRowContentEqual(_ lhs: ChatListRow, _ rhs: ChatListRow) -> Bool {
   return lhs.kind == rhs.kind && lhs.key == rhs.key && lhs.label == rhs.label
     && lhs.text == rhs.text && lhs.timestamp == rhs.timestamp && lhs.isMe == rhs.isMe
     && lhs.status == rhs.status
-    && lhs.isEdited == rhs.isEdited && lhs.isPinned == rhs.isPinned
-    && lhs.messageId == rhs.messageId && lhs.reactionEmoji == rhs.reactionEmoji
-    && lhs.replyToId == rhs.replyToId
-    && lhs.replyPreviewTitle == rhs.replyPreviewTitle
-    && lhs.replyPreviewText == rhs.replyPreviewText
+    && lhs.isEdited == rhs.isEdited && lhs.editedAtMs == rhs.editedAtMs
+    && lhs.isPinned == rhs.isPinned && lhs.messageId == rhs.messageId
+    && lhs.reactions == rhs.reactions && lhs.viewCount == rhs.viewCount
+    // Render-aware: agent-turn bubbles never render reply bands (zero replyPreview
+    // reads in the whole VibeAgentKit stack), and reply fields on agent rows are
+    // pipeline-unstable — they ride only the live delivery, so history/store copies
+    // flip nil↔value forever after. Comparing them repaints (and re-measures) rows
+    // whose rendered pixels are identical: the mode=batch changed=73 post-push
+    // flicker/shift on every reply-heavy team-chat open.
+    && (lhs.isAgentMessage
+      || (lhs.replyToId == rhs.replyToId
+        && lhs.replyPreviewTitle == rhs.replyPreviewTitle
+        && lhs.replyPreviewText == rhs.replyPreviewText
+        && lhs.replyPreviewUserId == rhs.replyPreviewUserId))
     && lhs.messageType == rhs.messageType
     && lhs.mediaUrl == rhs.mediaUrl && lhs.localMediaUrl == rhs.localMediaUrl
     && lhs.mediaKey == rhs.mediaKey && lhs.fileName == rhs.fileName
+    && lhs.mimeType == rhs.mimeType
+    && lhs.musicCoverURL == rhs.musicCoverURL
+    && lhs.musicArtist == rhs.musicArtist
+    && lhs.musicSource == rhs.musicSource
+    && lhs.isForwarded == rhs.isForwarded
+    && lhs.forwardedFromName == rhs.forwardedFromName
+    && lhs.forwardedFromAvatar == rhs.forwardedFromAvatar
+    && lhs.forwardedFromUserId == rhs.forwardedFromUserId
     && optionalDoubleEqual(lhs.duration, rhs.duration) && lhs.isVideoNote == rhs.isVideoNote
+    && lhs.viewOnce == rhs.viewOnce && lhs.mediaTtlSeconds == rhs.mediaTtlSeconds
     && optionalWaveformEqual(lhs.waveform, rhs.waveform)
     && optionalDoubleEqual(lhs.uploadProgress, rhs.uploadProgress)
     && lhs.fileSize == rhs.fileSize
@@ -1326,6 +1736,133 @@ func chatListRowContentEqual(_ lhs: ChatListRow, _ rhs: ChatListRow) -> Bool {
     && lhs.hiddenFromTranscript == rhs.hiddenFromTranscript
     && lhs.isDeliveryFailed == rhs.isDeliveryFailed
     && lhs.isAgentError == rhs.isAgentError
+    && lhs.serviceMessage == rhs.serviceMessage
+}
+
+/// Stable (cross-launch) FNV-1a hash — used for persisted-height validation.
+private func chatListStableHashHex(_ string: String) -> String {
+  var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+  for byte in string.utf8 {
+    hash ^= UInt64(byte)
+    hash = hash &* 0x0000_0100_0000_01b3
+  }
+  return String(hash, radix: 16)
+}
+
+/// Content signature covering the SAME fields as `chatListRowContentEqual` above —
+/// keep the two in sync. Rows with equal signatures must have equal layout inputs,
+/// so a disk-persisted measured height may be reused across launches. Complex value
+/// fields go through `String(describing:)`, which is deterministic for the value
+/// types ChatListRow stores; a mismatch is always safe (the row is just re-measured).
+/// Single source of truth for the height-validity signature: `(fieldName, value)`
+/// per component. `chatListRowContentSignature` hashes the values; the persisted-
+/// height miss diagnostic diffs the values field-by-field to NAME the one that
+/// flipped between measure-time and reopen (a wrong guess at the culprit removes a
+/// height-relevant field and makes the jump worse — so we identify, never guess).
+func chatListRowSignatureFields(_ row: ChatListRow) -> [(name: String, value: String)] {
+  return [
+    ("kind", String(describing: row.kind)), ("key", row.key), ("label", row.label),
+    ("text", row.text), ("timestamp", row.timestamp), ("isMe", String(row.isMe)),
+    ("status", String(describing: row.status)), ("isEdited", String(row.isEdited)),
+    ("isPinned", String(row.isPinned)), ("messageId", String(describing: row.messageId)),
+    ("reactionEmoji", String(describing: row.reactionEmoji)),
+    // Keep in sync with chatListRowContentEqual: reply fields are render-inert and
+    // pipeline-unstable on agent rows — a stable placeholder keeps persisted heights
+    // valid across the nil↔value flips (was: 8 reason=sig promote misses per open).
+    ("replyToId", row.isAgentMessage ? "-" : String(describing: row.replyToId)),
+    ("replyPreviewTitle", row.isAgentMessage ? "-" : String(describing: row.replyPreviewTitle)),
+    ("replyPreviewText", row.isAgentMessage ? "-" : String(describing: row.replyPreviewText)),
+    // Neutral for EVERY row, not just agent rows: the reply author's id has no effect on
+    // any measurement, and it is resolved LATE (the reply-preview pass fills nil→uuid ~2s
+    // after open — `[ChatOpen] parse reuse-MISS … fields=[message.replyPreviewUserId=77]`).
+    // Heights are persisted after that pass and audited before it, so including it made
+    // every reply row fail its signature audit on the next open and re-measure on screen.
+    ("replyPreviewUserId", "-"),
+    ("messageType", row.messageType), ("mediaUrl", String(describing: row.mediaUrl)),
+    ("localMediaUrl", String(describing: row.localMediaUrl)),
+    ("mediaKey", String(describing: row.mediaKey)), ("fileName", String(describing: row.fileName)),
+    ("musicCoverURL", String(describing: row.musicCoverURL)),
+    ("musicArtist", String(describing: row.musicArtist)),
+    ("musicSource", String(describing: row.musicSource)),
+    ("isForwarded", String(row.isForwarded)),
+    ("forwardedFromName", String(describing: row.forwardedFromName)),
+    ("forwardedFromAvatar", String(describing: row.forwardedFromAvatar)),
+    ("forwardedFromUserId", String(describing: row.forwardedFromUserId)),
+    ("duration", String(describing: row.duration)), ("isVideoNote", String(row.isVideoNote)),
+    ("waveform", String(describing: row.waveform)),
+    ("uploadProgress", String(describing: row.uploadProgress)),
+    ("fileSize", String(describing: row.fileSize)),
+    // Neutral, same reasoning as `replyPreviewUserId`: nothing in BubbleShape can change a
+    // row's HEIGHT. The tail is drawn outside the bubble's bounds (see `applyShapePath`'s
+    // paintRect overhang) and the four radii are cosmetic; `isMe`, the one shape field that
+    // does move layout, is already its own component above. Meanwhile the value is
+    // session-unstable: `rowsByApplyingNativeOutgoingSequenceShape` patches the corner radii
+    // and tail of messages you sent in THIS session, so the height is persisted with merged
+    // radii and re-read on the next launch with plain 18s — the row then fails its audit and
+    // re-measures on screen for a difference that cannot move it (observed as
+    // `height-audit stale=1 … sig=1 flipped=[shape=1]`, shifted=0). Keep the slot rather than
+    // dropping the tuple: `chatListRowSignatureFlippedFieldNames` diffs positionally against
+    // already-persisted `f` arrays, and removing an entry would misname every field after it.
+    ("shape", "-"),
+    ("stickerId", String(describing: row.stickerId)),
+    ("stickerPackId", String(describing: row.stickerPackId)),
+    ("stickerBundleFileName", String(describing: row.stickerBundleFileName)),
+    ("isAgentMessage", String(row.isAgentMessage)),
+    ("agentName", String(describing: row.agentName)), ("agentId", String(describing: row.agentId)),
+    ("agentUserId", String(describing: row.agentUserId)),
+    ("agentUsername", String(describing: row.agentUsername)),
+    ("plainContent", String(describing: row.plainContent)),
+    ("isStreamingText", String(row.isStreamingText)),
+    ("agentProgressNodes", String(describing: row.agentProgressNodes)),
+    ("agentActionSourceId", String(describing: row.agentActionSourceId)),
+    ("agentActionSourceText", String(describing: row.agentActionSourceText)),
+    ("agentRegeneratePrompt", String(describing: row.agentRegeneratePrompt)),
+    ("agentCard", String(describing: row.agentCard)),
+    ("agentRuntime", String(describing: row.agentRuntime)),
+    ("agentMsgKind", String(describing: row.agentMsgKind)),
+    ("agentActionEnc", String(describing: row.agentActionEnc)),
+    ("agentActionsEnc", String(describing: row.agentActionsEnc)),
+    ("relatedMessageIds", String(describing: row.relatedMessageIds)),
+    ("relatedMessagesTitle", String(describing: row.relatedMessagesTitle)),
+    ("relatedMessagesSubtitle", String(describing: row.relatedMessagesSubtitle)),
+    ("isEventNotification", String(row.isEventNotification)),
+    ("isEventInboxSummary", String(row.isEventInboxSummary)),
+    ("eventType", String(describing: row.eventType)),
+    ("eventPriority", String(describing: row.eventPriority)),
+    ("eventThreadId", String(describing: row.eventThreadId)),
+    ("eventInboxRole", String(describing: row.eventInboxRole)),
+    ("hiddenFromTranscript", String(row.hiddenFromTranscript)),
+    ("isDeliveryFailed", String(row.isDeliveryFailed)), ("isAgentError", String(row.isAgentError)),
+    // Appended LAST — the flipped-field diff is positional against persisted arrays.
+    // Emoji + count only: those set the strip width and its wrap; isSelected is a tint.
+    ("reactions", row.reactions.map { "\($0.emoji)x\($0.count)" }.joined(separator: ",")),
+  ]
+}
+
+func chatListRowContentSignature(_ row: ChatListRow) -> String {
+  let joined = chatListRowSignatureFields(row).map(\.value).joined(separator: "\u{1F}")
+  return chatListStableHashHex(joined) + ".\(joined.utf8.count)"
+}
+
+/// Per-field short hashes of the content signature, positionally aligned with
+/// `chatListRowSignatureFields`. Persisted (agent rows only) so a `reason=sig` miss
+/// can name the flipped field.
+func chatListRowSignatureFieldHashes(_ row: ChatListRow) -> [String] {
+  chatListRowSignatureFields(row).map { chatListStableHashHex($0.value) }
+}
+
+/// Names of the signature fields whose current hash differs from the persisted one.
+func chatListRowSignatureFlippedFieldNames(
+  _ row: ChatListRow, against persisted: [String]
+) -> [String] {
+  let current = chatListRowSignatureFields(row)
+  var flipped: [String] = []
+  for (i, comp) in current.enumerated() where i < persisted.count {
+    if chatListStableHashHex(comp.value) != persisted[i] {
+      flipped.append(comp.name)
+    }
+  }
+  return flipped
 }
 
 private func progressNodeLabel(from item: [String: Any]) -> String? {
@@ -1380,6 +1917,10 @@ private func progressNodeLabel(from item: [String: Any]) -> String? {
   }
 }
 
+func parseAgentProgressNodesPublic(_ raw: Any?) -> [ChatListRow.AgentProgressNode] {
+  parseAgentProgressNodes(raw)
+}
+
 private func parseAgentProgressNodes(_ raw: Any?) -> [ChatListRow.AgentProgressNode] {
   guard let items = raw as? [[String: Any]] else {
     // DIAGNOSTIC (text-in-live-feed): the payload isn't even an array of dicts.
@@ -1431,15 +1972,16 @@ private func parseAgentProgressNodes(_ raw: Any?) -> [ChatListRow.AgentProgressN
       tokens: parseLong(item["tokens"]).map { Int($0) },
       durationMs: parseLong(item["durationMs"]).map { Int($0) },
       action: parseNonEmptyString(item["action"]),
-      detail: detail
+      detail: detail,
+      tool: parseNonEmptyString(item["tool"])?.lowercased()
     )
   }
 
   // DIAGNOSTIC (text-in-live-feed): one summary per parse — how many text nodes
   // survived vs. were dropped. textKept=0 with raw>0 means the prose never arrives
   // as a node at all (it's in the message body, suppressed mid-stream).
-  let textKept = nodes.filter { $0.kind == "text" }.count
-  if !items.isEmpty {
+  if VibeDebugLog.verboseEnabled, !items.isEmpty {
+    let textKept = nodes.filter { $0.kind == "text" }.count
     NSLog(
       "[AgentNodes] parsed raw=%d kept=%d textKept=%d dropped=[%@] kinds=[%@]",
       items.count, nodes.count, textKept, dropped.joined(separator: ","),
@@ -1469,6 +2011,13 @@ func parseAgentRuntimeSummary(_ raw: Any?) -> ChatListRow.AgentRuntimeSummary? {
     cwd: parseNonEmptyString(object["cwd"]),
     workMode: parseNonEmptyString(object["workMode"] ?? object["work_mode"]),
     model: parseNonEmptyString(object["model"]),
+    reasoningEffort: parseNonEmptyString(
+      object["reasoningEffort"]
+        ?? object["reasoning_effort"]
+        ?? object["agentBridgeReasoningEffort"]
+        ?? object["intelligence"]
+        ?? object["agentBridgeIntelligence"]
+    ),
     advisor: parseNonEmptyString(object["advisor"] ?? object["advisorModel"] ?? object["advisor_model"]),
     permissionMode: parseNonEmptyString(object["permissionMode"] ?? object["permission_mode"]),
     sessionId: parseNonEmptyString(object["sessionId"] ?? object["session_id"]),
@@ -1488,8 +2037,42 @@ func parseAgentRuntimeSummary(_ raw: Any?) -> ChatListRow.AgentRuntimeSummary? {
     providerCommands: parseStringArray(object["providerCommands"] ?? object["provider_commands"]),
     mcpServers: mcpServers,
     agents: parseStringArray(object["agents"]),
-    skills: parseStringArray(object["skills"])
+    skills: parseStringArray(object["skills"]),
+    teamMode: parseNonEmptyString(object["teamMode"] ?? object["team_mode"]),
+    teamRunId: parseNonEmptyString(object["teamRunId"] ?? object["team_run_id"]),
+    teamWorker: parseNonEmptyString(object["teamWorker"] ?? object["team_worker"]),
+    teamWorkers: parseStringArray(object["teamWorkers"] ?? object["team_workers"]),
+    leadWorker: parseNonEmptyString(object["leadWorker"] ?? object["lead_worker"]),
+    teamRole: parseNonEmptyString(object["teamRole"] ?? object["team_role"]),
+    suppressVisible: parseBool(object["suppressVisible"] ?? object["suppress_visible"]) ?? false,
+    suppressAllText: parseBool(object["suppressAllText"] ?? object["suppress_all_text"]) ?? false,
+    teamWorkersStatus: parseTeamWorkersStatus(
+      object["teamWorkersStatus"] ?? object["team_workers_status"]),
+    computerId: parseNonEmptyString(object["computerId"] ?? object["computer_id"]),
+    computerLabel: parseNonEmptyString(object["computerLabel"] ?? object["computer_label"])
   )
+}
+
+func parseTeamWorkersStatus(_ raw: Any?) -> [ChatListRow.TeamWorkerStatus] {
+  guard let list = raw as? [[String: Any]] else { return [] }
+  return list.compactMap { object in
+    guard let worker = parseNonEmptyString(object["worker"] ?? object["handle"]) else {
+      return nil
+    }
+    let label =
+      parseNonEmptyString(object["label"] ?? object["name"]) ?? worker.capitalized
+    return ChatListRow.TeamWorkerStatus(
+      worker: worker,
+      label: label,
+      status: parseNonEmptyString(object["status"]) ?? "pending",
+      startedAt: parseLong(object["startedAt"] ?? object["started_at"]),
+      finishedAt: parseLong(object["finishedAt"] ?? object["finished_at"]),
+      durationMs: parseLong(object["durationMs"] ?? object["duration_ms"]).map { Int($0) },
+      summary: parseNonEmptyString(object["summary"]),
+      taskId: parseNonEmptyString(object["taskId"] ?? object["task_id"]),
+      lastLabel: parseNonEmptyString(object["lastLabel"] ?? object["last_label"])
+    )
+  }
 }
 
 private func parseAgentRuntimeCommand(_ raw: Any?) -> ChatListRow.AgentRuntimeCommand? {

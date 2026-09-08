@@ -10,15 +10,19 @@ private let chatGapDebugOverlayEnabled = false
 // MARK: - Delegate
 
 protocol ChatInputBarDelegate: AnyObject {
-  func inputBarDidSend(text: String, attachments: [String])
+  func inputBarDidSend(text: String, attachments: [String], imageLocalURIs: [String])
   // Hold-menu Edit: composer submits new text/caption for an already-sent message.
   func inputBarDidSubmitEdit(messageId: String, text: String)
   func inputBarDidRequestStopStreaming()
-  func inputBarDidSendWithAgentMention(text: String, agentText: String)
+  func inputBarDidSendWithAgentMention(
+    text: String, agentText: String, attachments: [String], imageLocalURIs: [String]
+  )
   func inputBarDidSendWithStandaloneAgentMention(
     text: String,
     agentText: String,
-    agentUsername: String
+    agentUsername: String,
+    attachments: [String],
+    imageLocalURIs: [String]
   )
   func inputBarDidRequestVibeAgentBuilder()
   func inputBarDidRequestAgentPanel()
@@ -27,6 +31,10 @@ protocol ChatInputBarDelegate: AnyObject {
   func inputBarTextDidChange(text: String)
   func inputBarHeightDidChange()
   func inputBarDidRequestSelectionAction(_ action: String, payload: [String: Any]?)
+  /// Pending group/channel forward: user tapped send on the forward banner composer.
+  func inputBarDidConfirmForward(caption: String)
+  /// User dismissed the forward banner (cancel).
+  func inputBarDidCancelForward()
   // Rich attachment callbacks (mirrors AttachmentMenu.tsx)
   func inputBarDidSelectImage(
     uri: String,
@@ -44,7 +52,8 @@ protocol ChatInputBarDelegate: AnyObject {
     url: String,
     previewUrl: String,
     width: Int,
-    height: Int
+    height: Int,
+    localData: Data?
   )
   func inputBarDidSelectSticker(
     stickerId: String,
@@ -67,6 +76,8 @@ protocol ChatInputBarDelegate: AnyObject {
 
 // MARK: - FluidVADVisualizer
 
+/// Classic fluid VAD: layered soft disks that pulse behind the play plate / mic.
+/// Color is injected via `applyColor` (dynamic from cover art or accent).
 final class FluidVADVisualizer: UIView {
   private let layers: [CAShapeLayer] = [CAShapeLayer(), CAShapeLayer(), CAShapeLayer()]
   private var displayLink: CADisplayLink?
@@ -77,14 +88,22 @@ final class FluidVADVisualizer: UIView {
   override init(frame: CGRect) {
     super.init(frame: frame)
     isUserInteractionEnabled = false
+    backgroundColor = .clear
+    clipsToBounds = false
+    // Soften hard disc edges so layers read as fluid, not solid rings.
     layers.forEach {
+      $0.fillColor = UIColor.white.withAlphaComponent(0.35).cgColor
+      $0.opacity = 0
       layer.addSublayer($0)
     }
   }
+
   required init?(coder: NSCoder) { nil }
 
   func applyColor(_ color: UIColor) {
-    layers.forEach { $0.fillColor = color.cgColor }
+    // Dynamic tint (cover dominant / accent). Keep alpha moderate so the plate stays primary.
+    let fill = color.withAlphaComponent(min(0.45, max(0.18, color.cgColor.alpha)))
+    layers.forEach { $0.fillColor = fill.cgColor }
   }
 
   override func layoutSubviews() {
@@ -100,6 +119,7 @@ final class FluidVADVisualizer: UIView {
   func start() {
     displayLink?.invalidate()
     time = 0
+    isHidden = false
     alpha = 1
     displayLink = CADisplayLink(target: self, selector: #selector(tick))
     displayLink?.add(to: .main, forMode: .common)
@@ -117,15 +137,12 @@ final class FluidVADVisualizer: UIView {
     time += 0.05
     for (i, l) in layers.enumerated() {
       let idx = CGFloat(i + 1)
-
       let idlePulse = sin(time * 2.0 + CGFloat(i * 2)) * 0.04
       let activePush = level * activePushMultiplier * idx
       let finalScale = 1.0 + idlePulse + activePush
-
       l.transform = CATransform3DMakeScale(finalScale, finalScale, 1.0)
-
       let baseOpacity = max(0.0, 1.0 - (finalScale - 1.0) * 1.5)
-      l.opacity = Float(baseOpacity * 0.6)
+      l.opacity = Float(baseOpacity * 0.55)
     }
   }
 }
@@ -158,6 +175,85 @@ private final class ChatGifPanelPassthroughView: UIView {
   }
 }
 
+/// Vector trash with a hinged lid so cancel can open/close the door, not scale a glyph.
+private final class TrashCanGlyphView: UIView {
+  private let canLayer = CAShapeLayer()
+  private let ribLayer = CAShapeLayer()
+  private let lidWrap = UIView()
+  private let lidBar = UIView()
+  private let lidHandle = UIView()
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    isUserInteractionEnabled = false
+    canLayer.fillColor = UIColor.clear.cgColor
+    canLayer.strokeColor = UIColor.systemRed.cgColor
+    canLayer.lineCap = .round
+    canLayer.lineJoin = .round
+    layer.addSublayer(canLayer)
+    ribLayer.fillColor = UIColor.clear.cgColor
+    ribLayer.strokeColor = UIColor.systemRed.cgColor
+    ribLayer.lineCap = .round
+    layer.addSublayer(ribLayer)
+    lidWrap.clipsToBounds = false
+    addSubview(lidWrap)
+    lidBar.backgroundColor = .systemRed
+    lidWrap.addSubview(lidBar)
+    lidHandle.backgroundColor = .systemRed
+    lidWrap.addSubview(lidHandle)
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    let w = bounds.width
+    let h = bounds.height
+    let line = max(1.7, w * 0.10)
+    canLayer.lineWidth = line
+    ribLayer.lineWidth = max(1.2, line * 0.72)
+    let can = CGRect(x: w * 0.24, y: h * 0.40, width: w * 0.52, height: h * 0.46)
+    canLayer.path = UIBezierPath(roundedRect: can, byRoundingCorners: [.bottomLeft, .bottomRight], cornerRadii: CGSize(width: w * 0.10, height: w * 0.10)).cgPath
+    let ribs = UIBezierPath()
+    let ribY0 = can.minY + line
+    let ribY1 = can.maxY - line
+    for t in [0.33, 0.50, 0.67] as [CGFloat] {
+      let x = can.minX + can.width * t
+      ribs.move(to: CGPoint(x: x, y: ribY0))
+      ribs.addLine(to: CGPoint(x: x, y: ribY1))
+    }
+    ribLayer.path = ribs.cgPath
+    let lidH = max(2.2, line * 1.15)
+    let lidW = w * 0.70
+    lidWrap.bounds = CGRect(x: 0, y: 0, width: lidW, height: lidH + w * 0.16)
+    lidWrap.center = CGPoint(x: bounds.midX, y: h * 0.30)
+    lidBar.frame = CGRect(x: 0, y: lidWrap.bounds.height - lidH, width: lidW, height: lidH)
+    lidBar.layer.cornerRadius = lidH * 0.5
+    let handleW = w * 0.22
+    lidHandle.frame = CGRect(
+      x: (lidW - handleW) / 2, y: 0, width: handleW, height: max(2.0, line * 0.9))
+    lidHandle.layer.cornerRadius = lidHandle.bounds.height * 0.5
+  }
+
+  func setLidOpen(_ open: Bool, animated: Bool) {
+    let angle = open ? CGFloat(-0.92) : 0
+    let lift = open ? CGAffineTransform(translationX: -1, y: -2).rotated(by: angle) : .identity
+    if animated {
+      UIView.animate(
+        withDuration: open ? 0.28 : 0.18,
+        delay: 0,
+        usingSpringWithDamping: open ? 0.62 : 0.55,
+        initialSpringVelocity: open ? 0.55 : 0.9,
+        options: [.beginFromCurrentState, .allowUserInteraction]
+      ) {
+        self.lidWrap.transform = lift
+      }
+    } else {
+      lidWrap.transform = lift
+    }
+  }
+}
+
 private final class ChatGifPanelOverlayController: UIViewController {
   override func loadView() {
     let passthroughView = ChatGifPanelPassthroughView()
@@ -169,34 +265,61 @@ private final class ChatGifPanelOverlayController: UIViewController {
 private final class VideoNoteRecorderViewController: UIViewController,
   AVCaptureFileOutputRecordingDelegate
 {
-  var onFinished: ((URL?, Double, Bool) -> Void)?
+  /// Final stop: url / total duration / shouldSend / optional release morph snapshot +
+  /// circle frame in the host list view (for flight animation).
+  var onFinished: ((URL?, Double, Bool, UIImage?, CGRect) -> Void)?
+  /// Host view used to convert the circle frame for the release morph.
+  weak var morphCoordinateView: UIView?
+  /// Fired when pause settles with a draft segment available for the input preview.
+  var onPaused: ((URL?, Double) -> Void)?
+  /// Fired when recording resumes after pause.
+  var onResumed: (() -> Void)?
+  /// Live duration while recording (for input timer).
+  var onDurationTick: ((Double) -> Void)?
+
+  private(set) var isPaused = false
+  private(set) var accumulatedDuration: Double = 0
 
   private let session = AVCaptureSession()
   private let movieOutput = AVCaptureMovieFileOutput()
   private let sessionQueue = DispatchQueue(label: "chat.video.note.session", qos: .userInitiated)
   private var previewLayer: AVCaptureVideoPreviewLayer?
+  /// Full-screen BLUR backdrop (original placement — covers entire preview, including over input).
   private let backdropBlur = UIVisualEffectView(
-    effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+    effect: UIBlurEffect(style: .systemThinMaterialDark))
+  private let backdropTint = UIView()
   private let circleContainer = UIView()
+  /// Attachment-style loading blur over the circle until camera frames are live.
   private let circleLoadingBlur = UIVisualEffectView(
-    effect: UIBlurEffect(style: .systemMaterialDark))
+    effect: UIBlurEffect(style: .systemThinMaterialDark))
   private let circleLoadingShade = UIView()
-  private let circleSpinner = UIActivityIndicatorView(style: .large)
-  private let hintLabel = UILabel()
+  /// Near the input (bottom), not page/circle chrome.
+  private let flashGlass = UIVisualEffectView(effect: nil)
+  private let flashButton = UIButton(type: .system)
+  /// Single-tap flip, placed next to flash near the input.
+  private let flipGlass = UIVisualEffectView(effect: nil)
+  private let flipButton = UIButton(type: .system)
+  /// Height of the composer so flash/flip sit just above it, not behind it.
+  var bottomChromeInset: CGFloat = 96
 
   private var startedAt: Date?
+  private var segmentStartedAt: Date?
   private var pendingSend = true
   private var stopRequested = false
+  private var pauseRequested = false
   private var hasAppeared = false
   private var didFinish = false
   private var isSessionConfigured = false
   private var hasStartedFileRecording = false
+  private var hasScheduledInitialRecording = false
   private var recordingStartTimeoutWorkItem: DispatchWorkItem?
+  private var cameraPosition: AVCaptureDevice.Position = .front
+  private var videoDeviceInput: AVCaptureDeviceInput?
+  private var recordedSegments: [URL] = []
 
   private let progressLayer = CAShapeLayer()
   private var displayLink: CADisplayLink?
   private let maxDuration: TimeInterval = 60.0
-  private let closeButton = UIButton(type: .system)
 
   override var prefersStatusBarHidden: Bool { true }
   override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
@@ -205,15 +328,28 @@ private final class VideoNoteRecorderViewController: UIViewController,
     super.viewDidLoad()
     view.backgroundColor = .clear
     view.isUserInteractionEnabled = true
+
+    // Full-screen blur (not a solid black plate, not an input-cutout). Starts
+    // hidden — playEntranceAnimation() fades it in once installed on screen,
+    // instead of the whole overlay snapping in at full opacity.
     backdropBlur.frame = view.bounds
     backdropBlur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-    backdropBlur.alpha = 0.88
+    backdropBlur.alpha = 0.0
     view.addSubview(backdropBlur)
+    backdropTint.frame = view.bounds
+    backdropTint.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    backdropTint.backgroundColor = UIColor.black.withAlphaComponent(0.16)
+    backdropTint.isUserInteractionEnabled = false
+    backdropTint.alpha = 0.0
+    view.addSubview(backdropTint)
 
-    circleContainer.backgroundColor = .black
+    // Circle itself: no solid fill ever (only camera + loading blur — attachment
+    // camera cell pattern, preview under blur until ready). It DOES scale/fade in
+    // via playEntranceAnimation() rather than snapping to full size instantly.
+    circleContainer.backgroundColor = .clear
     circleContainer.clipsToBounds = true
     circleContainer.alpha = 0
-    circleContainer.transform = CGAffineTransform(translationX: 0, y: 28).scaledBy(x: 0.92, y: 0.92)
+    circleContainer.transform = CGAffineTransform(scaleX: 0.58, y: 0.58)
     view.addSubview(circleContainer)
 
     circleLoadingBlur.isUserInteractionEnabled = false
@@ -225,35 +361,37 @@ private final class VideoNoteRecorderViewController: UIViewController,
     circleLoadingShade.alpha = 1.0
     circleContainer.addSubview(circleLoadingShade)
 
-    circleSpinner.hidesWhenStopped = true
-    circleSpinner.color = UIColor.white.withAlphaComponent(0.9)
-    circleSpinner.startAnimating()
-    circleContainer.addSubview(circleSpinner)
-
     progressLayer.strokeColor = ChatListAppearance.brandAccentFallback.cgColor
     progressLayer.lineWidth = 4
     progressLayer.fillColor = UIColor.clear.cgColor
     progressLayer.lineCap = .round
     progressLayer.strokeEnd = 0
-    // Put progress layer directly in view so it perfectly aligns over circleContainer without being clipped by it
     view.layer.addSublayer(progressLayer)
 
-    let xCfg = UIImage.SymbolConfiguration(pointSize: 15, weight: .bold)
-    closeButton.setImage(UIImage(systemName: "xmark", withConfiguration: xCfg), for: .normal)
-    closeButton.tintColor = .white
-    closeButton.backgroundColor = UIColor(white: 0, alpha: 0.5)
-    closeButton.layer.cornerRadius = 20
-    closeButton.alpha = 0
-    closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
-    view.addSubview(closeButton)
+    let controlCfg = UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
+    styleRecorderControlGlass(flashGlass)
+    flashButton.setImage(
+      UIImage(systemName: "bolt.slash.fill", withConfiguration: controlCfg), for: .normal)
+    flashButton.tintColor = UIColor(white: 0.96, alpha: 1)
+    flashButton.addTarget(self, action: #selector(flashTapped), for: .touchUpInside)
+    flashGlass.contentView.addSubview(flashButton)
+    flashGlass.alpha = 0
+    view.addSubview(flashGlass)
 
-    hintLabel.text = "Recording Video Note..."
-    hintLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-    hintLabel.textColor = UIColor.white.withAlphaComponent(0.92)
-    hintLabel.textAlignment = .center
-    hintLabel.numberOfLines = 1
-    hintLabel.alpha = 0
-    view.addSubview(hintLabel)
+    styleRecorderControlGlass(flipGlass)
+    flipButton.setImage(
+      UIImage(systemName: "arrow.triangle.2.circlepath.camera.fill", withConfiguration: controlCfg),
+      for: .normal)
+    flipButton.tintColor = UIColor(white: 0.96, alpha: 1)
+    flipButton.addTarget(self, action: #selector(flipCameraTapped), for: .touchUpInside)
+    flipGlass.contentView.addSubview(flipButton)
+    flipGlass.alpha = 0
+    view.addSubview(flipGlass)
+
+    // Double-tap anywhere on the full overlay (not only the circle) → flip camera.
+    let doubleTap = UITapGestureRecognizer(target: self, action: #selector(flipCameraTapped))
+    doubleTap.numberOfTapsRequired = 2
+    view.addGestureRecognizer(doubleTap)
   }
 
   deinit {
@@ -261,26 +399,55 @@ private final class VideoNoteRecorderViewController: UIViewController,
     displayLink?.invalidate()
   }
 
-  @objc private func closeTapped() {
-    stopRecording(send: false)
+  @objc private func flashTapped() {
+    sessionQueue.async { [weak self] in
+      guard let self, let device = self.videoDeviceInput?.device, device.hasTorch else { return }
+      do {
+        try device.lockForConfiguration()
+        if device.torchMode == .on {
+          device.torchMode = .off
+        } else if device.isTorchModeSupported(.on) {
+          try device.setTorchModeOn(level: 1.0)
+        }
+        let on = device.torchMode == .on
+        device.unlockForConfiguration()
+        DispatchQueue.main.async {
+          let name = on ? "bolt.fill" : "bolt.slash.fill"
+          let cfg = UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
+          self.flashButton.setImage(UIImage(systemName: name, withConfiguration: cfg), for: .normal)
+        }
+      } catch {
+        // ignore torch failures
+      }
+    }
+  }
+
+  @objc private func flipCameraTapped() {
+    flipCamera()
   }
 
   @objc private func updateProgress() {
-    guard let start = startedAt else { return }
-    let elapsed = Date().timeIntervalSince(start)
-    let progress = min(1.0, CGFloat(elapsed / maxDuration))
+    guard !isPaused else { return }
+    let segmentElapsed = Date().timeIntervalSince(segmentStartedAt ?? startedAt ?? Date())
+    let total = accumulatedDuration + max(0, segmentElapsed)
+    let progress = min(1.0, CGFloat(total / maxDuration))
     progressLayer.strokeEnd = progress
-    if elapsed >= maxDuration {
+    onDurationTick?(total)
+    if total >= maxDuration {
       stopRecording(send: true)
     }
   }
 
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
+    // Full-screen blur (original placement).
+    backdropBlur.frame = view.bounds
+    backdropTint.frame = view.bounds
+
     let side = min(view.bounds.width - 52, 300)
     let circleFrame = CGRect(
       x: (view.bounds.width - side) * 0.5,
-      y: (view.bounds.height - side) * 0.5 - 20,
+      y: (view.bounds.height - side) * 0.5 - 36,
       width: side,
       height: side
     )
@@ -288,7 +455,6 @@ private final class VideoNoteRecorderViewController: UIViewController,
     circleContainer.layer.cornerRadius = side * 0.5
     circleLoadingBlur.frame = circleContainer.bounds
     circleLoadingShade.frame = circleContainer.bounds
-    circleSpinner.center = CGPoint(x: circleContainer.bounds.midX, y: circleContainer.bounds.midY)
 
     let path = UIBezierPath(
       arcCenter: CGPoint(x: circleFrame.midX, y: circleFrame.midY),
@@ -299,39 +465,91 @@ private final class VideoNoteRecorderViewController: UIViewController,
     )
     progressLayer.path = path.cgPath
 
-    closeButton.frame = CGRect(
-      x: circleFrame.midX - 20,
-      y: circleFrame.maxY + 24,
-      width: 40,
-      height: 40
-    )
-
-    hintLabel.frame = CGRect(
-      x: 24,
-      y: closeButton.frame.maxY + 16,
-      width: view.bounds.width - 48,
-      height: 22
-    )
+    // Flash + flip sit just above the composer, aligned with the attach control.
+    let controlSize: CGFloat = 38
+    let bottomPad = max(bottomChromeInset, max(view.safeAreaInsets.bottom, 8) + 52) + 2
+    let controlsY = view.bounds.height - bottomPad - controlSize
+    flashGlass.frame = CGRect(x: 20, y: controlsY, width: controlSize, height: controlSize)
+    flipGlass.frame = CGRect(
+      x: flashGlass.frame.maxX + 4, y: controlsY, width: controlSize, height: controlSize)
+    flashButton.frame = flashGlass.contentView.bounds
+    flipButton.frame = flipGlass.contentView.bounds
     previewLayer?.frame = circleContainer.bounds
+  }
+
+  private func styleRecorderControlGlass(_ glass: UIVisualEffectView) {
+    glass.clipsToBounds = true
+    if #available(iOS 26.0, *) {
+      let effect = UIGlassEffect()
+      effect.isInteractive = true
+      glass.effect = effect
+      glass.cornerConfiguration = .capsule()
+    } else {
+      glass.effect = UIBlurEffect(style: .systemMaterialDark)
+      glass.layer.cornerRadius = 16
+    }
   }
 
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
     guard !hasAppeared else { return }
     hasAppeared = true
+    // Circle already visible; only start capture if not pre-warmed.
+    if !isSessionConfigured || !session.isRunning {
+      beginRecordingFlow()
+    } else if !hasStartedFileRecording {
+      startSessionAndRecording()
+    }
+  }
+
+  /// Warm camera + attach preview BEFORE presentation (attachment-menu pattern).
+  /// Preview mounts under loading blur so we never flash a solid circle.
+  func prepareCameraAndStart(completion: ((Bool) -> Void)? = nil) {
+    ensurePreviewLayerMounted()
+    beginRecordingFlow(completion: completion)
+  }
+
+  private var didPlayEntrance = false
+
+  /// Scale + fade the circle/chrome into view. Called explicitly by the host once
+  /// our view is actually installed on screen — this child controller is added to
+  /// an already-visible parent (no push/present transition), so viewDidAppear is
+  /// not a reliable signal here.
+  func playEntranceAnimation() {
+    guard !didPlayEntrance else { return }
+    didPlayEntrance = true
+    view.layoutIfNeeded()
+    UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut]) {
+      self.backdropBlur.alpha = 1.0
+      self.backdropTint.alpha = 1.0
+    }
     UIView.animate(
-      withDuration: 0.28,
+      withDuration: 0.42,
       delay: 0,
-      usingSpringWithDamping: 0.86,
-      initialSpringVelocity: 0.36,
-      options: [.curveEaseOut, .beginFromCurrentState]
+      usingSpringWithDamping: 0.76,
+      initialSpringVelocity: 0.35,
+      options: [.curveEaseOut, .allowUserInteraction]
     ) {
       self.circleContainer.alpha = 1
       self.circleContainer.transform = .identity
-      self.hintLabel.alpha = 1
-      self.closeButton.alpha = 1
     }
-    beginRecordingFlow()
+    UIView.animate(withDuration: 0.22, delay: 0.10, options: [.curveEaseOut]) {
+      self.flashGlass.alpha = 1
+      self.flipGlass.alpha = 1
+    }
+  }
+
+  private func ensurePreviewLayerMounted() {
+    if previewLayer == nil {
+      let preview = AVCaptureVideoPreviewLayer(session: session)
+      preview.videoGravity = .resizeAspectFill
+      previewLayer = preview
+      // Under loading blur — camera (or empty session) always sits behind the blur.
+      circleContainer.layer.insertSublayer(preview, at: 0)
+    } else {
+      previewLayer?.session = session
+    }
+    previewLayer?.frame = circleContainer.bounds
   }
 
   override func viewWillDisappear(_ animated: Bool) {
@@ -345,22 +563,77 @@ private final class VideoNoteRecorderViewController: UIViewController,
 
   override func viewDidDisappear(_ animated: Bool) {
     super.viewDidDisappear(animated)
-    if isBeingDismissed || isMovingFromParent, !didFinish {
-      finish(url: nil, duration: 0.0, shouldSend: false)
+    // Only tear down when we are truly being removed — NOT on transient
+    // appearance transitions. A false finish here is what "hold → note vanishes".
+    guard !didFinish else { return }
+    guard isMovingFromParent || isBeingDismissed || parent == nil else { return }
+    // Parent still holds us as a child → not a real teardown.
+    if parent != nil, !isMovingFromParent { return }
+    finish(url: nil, duration: 0.0, shouldSend: false)
+  }
+
+  /// Soft-hide camera chrome while input shows the paused draft (session stays warm).
+  func setCameraChromeHidden(_ hidden: Bool, animated: Bool) {
+    let apply = {
+      self.circleContainer.alpha = hidden ? 0 : 1
+      self.flashGlass.alpha = hidden ? 0 : 1
+      self.flipGlass.alpha = hidden ? 0 : 1
+      self.backdropBlur.alpha = hidden ? 0 : 1
+      self.backdropTint.alpha = hidden ? 0 : 1
+      self.progressLayer.opacity = hidden ? 0 : 1
+    }
+    if animated {
+      UIView.animate(withDuration: 0.22, delay: 0, options: [.beginFromCurrentState, .curveEaseInOut], animations: apply)
+    } else {
+      apply()
     }
   }
 
-  func stopRecording(send: Bool) {
-    guard !didFinish else { return }
-    pendingSend = send
+  func pauseRecording() {
+    guard !didFinish, !isPaused else { return }
+    pauseRequested = true
+    pendingSend = false
     sessionQueue.async { [weak self] in
       guard let self else { return }
       if self.movieOutput.isRecording {
         self.movieOutput.stopRecording()
       } else {
+        DispatchQueue.main.async {
+          self.isPaused = true
+          self.onPaused?(self.recordedSegments.last, self.accumulatedDuration)
+        }
+      }
+    }
+  }
+
+  func resumeRecording() {
+    guard !didFinish, isPaused else { return }
+    guard accumulatedDuration < maxDuration - 0.35 else {
+      stopRecording(send: true)
+      return
+    }
+    isPaused = false
+    pauseRequested = false
+    setCameraChromeHidden(false, animated: true)
+    onResumed?()
+    startSegmentRecording()
+  }
+
+  func stopRecording(send: Bool) {
+    guard !didFinish else { return }
+    pendingSend = send
+    pauseRequested = false
+    isPaused = false
+    sessionQueue.async { [weak self] in
+      guard let self else { return }
+      if self.movieOutput.isRecording {
+        self.movieOutput.stopRecording()
+      } else if !self.recordedSegments.isEmpty {
+        DispatchQueue.main.async {
+          self.completeWithSegments(shouldSend: send)
+        }
+      } else {
         self.stopRequested = true
-        // If recording has not started yet, allow immediate cancel so the overlay
-        // never gets stuck waiting for AVCapture callbacks that may not arrive.
         guard !send else { return }
         DispatchQueue.main.async {
           self.finish(url: nil, duration: 0.0, shouldSend: false)
@@ -369,15 +642,36 @@ private final class VideoNoteRecorderViewController: UIViewController,
     }
   }
 
-  private func beginRecordingFlow() {
+  private func beginRecordingFlow(completion: ((Bool) -> Void)? = nil) {
     requestCapturePermissions { [weak self] videoGranted, audioGranted in
-      guard let self else { return }
-      guard videoGranted else {
-        self.finish(url: nil, duration: 0.0, shouldSend: false)
+      guard let self else {
+        completion?(false)
         return
       }
-      self.configureSessionIfNeeded(includeAudio: audioGranted)
-      self.startSessionAndRecording()
+      guard videoGranted else {
+        completion?(false)
+        if self.hasAppeared {
+          self.finish(url: nil, duration: 0.0, shouldSend: false)
+        }
+        return
+      }
+      // Never sessionQueue.sync from main — AVCapture configure/startRunning
+      // can block for seconds (main-thread-stall + kevent wait).
+      self.configureSessionIfNeeded(includeAudio: audioGranted) { [weak self] ok in
+        guard let self else {
+          completion?(false)
+          return
+        }
+        guard ok else {
+          completion?(false)
+          if self.hasAppeared {
+            self.finish(url: nil, duration: 0.0, shouldSend: false)
+          }
+          return
+        }
+        self.startSessionAndRecording()
+        completion?(true)
+      }
     }
   }
 
@@ -431,56 +725,125 @@ private final class VideoNoteRecorderViewController: UIViewController,
     completeOnMain(false, false)
   }
 
-  private func configureSessionIfNeeded(includeAudio: Bool) {
-    sessionQueue.sync {
-      guard !isSessionConfigured else { return }
+  private func configureSessionIfNeeded(
+    includeAudio: Bool,
+    completion: @escaping (Bool) -> Void
+  ) {
+    sessionQueue.async { [weak self] in
+      guard let self else {
+        DispatchQueue.main.async { completion(false) }
+        return
+      }
+      if self.isSessionConfigured {
+        DispatchQueue.main.async {
+          self.ensurePreviewLayerMounted()
+          self.applyPreviewMirroring()
+          completion(true)
+        }
+        return
+      }
 
-      session.beginConfiguration()
-      if session.canSetSessionPreset(.vga640x480) {
-        session.sessionPreset = .vga640x480
+      self.session.beginConfiguration()
+      if self.session.canSetSessionPreset(.vga640x480) {
+        self.session.sessionPreset = .vga640x480
       }
 
       if let videoDevice = AVCaptureDevice.default(
-        .builtInWideAngleCamera, for: .video, position: .front)
+        .builtInWideAngleCamera, for: .video, position: self.cameraPosition)
         ?? AVCaptureDevice.default(for: .video),
         let videoInput = try? AVCaptureDeviceInput(device: videoDevice),
-        session.canAddInput(videoInput)
+        self.session.canAddInput(videoInput)
       {
-        session.addInput(videoInput)
+        self.session.addInput(videoInput)
+        self.videoDeviceInput = videoInput
+        self.cameraPosition = videoDevice.position
       }
 
       if includeAudio,
         let audioDevice = AVCaptureDevice.default(for: .audio),
         let audioInput = try? AVCaptureDeviceInput(device: audioDevice),
-        session.canAddInput(audioInput)
+        self.session.canAddInput(audioInput)
       {
-        session.addInput(audioInput)
+        self.session.addInput(audioInput)
       }
 
-      if session.canAddOutput(movieOutput) {
-        session.addOutput(movieOutput)
+      if self.session.canAddOutput(self.movieOutput) {
+        self.session.addOutput(self.movieOutput)
       }
-      movieOutput.maxRecordedDuration = CMTime(seconds: maxDuration, preferredTimescale: 600)
+      self.movieOutput.maxRecordedDuration = CMTime(
+        seconds: self.maxDuration, preferredTimescale: 600)
+      self.applyMovieOutputMirroring()
 
-      if let connection = movieOutput.connection(with: .video) {
-        if connection.isVideoMirroringSupported {
-          connection.isVideoMirrored = true
-        }
-        if connection.isVideoStabilizationSupported {
-          connection.preferredVideoStabilizationMode = .auto
-        }
-      }
-
-      session.commitConfiguration()
-      isSessionConfigured = true
+      self.session.commitConfiguration()
+      let ok = self.videoDeviceInput != nil
+      self.isSessionConfigured = ok
 
       DispatchQueue.main.async {
-        let preview = AVCaptureVideoPreviewLayer(session: self.session)
-        preview.videoGravity = .resizeAspectFill
-        self.previewLayer?.removeFromSuperlayer()
-        self.previewLayer = preview
-        self.circleContainer.layer.insertSublayer(preview, at: 0)
+        self.ensurePreviewLayerMounted()
+        self.applyPreviewMirroring()
         self.view.setNeedsLayout()
+        // Loading blur stays until recording starts / first frames (no solid plate).
+        completion(ok)
+      }
+    }
+  }
+
+  private func applyMovieOutputMirroring() {
+    if let connection = movieOutput.connection(with: .video) {
+      if connection.isVideoMirroringSupported {
+        connection.isVideoMirrored = (cameraPosition == .front)
+      }
+      if connection.isVideoStabilizationSupported {
+        connection.preferredVideoStabilizationMode = .auto
+      }
+    }
+  }
+
+  private func applyPreviewMirroring() {
+    if let conn = previewLayer?.connection, conn.isVideoMirroringSupported {
+      conn.automaticallyAdjustsVideoMirroring = false
+      conn.isVideoMirrored = (cameraPosition == .front)
+    }
+  }
+
+  private func applyVideoConnectionMirroring() {
+    applyMovieOutputMirroring()
+    // previewLayer is a UI layer — only touch it on main.
+    if Thread.isMainThread {
+      applyPreviewMirroring()
+    } else {
+      DispatchQueue.main.async { [weak self] in
+        self?.applyPreviewMirroring()
+      }
+    }
+  }
+
+  private func flipCamera() {
+    sessionQueue.async { [weak self] in
+      guard let self, self.isSessionConfigured else { return }
+      let next: AVCaptureDevice.Position = self.cameraPosition == .front ? .back : .front
+      guard
+        let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: next),
+        let newInput = try? AVCaptureDeviceInput(device: device)
+      else { return }
+      self.session.beginConfiguration()
+      if let current = self.videoDeviceInput {
+        self.session.removeInput(current)
+      }
+      if self.session.canAddInput(newInput) {
+        self.session.addInput(newInput)
+        self.videoDeviceInput = newInput
+        self.cameraPosition = next
+      } else if let current = self.videoDeviceInput {
+        self.session.addInput(current)
+      }
+      self.applyVideoConnectionMirroring()
+      self.session.commitConfiguration()
+      DispatchQueue.main.async {
+        // Torch only on rear camera; keep flash control near input always visible.
+        let rear = self.cameraPosition == .back
+        self.flashButton.isEnabled = rear
+        self.flashGlass.alpha = rear ? 1 : 0.4
       }
     }
   }
@@ -489,6 +852,8 @@ private final class VideoNoteRecorderViewController: UIViewController,
     sessionQueue.async { [weak self] in
       guard let self else { return }
       guard self.isSessionConfigured, !self.didFinish else { return }
+      guard !self.hasScheduledInitialRecording else { return }
+      self.hasScheduledInitialRecording = true
       if !self.session.isRunning {
         self.session.startRunning()
       }
@@ -498,27 +863,65 @@ private final class VideoNoteRecorderViewController: UIViewController,
         }
         return
       }
-      let fm = FileManager.default
-      let base =
-        fm.urls(for: .cachesDirectory, in: .userDomainMask).first
-        ?? fm.temporaryDirectory
-      let dir = base.appendingPathComponent("video-notes", isDirectory: true)
-      try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-      let outputURL =
-        dir
-        .appendingPathComponent("video-note-\(UUID().uuidString)")
-        .appendingPathExtension("mov")
-      self.startedAt = Date()
-
-      DispatchQueue.main.async {
-        self.displayLink?.invalidate()
-        self.displayLink = CADisplayLink(target: self, selector: #selector(self.updateProgress))
-        self.displayLink?.add(to: .main, forMode: .common)
-        self.armRecordingStartTimeout()
+      let beginSegment: () -> Void = { [weak self] in
+        guard let self else { return }
+        DispatchQueue.main.async {
+          if self.startedAt == nil { self.startedAt = Date() }
+          self.displayLink?.invalidate()
+          self.displayLink = CADisplayLink(target: self, selector: #selector(self.updateProgress))
+          self.displayLink?.add(to: .main, forMode: .common)
+        }
+        self.startSegmentRecordingLocked()
       }
-
-      self.movieOutput.startRecording(to: outputURL, recordingDelegate: self)
+      self.waitUntilCaptureSettled(then: beginSegment)
     }
+  }
+
+  private func waitUntilCaptureSettled(then work: @escaping () -> Void) {
+    let started = Date()
+    let minHold: TimeInterval = 0.45
+    let timeout: TimeInterval = 1.25
+    func poll() {
+      let device = videoDeviceInput?.device
+      let adjusting =
+        device?.isAdjustingExposure == true || device?.isAdjustingWhiteBalance == true
+      let elapsed = Date().timeIntervalSince(started)
+      if elapsed >= timeout || (!adjusting && elapsed >= minHold) {
+        work()
+        return
+      }
+      sessionQueue.asyncAfter(deadline: .now() + 0.05, execute: poll)
+    }
+    poll()
+  }
+
+  private func startSegmentRecording() {
+    sessionQueue.async { [weak self] in
+      self?.startSegmentRecordingLocked()
+    }
+  }
+
+  private func startSegmentRecordingLocked() {
+    guard isSessionConfigured, !didFinish, !movieOutput.isRecording else { return }
+    if !session.isRunning {
+      session.startRunning()
+    }
+    let fm = FileManager.default
+    let base =
+      fm.urls(for: .cachesDirectory, in: .userDomainMask).first
+      ?? fm.temporaryDirectory
+    let dir = base.appendingPathComponent("video-notes", isDirectory: true)
+    try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    let outputURL =
+      dir
+      .appendingPathComponent("video-note-\(UUID().uuidString)")
+      .appendingPathExtension("mov")
+    DispatchQueue.main.async {
+      self.segmentStartedAt = Date()
+      if self.startedAt == nil { self.startedAt = Date() }
+      self.armRecordingStartTimeout()
+    }
+    movieOutput.startRecording(to: outputURL, recordingDelegate: self)
   }
 
   private func stopSession() {
@@ -537,24 +940,133 @@ private final class VideoNoteRecorderViewController: UIViewController,
     }
   }
 
+  /// Circle frame in a target view's coordinates (for release morph flight).
+  func circleFrame(in target: UIView) -> CGRect {
+    circleContainer.convert(circleContainer.bounds, to: target)
+  }
+
+  /// Last-frame snapshot of the camera circle (session teardown kills the live layer).
+  func captureCircleSnapshot() -> UIImage? {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = UIScreen.main.scale
+    format.opaque = false
+    let size = circleContainer.bounds.size
+    guard size.width > 1, size.height > 1 else { return nil }
+    let renderer = UIGraphicsImageRenderer(size: size, format: format)
+    return renderer.image { ctx in
+      circleContainer.layer.render(in: ctx.cgContext)
+    }
+  }
+
   private func finish(url: URL?, duration: Double, shouldSend: Bool) {
     guard !didFinish else { return }
     didFinish = true
     recordingStartTimeoutWorkItem?.cancel()
     recordingStartTimeoutWorkItem = nil
+    displayLink?.invalidate()
+    displayLink = nil
+
+    // Capture morph geometry while the circle is still on screen.
+    let morphImage = shouldSend ? captureCircleSnapshot() : nil
+    let morphFrame: CGRect = {
+      guard shouldSend, let host = morphCoordinateView ?? view.superview else { return .zero }
+      return circleFrame(in: host)
+    }()
 
     let callback = {
       let cb = self.onFinished
       self.onFinished = nil
-      cb?(url, duration, shouldSend)
+      self.onPaused = nil
+      self.onResumed = nil
+      self.onDurationTick = nil
+      cb?(url, duration, shouldSend, morphImage, morphFrame)
     }
 
-    if presentingViewController != nil {
-      dismiss(animated: true) {
-        callback()
+    // Fade the overlay (not the circle). Callback first so the list flight is
+    // on-screen before this view is removed — no empty-list flash.
+    if shouldSend {
+      UIView.animate(withDuration: 0.18, delay: 0, options: [.beginFromCurrentState, .curveEaseOut]) {
+        self.backdropBlur.alpha = 0
+        self.backdropTint.alpha = 0
+        self.flashGlass.alpha = 0
+        self.flipGlass.alpha = 0
+        self.progressLayer.opacity = 0
       }
-    } else {
-      callback()
+    }
+    callback()
+    if parent != nil {
+      willMove(toParent: nil)
+      view.removeFromSuperview()
+      removeFromParent()
+    } else if presentingViewController != nil {
+      dismiss(animated: false)
+    }
+  }
+
+  private func completeWithSegments(shouldSend: Bool) {
+    let segments = recordedSegments
+    let duration = accumulatedDuration
+    guard shouldSend, !segments.isEmpty else {
+      stopSession()
+      finish(url: nil, duration: duration, shouldSend: false)
+      return
+    }
+    if segments.count == 1 {
+      stopSession()
+      finish(url: segments[0], duration: duration, shouldSend: true)
+      return
+    }
+    mergeSegments(segments) { [weak self] merged in
+      guard let self else { return }
+      self.stopSession()
+      self.finish(url: merged ?? segments.last, duration: duration, shouldSend: true)
+    }
+  }
+
+  private func mergeSegments(_ urls: [URL], completion: @escaping (URL?) -> Void) {
+    let composition = AVMutableComposition()
+    guard
+      let videoTrack = composition.addMutableTrack(
+        withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
+      let audioTrack = composition.addMutableTrack(
+        withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+    else {
+      completion(urls.last)
+      return
+    }
+    var cursor = CMTime.zero
+    for url in urls {
+      let asset = AVURLAsset(url: url)
+      let duration = asset.duration
+      let range = CMTimeRange(start: .zero, duration: duration)
+      if let srcVideo = asset.tracks(withMediaType: .video).first {
+        try? videoTrack.insertTimeRange(range, of: srcVideo, at: cursor)
+      }
+      if let srcAudio = asset.tracks(withMediaType: .audio).first {
+        try? audioTrack.insertTimeRange(range, of: srcAudio, at: cursor)
+      }
+      cursor = CMTimeAdd(cursor, duration)
+    }
+    let fm = FileManager.default
+    let base =
+      fm.urls(for: .cachesDirectory, in: .userDomainMask).first
+      ?? fm.temporaryDirectory
+    let out =
+      base.appendingPathComponent("video-notes", isDirectory: true)
+      .appendingPathComponent("video-note-merged-\(UUID().uuidString)")
+      .appendingPathExtension("mov")
+    try? fm.createDirectory(at: out.deletingLastPathComponent(), withIntermediateDirectories: true)
+    guard let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality)
+    else {
+      completion(urls.last)
+      return
+    }
+    export.outputURL = out
+    export.outputFileType = .mov
+    export.exportAsynchronously {
+      DispatchQueue.main.async {
+        completion(export.status == .completed ? out : urls.last)
+      }
     }
   }
 
@@ -571,8 +1083,9 @@ private final class VideoNoteRecorderViewController: UIViewController,
     }
     sessionQueue.async { [weak self] in
       guard let self else { return }
-      guard self.stopRequested else { return }
-      self.movieOutput.stopRecording()
+      if self.stopRequested || self.pauseRequested {
+        self.movieOutput.stopRecording()
+      }
     }
   }
 
@@ -586,15 +1099,34 @@ private final class VideoNoteRecorderViewController: UIViewController,
       self.recordingStartTimeoutWorkItem?.cancel()
       self.recordingStartTimeoutWorkItem = nil
     }
-    let elapsed = max(0.0, Date().timeIntervalSince(startedAt ?? Date()))
+    let segmentElapsed = max(
+      0.0, Date().timeIntervalSince(segmentStartedAt ?? startedAt ?? Date()))
+    if error == nil {
+      recordedSegments.append(outputFileURL)
+      accumulatedDuration += segmentElapsed
+    }
+
+    // Pause path: keep session warm and overlay visible; input shows play + cancel.
+    if pauseRequested {
+      pauseRequested = false
+      DispatchQueue.main.async {
+        self.isPaused = true
+        self.segmentStartedAt = nil
+        self.onPaused?(self.recordedSegments.last, self.accumulatedDuration)
+      }
+      return
+    }
+
     let shouldSend = pendingSend && error == nil
-    stopSession()
-    DispatchQueue.main.async {
-      self.finish(
-        url: shouldSend ? outputFileURL : nil,
-        duration: elapsed,
-        shouldSend: shouldSend
-      )
+    if shouldSend || !recordedSegments.isEmpty {
+      DispatchQueue.main.async {
+        self.completeWithSegments(shouldSend: shouldSend)
+      }
+    } else {
+      stopSession()
+      DispatchQueue.main.async {
+        self.finish(url: nil, duration: self.accumulatedDuration, shouldSend: false)
+      }
     }
   }
 
@@ -608,29 +1140,34 @@ private final class VideoNoteRecorderViewController: UIViewController,
       self.finish(url: nil, duration: 0.0, shouldSend: false)
     }
     recordingStartTimeoutWorkItem = item
-    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: item)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: item)
   }
 
   private func revealCameraPreviewIfReady(animated: Bool) {
+    // Drop the attachment-style loading blur once the camera is actually producing.
     let animations = {
       self.circleLoadingBlur.alpha = 0.0
       self.circleLoadingShade.alpha = 0.0
     }
     if animated {
       UIView.animate(
-        withDuration: 0.26,
-        delay: 0.06,
-        options: [.curveEaseOut, .beginFromCurrentState]
-      ) {
-        animations()
-      } completion: { _ in
-        self.circleSpinner.stopAnimating()
-      }
+        withDuration: 0.28,
+        delay: 0.02,
+        options: [.curveEaseOut, .beginFromCurrentState],
+        animations: animations
+      )
     } else {
       animations()
-      circleSpinner.stopAnimating()
     }
   }
+}
+
+// MARK: - Video note notifications
+
+extension Notification.Name {
+  /// Posted when a video note is released for send, carrying a circle snapshot + frame
+  /// for the list-hosted release morph (see ChatListView).
+  static let videoNoteReleaseMorph = Notification.Name("vibe.videoNoteReleaseMorph")
 }
 
 // MARK: - ChatInputBar
@@ -697,6 +1234,47 @@ private func chatGifStickerGlyphImage(size: CGSize) -> UIImage {
   return image.withRenderingMode(.alwaysTemplate)
 }
 
+/// Video-note mark: inner circle + open rounded frame, from the 24pt SVG viewBox.
+private func chatVideoNoteGlyphImage(size: CGSize) -> UIImage {
+  let format = UIGraphicsImageRendererFormat()
+  format.opaque = false
+  format.scale = UIScreen.main.scale
+  let renderer = UIGraphicsImageRenderer(size: size, format: format)
+  let image = renderer.image { _ in
+    let scale = min(size.width, size.height) / 24.0
+    let origin = CGPoint(
+      x: (size.width - 24.0 * scale) / 2.0,
+      y: (size.height - 24.0 * scale) / 2.0)
+    let p: (CGFloat, CGFloat) -> CGPoint = { x, y in
+      CGPoint(x: origin.x + x * scale, y: origin.y + y * scale)
+    }
+    UIColor.black.setStroke()
+    let frame = UIBezierPath()
+    frame.move(to: p(22, 12))
+    frame.addCurve(to: p(20.5355, 20.5355), controlPoint1: p(22, 16.714), controlPoint2: p(22, 19.0711))
+    frame.addCurve(to: p(12, 22), controlPoint1: p(19.0711, 22), controlPoint2: p(16.714, 22))
+    frame.addCurve(to: p(3.46447, 20.5355), controlPoint1: p(7.28595, 22), controlPoint2: p(4.92893, 22))
+    frame.addCurve(to: p(2, 12), controlPoint1: p(2, 19.0711), controlPoint2: p(2, 16.714))
+    frame.addCurve(to: p(3.46447, 3.46447), controlPoint1: p(2, 7.28595), controlPoint2: p(2, 4.92893))
+    frame.addCurve(to: p(12, 2), controlPoint1: p(4.92893, 2), controlPoint2: p(7.28595, 2))
+    frame.addCurve(to: p(20.5355, 3.46447), controlPoint1: p(16.714, 2), controlPoint2: p(19.0711, 2))
+    frame.addCurve(to: p(21.9449, 8), controlPoint1: p(21.5093, 4.43821), controlPoint2: p(21.8356, 5.80655))
+    frame.lineWidth = 1.5 * scale
+    frame.lineCapStyle = .round
+    frame.lineJoinStyle = .round
+    frame.stroke()
+    let dot = UIBezierPath(
+      ovalIn: CGRect(
+        x: origin.x + (12 - 4) * scale,
+        y: origin.y + (12 - 4) * scale,
+        width: 8 * scale,
+        height: 8 * scale))
+    dot.lineWidth = 1.5 * scale
+    dot.stroke()
+  }
+  return image.withRenderingMode(.alwaysTemplate)
+}
+
 final class ChatInputBar: UIView {
 
   weak var delegate: ChatInputBarDelegate?
@@ -711,7 +1289,9 @@ final class ChatInputBar: UIView {
   private let attachGlass = UIVisualEffectView(effect: nil)
 
   private let pillContainer = UIView()
-  private let pillButton = UIButton(type: .system)
+  // Pure layout shell for the composer. This must not be a UIControl: UIKit
+  // collapses an editable descendant of a UIButton in the accessibility tree.
+  private let pillButton = UIView()
   private let pillGlass = UIVisualEffectView(effect: nil)
   private let textView = ChatComposerTextView()
   private let placeholderLabel = UILabel()
@@ -739,13 +1319,31 @@ final class ChatInputBar: UIView {
   /// Built only when the user opens the GIF panel. Eager creation stalled chat open
   /// (~3s on main) via Auto Layout thrash at zero height.
   private var gifPanelIfLoaded: ChatGifPanelView?
-  private var gifOverlayWindow: UIWindow?
-  private weak var gifOverlayController: ChatGifPanelOverlayController?
+  private weak var gifPanelHostController: UIViewController?
   private var gifPanelVisible = false
-  private var pendingGifPanelCloseForKeyboard = false
+  /// Open was requested while a keyboard still owned the slot; present when height hits 0.
+  private var pendingGifPanelOpen = false
   private var lastGifPanelGeometrySignature: String?
-  private let defaultGifPanelHeight: CGFloat = 320
-  private var lastKnownKeyboardHeight: CGFloat = 0
+  /// Only ever used before this device has measured a real keyboard even once. Every
+  /// other path goes through ``matchedKeyboardPanelHeight()``.
+  private let defaultGifPanelHeight: CGFloat = 336
+  private var lastKnownKeyboardHeight: CGFloat = 0 {
+    didSet {
+      guard lastKnownKeyboardHeight > 0, lastKnownKeyboardHeight != oldValue else { return }
+      Self.persistedKeyboardHeight = lastKnownKeyboardHeight
+    }
+  }
+  /// The last keyboard height this device measured, surviving relaunch. The very first
+  /// GIF-panel open of a launch happens before any keyboard has appeared, and without a
+  /// remembered number that open is the one that gets the wrong height.
+  private static var persistedKeyboardHeight: CGFloat {
+    get { CGFloat(UserDefaults.standard.double(forKey: "vibe.inputbar.keyboardHeight")) }
+    set { UserDefaults.standard.set(Double(newValue), forKey: "vibe.inputbar.keyboardHeight") }
+  }
+  /// True while a show/hide transition owns `panel.frame`. Layout runs on every pass and
+  /// would otherwise reassign the frame from mid-animation input-bar bounds, fighting the
+  /// transition — which is what the old `alpha >= 0.99` guard was working around.
+  private var gifPanelTransitionInFlight = false
   private var isVideoMode: Bool = false
   // Width progress for right action morph: 0 = mic, 1 = send.
   private var sendProgress: CGFloat = 0
@@ -762,7 +1360,9 @@ final class ChatInputBar: UIView {
 
   // Reply banner (inside the pill, above text row)
   private let replyBanner = UIView()
+  /// 3pt theme-tint rail, filled with the outgoing bubble plate color.
   private let replyAccentBar = UIView()
+  private var replyChipAccent: UIColor = ChatListAppearance.brandAccentFallback
   private let replySenderLabel = UILabel()
   private let replyPreviewLabel = UILabel()
   private let replyDismissButton = UIButton(type: .system)
@@ -770,10 +1370,33 @@ final class ChatInputBar: UIView {
   private var replyBannerAnimatingOut = false
   private let replyBannerContentH: CGFloat = 36
   private let replyBannerGap: CGFloat = 4
+  /// When the composer contains a SoundCloud/YouTube URL (and we are not already
+  /// replying/editing), the same reply-banner chrome shows the music OG title/artist
+  /// and we prefetch the cover so send-morph paints a full card at fixed height.
+  private var draftMusicURL: URL?
+  private var draftMusicBannerActive = false
+  private var draftMusicPrefetchGeneration = 0
+
+  // Bridge pending-queue strip (above composer pill): preview + Steer + close.
+  // Lives inside the input bar — not a floating overlay over the chat list.
+  struct PendingQueueItem {
+    let messageId: String
+    let text: String
+  }
+  private let pendingQueueStrip = UIView()
+  private let pendingQueueStack = UIStackView()
+  private var pendingQueueItems: [PendingQueueItem] = []
+  private var pendingQueueStripVisible = false
+  private let pendingQueueRowH: CGFloat = 40
+  private let pendingQueueHeaderH: CGFloat = 18
+  private let pendingQueueGap: CGFloat = 6
+  var onPendingQueueCancel: ((String) -> Void)?
+  var onPendingQueueSteer: ((String) -> Void)?
 
   // Recording UI
   private let lockView = UIImageView(image: UIImage(systemName: "lock.fill"))
   private let lockPill = UIVisualEffectView(effect: nil)
+  private let lockHintHost = UIView()
   private let lockArrowView = UIImageView(image: UIImage(systemName: "chevron.up"))
   private let slideToCancelLabel = UILabel()
   private let slideChevronView = UIImageView(image: UIImage(systemName: "chevron.left"))
@@ -783,6 +1406,9 @@ final class ChatInputBar: UIView {
   private var recordingTimer: Timer?
   private var vadTimer: Timer?
   private var recordingGestureStartPoint: CGPoint = .zero
+  /// Last raw touch location seen by `.changed` — used to detect coordinate-space
+  /// glitches (see handleMicGesture) rather than trusting cumulative deltas blindly.
+  private var recordingGestureLastPoint: CGPoint = .zero
   private var audioRecorder: AVAudioRecorder?
   private var recordingFileURL: URL?
   private var recordingWaveformSamples: [CGFloat] = []
@@ -809,6 +1435,8 @@ final class ChatInputBar: UIView {
   }
   private var pendingImages: [UIImage] = []
   private var pendingAttachmentBlobs: [String] = []
+  /// Local file:// URIs written at stage time (send prefers these over re-materializing blobs).
+  private var pendingImageLocalURIs: [String] = []
 
   // Attachment Preview Scroll View (inside pill, above text row)
   private let attachmentPreviewScroll = UIScrollView()
@@ -862,41 +1490,64 @@ final class ChatInputBar: UIView {
   private let gapDebugLabel = UILabel()
 
   // Appearance
-  private var appearance = ChatListAppearance.fallback
-  private var pillTint: UIColor? = ChatListAppearance.fallback.bubbleThemColor.withAlphaComponent(
+  private var appearance = ChatListAppearance.current
+  var attachRecipientName: String = ""
+  private var pillTint: UIColor? = ChatListAppearance.current.bubbleThemColor.withAlphaComponent(
     0.14)
 
   // MARK: Layout constants
   private let sideSize: CGFloat = 36
   private let sideGap: CGFloat = 6
-  private let topVPad: CGFloat = 6
+  /// Air above the pill and how far the pill sits off the home indicator. They trade
+  /// against each other so the bar's resting height — the transcript's clearance — holds.
+  private let topVPad: CGFloat = 8
   private let bottomVPad: CGFloat = 5
-  private let composerSafeBottomReduction: CGFloat = 6
+  private let composerSafeBottomReduction: CGFloat = 12
   private let backgroundMaskTopOverlap: CGFloat = 0
   private let minPillH: CGFloat = 40
   private let maxPillH: CGFloat = 120
   private let textInsetH: CGFloat = 12
-  private let textInsetV: CGFloat = 10
+  private let textInsetV: CGFloat = 6
 
   // MARK: Public state
   var keyboardProgress: CGFloat = 0 {
     didSet { if abs(oldValue - keyboardProgress) > 0.01 { setNeedsLayout() } }
   }
+  /// Duration and curve from the last keyboard notification. The panel animates with
+  /// these, not a constant — two surfaces sharing one slot on different curves wobble.
+  var keyboardAnimation: (duration: TimeInterval, options: UIView.AnimationOptions) = (
+    0.25, UIView.AnimationOptions(rawValue: 7 << 16)
+  )
+
   var keyboardHeightForPanels: CGFloat = 0 {
     didSet {
       if keyboardHeightForPanels > 0 {
         lastKnownKeyboardHeight = keyboardHeightForPanels
       }
-      if pendingGifPanelCloseForKeyboard, keyboardHeightForPanels > 0 {
-        pendingGifPanelCloseForKeyboard = false
-        setGifPanelVisible(false, animated: true)
+      // Either notification settles the question of who owns the slot.
+      keyboardArrivalPending = false
+      // Deferred GIF open: only present after the keyboard fully yields the slot.
+      if pendingGifPanelOpen, keyboardHeightForPanels <= 0 {
+        pendingGifPanelOpen = false
+        setGifPanelVisible(true, animated: true)
+      }
+      // The panel's search lift is measured from this height, and it arrives a notification
+      // AFTER the field takes focus — without this the panel lifts by zero and the keys cover it.
+      if gifPanelVisible, isGifPanelSearchActive, abs(oldValue - keyboardHeightForPanels) > 0.5 {
+        setNeedsLayout()
+        delegate?.inputBarHeightDidChange()
       }
     }
   }
+
+  /// True between the composer taking focus and the keyboard reporting a height.
+  private var keyboardArrivalPending = false
   var activeReplyToMessageId: String?
   // When set, the composer is editing this already-sent message instead of composing a
   // new one; the banner UI is shared with reply.
   var activeEditMessageId: String?
+  /// True while a pending forward draft owns the reply-banner chrome.
+  private(set) var activeForwardDraft = false
 
   // Mention suggestion banner (inside pill, above text row — like reply banner)
   private let mentionBanner = UIView()
@@ -911,6 +1562,14 @@ final class ChatInputBar: UIView {
   private var readyBannerAction: ReadyBannerAction = .none
 
   private(set) var barHeight: CGFloat = 0
+
+  /// Whether the composer is what the keyboard is up for.
+  ///
+  /// Ground truth for the list's keyboard geometry: `keyboardHeight` there is written only
+  /// by notifications and so is a remembered value, which survives a chat close that the
+  /// hide notification never reached.
+  var isComposerFirstResponder: Bool { textView.isFirstResponder }
+
   var bottomSafeAreaInset: CGFloat = 0 {
     didSet { if abs(oldValue - bottomSafeAreaInset) > 0.5 { setNeedsLayout() } }
   }
@@ -921,6 +1580,28 @@ final class ChatInputBar: UIView {
     textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
   }
   var isGifPanelPresented: Bool { gifPanelVisible }
+  var isGifPanelPresentationPending: Bool { pendingGifPanelOpen }
+  var reservedGifPanelHeight: CGFloat {
+    gifPanelVisible || pendingGifPanelOpen ? preferredGifPanelHeight() : 0
+  }
+  /// True while the GIF panel's OWN search field is first responder (host lifts the whole
+  /// bar). Never keyed on "a keyboard is up" — that made a composer keyboard lift the panel
+  /// with it and leave it stranded above the keys instead of dismissing it.
+  var isGifPanelSearchActive: Bool {
+    gifPanelVisible && gifPanelIfLoaded?.isSearchExpanded == true
+  }
+  /// Whether the keyboard or the panel owns the slot below the composer — including the
+  /// handoff between them, so the composer keeps one resting height across a swap.
+  var bottomSlotOccupied: Bool {
+    gifPanelVisible || pendingGifPanelOpen || keyboardHeightForPanels > 0
+      || keyboardProgress > 0.01 || keyboardArrivalPending
+  }
+  /// Height to hold the bar at while a keyboard is on its way but has not reported yet.
+  /// Without it the bar falls to the bottom for the frames between focus and the first
+  /// keyboard notification, then jumps back up — the dip on every panel→keyboard swap.
+  var reservedKeyboardHeight: CGFloat {
+    keyboardArrivalPending ? matchedKeyboardPanelHeight() : 0
+  }
   var presentedBottomAccessoryHeight: CGFloat { gifPanelVisible ? preferredGifPanelHeight() : 0 }
 
   // Recording state
@@ -934,13 +1615,20 @@ final class ChatInputBar: UIView {
   private var isLocked = false
   private var recordingMode: RecordingMode = .none
   private var isVideoRecordingActive = false
+  private var isVideoNotePaused = false
   private var pendingVideoStopShouldSend = true
   private var suppressNextMicTap = false
   private var isCancelZoneActive = false
+  private var videoNoteDraftDuration: Double = 0
+  private var videoNoteDraftThumb: UIImage?
 
   private var lastMeasuredTextHeight: CGFloat = -1
 
   private weak var videoNoteRecorderController: VideoNoteRecorderViewController?
+  /// Pause control shown in the pill while a video note is actively recording (locked).
+  private let videoNotePauseButton = UIButton(type: .system)
+  /// Small circular preview of the paused draft inside the input pill.
+  private let videoNoteDraftThumbView = UIImageView()
   private let feedback = UIImpactFeedbackGenerator(style: .medium)
   private let notificationFeedback = UINotificationFeedbackGenerator()
 
@@ -958,19 +1646,73 @@ final class ChatInputBar: UIView {
     showReplyBanner(messageId: messageId, text: text.isEmpty ? "Add a description" : text, isMe: true)
     activeReplyToMessageId = nil
     activeEditMessageId = messageId
-    replySenderLabel.text = "Edit message"
+    replySenderLabel.text = "Editing"
     textView.text = text
     textViewDidChange(textView)
   }
 
-  func showReplyBanner(messageId: String, text: String, isMe: Bool) {
+  func showReplyBanner(
+    messageId: String,
+    text: String,
+    isMe: Bool,
+    senderName: String? = nil
+  ) {
     replyBanner.layer.removeAllAnimations()
     restorePillGlassVisualState()
+    // Real reply owns the banner chrome — drop any draft music preview state.
+    draftMusicBannerActive = false
+    draftMusicURL = nil
+    activeForwardDraft = false
     activeEditMessageId = nil
     activeReplyToMessageId = messageId
-    replySenderLabel.text = isMe ? "You" : "Reply"
+    let name = senderName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if isMe {
+      replySenderLabel.text = "Reply to you"
+    } else if !name.isEmpty {
+      replySenderLabel.text = "Reply to \(name)"
+    } else {
+      replySenderLabel.text = "Reply"
+    }
     replyPreviewLabel.text = text
-    replyBanner.transform = .identity
+    prepareReplyChipEntrance()
+    replyBannerAnimatingOut = false
+    replyBannerVisible = true
+    replyBanner.isHidden = false
+    replyBanner.alpha = 1
+
+    if gifPanelVisible {
+      setGifPanelVisible(false, animated: true)
+    }
+
+    UIView.animate(
+      withDuration: 0.34, delay: 0,
+      usingSpringWithDamping: 0.92, initialSpringVelocity: 0.28,
+      options: [.curveEaseOut, .allowUserInteraction, .beginFromCurrentState]
+    ) {
+      self.setNeedsLayout()
+      self.layoutIfNeeded()
+      self.superview?.setNeedsLayout()
+      self.superview?.layoutIfNeeded()
+    }
+
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self, self.window != nil, !self.textView.isFirstResponder else { return }
+      self.textView.becomeFirstResponder()
+    }
+  }
+
+  /// Group/channel forward draft: same chrome as reply, titled "Forward Message".
+  func showForwardBanner(title: String, preview: String) {
+    replyBanner.layer.removeAllAnimations()
+    restorePillGlassVisualState()
+    draftMusicBannerActive = false
+    draftMusicURL = nil
+    activeEditMessageId = nil
+    activeReplyToMessageId = nil
+    activeForwardDraft = true
+    replySenderLabel.text = title
+    replyPreviewLabel.text = preview
+    prepareReplyChipEntrance()
     replyBannerAnimatingOut = false
     replyBannerVisible = true
     replyBanner.isHidden = false
@@ -998,11 +1740,13 @@ final class ChatInputBar: UIView {
   }
 
   func dismissReplyBanner(animated: Bool) {
-    guard activeReplyToMessageId != nil || activeEditMessageId != nil || replyBannerVisible
+    guard activeReplyToMessageId != nil || activeEditMessageId != nil || activeForwardDraft
+      || replyBannerVisible
     else { return }
     replyBanner.layer.removeAllAnimations()
     activeReplyToMessageId = nil
     activeEditMessageId = nil
+    activeForwardDraft = false
     replyBannerVisible = false
     replyBannerAnimatingOut = false
 
@@ -1020,10 +1764,14 @@ final class ChatInputBar: UIView {
       replyBanner.transform = .identity
       replyBanner.isHidden = false
       UIView.animate(
-        withDuration: 0.1, delay: 0,
-        options: [.curveEaseOut, .beginFromCurrentState]
+        withDuration: 0.14, delay: 0,
+        options: [.curveEaseIn, .beginFromCurrentState]
       ) {
+        // Sinks back into the pill it rose from — the chip belongs to the composer, so it
+        // leaves the way it arrived rather than blinking out.
         self.replyBanner.alpha = 0
+        self.replyBanner.transform = CGAffineTransform(translationX: 0, y: 8)
+          .scaledBy(x: 0.97, y: 0.97)
       }
       UIView.animate(
         withDuration: 0.18, delay: 0,
@@ -1069,6 +1817,16 @@ final class ChatInputBar: UIView {
   }
 
   @objc private func replyDismissTapped() {
+    if draftMusicBannerActive {
+      // Closing a draft music preview does not clear the URL text — only the banner.
+      dismissDraftMusicBanner(animated: true)
+      return
+    }
+    if activeForwardDraft {
+      // Confirm cancel vs continue for group/channel forward drafts.
+      presentForwardCancelConfirmation()
+      return
+    }
     // Canceling an edit also discards the old message text sitting in the composer.
     let wasEditing = activeEditMessageId != nil
     dismissReplyBanner(animated: true)
@@ -1076,21 +1834,182 @@ final class ChatInputBar: UIView {
     delegate?.inputBarReplyDismissed()
   }
 
+  private func presentForwardCancelConfirmation() {
+    guard let host = window?.rootViewController ?? findViewController() else {
+      dismissReplyBanner(animated: true)
+      clearText()
+      delegate?.inputBarDidCancelForward()
+      return
+    }
+    var top = host
+    while let presented = top.presentedViewController { top = presented }
+    let sheet = UIAlertController(
+      title: "Cancel forwarding?",
+      message: "You can leave this chat and keep forwarding, or cancel.",
+      preferredStyle: .actionSheet
+    )
+    sheet.addAction(
+      UIAlertAction(title: "Cancel Forwarding", style: .destructive) { [weak self] _ in
+        guard let self else { return }
+        self.dismissReplyBanner(animated: true)
+        self.clearText()
+        self.delegate?.inputBarDidCancelForward()
+      })
+    sheet.addAction(UIAlertAction(title: "Continue Forwarding", style: .cancel))
+    if let pop = sheet.popoverPresentationController {
+      pop.sourceView = replyDismissButton
+      pop.sourceRect = replyDismissButton.bounds
+    }
+    top.present(sheet, animated: true)
+  }
+
+  // MARK: - Draft music URL preview (composer)
+
+  /// Detect the first SoundCloud/YouTube URL in the composer and show a reply-style
+  /// preview banner + warm the cover cache for send morph.
+  private func updateDraftMusicPreview(from text: String) {
+    // Real reply / edit banners own the chrome — do not steal it for a draft URL.
+    if activeReplyToMessageId != nil || activeEditMessageId != nil {
+      if draftMusicBannerActive {
+        draftMusicBannerActive = false
+        draftMusicURL = nil
+      }
+      return
+    }
+
+    guard let url = firstMusicURL(in: text) else {
+      if draftMusicBannerActive {
+        dismissDraftMusicBanner(animated: true)
+      }
+      return
+    }
+
+    if draftMusicURL?.absoluteString == url.absoluteString, draftMusicBannerActive {
+      return
+    }
+
+    draftMusicURL = url
+    draftMusicPrefetchGeneration &+= 1
+    let generation = draftMusicPrefetchGeneration
+    showDraftMusicBanner(
+      title: bubbleMusicPreviewFallbackSite(for: url),
+      subtitle: "Loading preview…",
+      animated: !draftMusicBannerActive
+    )
+
+    chatPrefetchMusicURLPreview(url: url) { [weak self] site, title, desc, _ in
+      guard let self else { return }
+      guard self.draftMusicPrefetchGeneration == generation,
+        self.draftMusicURL?.absoluteString == url.absoluteString
+      else { return }
+      let trackTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+      let artist = desc?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let displayTitle = trackTitle.isEmpty ? site : trackTitle
+      let displaySubtitle: String = {
+        if let artist, !artist.isEmpty { return artist }
+        return site
+      }()
+      self.showDraftMusicBanner(
+        title: displayTitle,
+        subtitle: displaySubtitle,
+        animated: false
+      )
+    }
+  }
+
+  private func showDraftMusicBanner(title: String, subtitle: String, animated: Bool) {
+    replyBanner.layer.removeAllAnimations()
+    restorePillGlassVisualState()
+    draftMusicBannerActive = true
+    replyBannerVisible = true
+    replyBanner.isHidden = false
+    replyBanner.alpha = 1
+    prepareReplyChipEntrance()
+    replyBannerAnimatingOut = false
+    replySenderLabel.text = title
+    replyPreviewLabel.text = subtitle
+    replyAccentBar.backgroundColor = replyChipAccent
+
+    let apply = {
+      self.setNeedsLayout()
+      self.layoutIfNeeded()
+      self.superview?.setNeedsLayout()
+      self.superview?.layoutIfNeeded()
+    }
+    if animated {
+      UIView.animate(
+        withDuration: 0.22, delay: 0,
+        usingSpringWithDamping: 0.86, initialSpringVelocity: 0.4,
+        options: [.curveEaseOut, .allowUserInteraction, .beginFromCurrentState]
+      ) {
+        apply()
+      }
+    } else {
+      apply()
+    }
+  }
+
+  private func dismissDraftMusicBanner(animated: Bool) {
+    guard draftMusicBannerActive || draftMusicURL != nil else { return }
+    draftMusicBannerActive = false
+    draftMusicURL = nil
+    // Reuse the standard reply-banner dismiss when no real reply is active.
+    if activeReplyToMessageId == nil && activeEditMessageId == nil {
+      dismissReplyBanner(animated: animated)
+    }
+  }
+
+  private func firstMusicURL(in text: String) -> URL? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    guard
+      let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    else { return nil }
+    let range = NSRange(trimmed.startIndex..., in: trimmed)
+    for match in detector.matches(in: trimmed, options: [], range: range) {
+      guard let url = match.url else { continue }
+      if bubbleIsMusicPreviewURL(url) { return url }
+    }
+    return nil
+  }
+
+  /// The chip RISES out of the pill rather than appearing in place — the same vocabulary
+  /// as the send morph, where things travel between the composer and the list instead of
+  /// blinking. Self-contained so every entry point (reply, edit, forward, music draft)
+  /// gets it without threading the animation through their own layout springs.
+  private func prepareReplyChipEntrance() {
+    replyBanner.transform = CGAffineTransform(translationX: 0, y: 5)
+      .scaledBy(x: 0.995, y: 0.995)
+    UIView.animate(
+      withDuration: 0.34, delay: 0.0,
+      usingSpringWithDamping: 0.92, initialSpringVelocity: 0.28,
+      options: [.allowUserInteraction, .beginFromCurrentState]
+    ) {
+      self.replyBanner.transform = .identity
+    }
+  }
+
   private func layoutReplyBannerContents() {
     let b = replyBanner.bounds
     guard b.width > 0, b.height > 0 else { return }
-    let pad: CGFloat = 8
-    let accentW: CGFloat = 3
-    let dismissSize: CGFloat = 24
+    let pad: CGFloat = 10
+    let railW: CGFloat = 3
+    let dismissSize: CGFloat = 26
+    let railH = max(18, b.height - 16)
+    replyAccentBar.frame = CGRect(
+      x: pad, y: (b.height - railH) / 2, width: railW, height: railH)
+    replyAccentBar.layer.cornerRadius = railW / 2
+    replyAccentBar.backgroundColor = replyChipAccent
 
-    replyAccentBar.frame = CGRect(x: pad, y: (b.height - 28) / 2, width: accentW, height: 28)
-    let textX = replyAccentBar.frame.maxX + 8
-    let textW = max(1, b.width - textX - dismissSize - pad)
-    replySenderLabel.frame = CGRect(x: textX, y: (b.height - 28) / 2, width: textW, height: 14)
+    let textX = replyAccentBar.frame.maxX + 10
+    let textW = max(1, b.width - textX - dismissSize - pad - 6)
+    let textBlockH: CGFloat = 29
+    let textTop = (b.height - textBlockH) / 2
+    replySenderLabel.frame = CGRect(x: textX, y: textTop, width: textW, height: 14)
     replyPreviewLabel.frame = CGRect(
       x: textX, y: replySenderLabel.frame.maxY + 1, width: textW, height: 14)
     replyDismissButton.frame = CGRect(
-      x: b.width - dismissSize - pad + 4,
+      x: b.width - dismissSize - pad,
       y: (b.height - dismissSize) / 2,
       width: dismissSize, height: dismissSize
     )
@@ -1108,6 +2027,17 @@ final class ChatInputBar: UIView {
   override func didMoveToWindow() {
     super.didMoveToWindow()
     if window == nil {
+      // The panel lives in its own window ABOVE the app's, so leaving the chat does not
+      // take it with you — it stayed floating over Home until something else knocked it
+      // down. It belongs to this composer and to nothing else, so it goes when the
+      // composer goes, the way the keyboard does: immediately, with no animation to
+      // outlive the screen it belonged to.
+      if gifPanelVisible || pendingGifPanelOpen {
+        gifPanelVisible = false
+        pendingGifPanelOpen = false
+        gifButton.tintColor = gifGlyphTint(active: false)
+      }
+      tearDownGifPanelHostIfNeeded()
       gifPanelIfLoaded?.hostViewController = nil
       return
     }
@@ -1157,6 +2087,22 @@ final class ChatInputBar: UIView {
 
     // GIF panel is created lazily on first open (see loadGifPanelIfNeeded).
 
+    // ── Pending queue strip (above content row; part of input chrome) ─────
+    pendingQueueStrip.isHidden = true
+    pendingQueueStrip.alpha = 0
+    pendingQueueStrip.backgroundColor = .clear
+    addSubview(pendingQueueStrip)
+    pendingQueueStack.axis = .vertical
+    pendingQueueStack.spacing = 6
+    pendingQueueStack.translatesAutoresizingMaskIntoConstraints = false
+    pendingQueueStrip.addSubview(pendingQueueStack)
+    NSLayoutConstraint.activate([
+      pendingQueueStack.topAnchor.constraint(equalTo: pendingQueueStrip.topAnchor),
+      pendingQueueStack.leadingAnchor.constraint(equalTo: pendingQueueStrip.leadingAnchor, constant: 12),
+      pendingQueueStack.trailingAnchor.constraint(equalTo: pendingQueueStrip.trailingAnchor, constant: -12),
+      pendingQueueStack.bottomAnchor.constraint(equalTo: pendingQueueStrip.bottomAnchor),
+    ])
+
     // ── 1. Content row ────────────────────────────────────────────────────
     // No full-bar glass. The bar background is transparent; each element
     // has its own glass surface.
@@ -1177,6 +2123,9 @@ final class ChatInputBar: UIView {
       symbolConfig: plusCfg,
       tintColor: UIColor(white: 0.85, alpha: 1.0)
     )
+    // Default path: open full attachment sheet (agent mode switches to UIMenu).
+    attachButton.accessibilityLabel = "Add attachment"
+    attachButton.addTarget(self, action: #selector(attachButtonTapped), for: .touchUpInside)
     contentRow.addSubview(attachGlass)
 
     // ── Pill container ────────────────────────────────────────────────────
@@ -1228,26 +2177,37 @@ final class ChatInputBar: UIView {
     textView.returnKeyType = .default
     textView.delegate = self
     textView.showsVerticalScrollIndicator = false
+    // Stable hook for XCUITest device control. Keep UITextView's native traits
+    // so it remains a direct-interaction, keyboard-focusable editor.
+    textView.accessibilityIdentifier = "chat.composer"
+    textView.accessibilityLabel = "Message"
     pillContainer.addSubview(textView)
 
     // GIF button (inside pill, trailing side before Send)
-    gifButton.setImage(chatGifStickerGlyphImage(size: CGSize(width: 20, height: 20)), for: .normal)
+    gifButton.setImage(chatGifStickerGlyphImage(size: CGSize(width: 21, height: 21)), for: .normal)
+    gifButton.contentVerticalAlignment = .center
+    gifButton.contentHorizontalAlignment = .center
+    gifButton.imageEdgeInsets = .zero
     gifButton.addTarget(self, action: #selector(gifTapped), for: .touchUpInside)
     pillContainer.addSubview(gifButton)
 
-    // ── Reply banner (inside pill, above text row) ────────────────────
+    // ── Draft context chip (inside pill, above text row) ──────────────
+    // Hairline theme-tint rail + two text lines; plate stays clear.
     replyBanner.clipsToBounds = true
     replyBanner.isHidden = true
     replyBanner.alpha = 0
+    replyBanner.layer.cornerRadius = 12
+    replyBanner.layer.cornerCurve = .continuous
+    replyBanner.layer.borderWidth = 0
     pillContainer.addSubview(replyBanner)
 
     replyAccentBar.backgroundColor = ChatListAppearance.brandAccentFallback
     replyAccentBar.layer.cornerRadius = 1.5
-    replyAccentBar.layer.cornerCurve = .continuous
+    replyAccentBar.clipsToBounds = true
     replyBanner.addSubview(replyAccentBar)
 
-    replySenderLabel.font = .systemFont(ofSize: 12, weight: .bold)
-    replySenderLabel.textColor = UIColor(white: 0.92, alpha: 1.0)
+    replySenderLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
+    replySenderLabel.textColor = ChatListAppearance.brandAccentFallback
     replySenderLabel.lineBreakMode = .byTruncatingTail
     replyBanner.addSubview(replySenderLabel)
 
@@ -1256,9 +2216,14 @@ final class ChatInputBar: UIView {
     replyPreviewLabel.lineBreakMode = .byTruncatingTail
     replyBanner.addSubview(replyPreviewLabel)
 
-    let xCfg = UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+    // A 10pt glyph in a 24pt box was a dot to aim at. Same mark, given a real target and
+    // a soft disc so it reads as a button instead of a stray SVG.
+    let xCfg = UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
     replyDismissButton.setImage(UIImage(systemName: "xmark", withConfiguration: xCfg), for: .normal)
-    replyDismissButton.tintColor = UIColor(white: 0.87, alpha: 0.5)
+    replyDismissButton.tintColor = UIColor(white: 0.87, alpha: 0.55)
+    replyDismissButton.layer.cornerRadius = 13
+    replyDismissButton.layer.cornerCurve = .continuous
+    replyDismissButton.backgroundColor = UIColor(white: 1.0, alpha: 0.07)
     replyDismissButton.addTarget(self, action: #selector(replyDismissTapped), for: .touchUpInside)
     replyBanner.addSubview(replyDismissButton)
 
@@ -1345,6 +2310,10 @@ final class ChatInputBar: UIView {
     sendGradient.cornerRadius = 16
     sendButton.layer.insertSublayer(sendGradient, at: 0)
     sendButton.addTarget(self, action: #selector(sendTapped), for: .touchUpInside)
+    sendButton.accessibilityIdentifier = "chat.send"
+    sendButton.accessibilityLabel = "Send"
+    sendButton.accessibilityTraits = .button
+    sendButton.isAccessibilityElement = true
     pillContainer.addSubview(sendButton)
 
     cancelOverlayButton.addTarget(self, action: #selector(cancelOverlayTapped), for: .touchUpInside)
@@ -1362,8 +2331,10 @@ final class ChatInputBar: UIView {
       contentRow.addSubview($0)
     }
     
+    selectionDeleteGlass.clipsToBounds = false
     selectionDeleteButton.clipsToBounds = false
     selectionDeleteButton.backgroundColor = .clear
+    selectionDeleteButton.isHidden = true
     selectionDeleteGlass.contentView.addSubview(selectionDeleteButton)
     applyControlGlyph(
       button: selectionDeleteButton, symbolName: "trash",
@@ -1412,7 +2383,7 @@ final class ChatInputBar: UIView {
 
     // Default colors (visible before applyAppearance)
     attachButton.tintColor = UIColor(white: 0.85, alpha: 1.0)
-    gifButton.tintColor = UIColor(white: 0.85, alpha: 0.95)
+    gifButton.tintColor = UIColor(white: 0.58, alpha: 0.92)
     micButton.tintColor = UIColor(white: 0.85, alpha: 1.0)
     textView.textColor = UIColor(white: 0.87, alpha: 1.0)
     textView.tintColor = UIColor(white: 0.87, alpha: 0.9)
@@ -1446,7 +2417,7 @@ final class ChatInputBar: UIView {
     let controlTint = a.textColorThem.withAlphaComponent(0.9)
     attachButton.tintColor = controlTint
     inlineAttachButton.tintColor = controlTint
-    gifButton.tintColor = a.textColorThem.withAlphaComponent(gifPanelVisible ? 1.0 : 0.85)
+    gifButton.tintColor = gifGlyphTint(active: gifPanelVisible)
     micButton.tintColor = controlTint
     sendGradient.colors = a.bubbleMeGradient.map(\.cgColor)
     pillTint = a.bubbleThemColor.withAlphaComponent(0.14)
@@ -1457,11 +2428,15 @@ final class ChatInputBar: UIView {
       micVADView.applyColor(a.textColorThem.withAlphaComponent(0.15))
     }
 
-    // Reply banner
-    replyAccentBar.backgroundColor = a.bubbleMeGradient.first ?? replyAccentBar.backgroundColor
-    replySenderLabel.textColor = a.textColorThem.withAlphaComponent(0.92)
-    replyPreviewLabel.textColor = a.textColorThem.withAlphaComponent(0.72)
-    replyDismissButton.tintColor = a.textColorThem.withAlphaComponent(0.5)
+    let chipAccent = a.outgoingBasePlateColor
+    replyChipAccent = chipAccent
+    replyAccentBar.backgroundColor = chipAccent
+    replyBanner.backgroundColor = .clear
+    replyBanner.layer.borderColor = UIColor.clear.cgColor
+    replySenderLabel.textColor = chipAccent
+    replyPreviewLabel.textColor = a.textColorThem.withAlphaComponent(0.55)
+    replyDismissButton.tintColor = a.textColorThem.withAlphaComponent(0.48)
+    replyDismissButton.backgroundColor = .clear
     slideToCancelLabel.textColor = a.textColorThem.withAlphaComponent(0.78)
     slideChevronView.tintColor = a.textColorThem.withAlphaComponent(0.78)
     recordingTimerLabel.textColor = a.textColorThem.withAlphaComponent(0.95)
@@ -1482,29 +2457,18 @@ final class ChatInputBar: UIView {
 
     // Mention suggestion banner (inside pill)
     mentionBanner.backgroundColor = .clear
-    mentionAccentBar.backgroundColor =
-      a.bubbleMeGradient.first ?? ChatListAppearance.brandAccentFallback
+    mentionAccentBar.backgroundColor = a.outgoingBasePlateColor
     mentionNameLabel.textColor = a.textColorThem.withAlphaComponent(0.92)
     mentionDescLabel.textColor = a.textColorThem.withAlphaComponent(0.72)
 
     refreshGlass()
     refreshAgentControlModeAppearance()
-    let micCfg = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-    let micSymbol = isVideoMode ? "video" : "mic"
-    applyControlGlyph(
-      button: micButton,
-      symbolName: micSymbol,
-      symbolConfig: micCfg,
-      tintColor: controlTint
-    )
+    applyComposerRecordGlyph(to: micButton, tintColor: controlTint)
     CATransaction.commit()
   }
 
   private func refreshAgentControlModeAppearance() {
     let controlTint = appearance.textColorThem.withAlphaComponent(0.9)
-    let agentAccent =
-      appearance.bubbleMeGradient.first
-      ?? UIColor(red: 0.16, green: 0.62, blue: 0.62, alpha: 1.0)
     let plusConfiguration = UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)
     applyControlGlyph(
       button: inlineAttachButton,
@@ -1514,59 +2478,27 @@ final class ChatInputBar: UIView {
     )
     slashButton.isHidden = true
 
+    attachButton.configuration = nil
+    attachButton.setTitle(nil, for: .normal)
+    attachButton.contentHorizontalAlignment = .center
+    applyControlGlyph(
+      button: attachButton,
+      symbolName: "plus",
+      symbolConfig: plusConfiguration,
+      tintColor: controlTint
+    )
+
     if agentControlMode {
-      // Repo switcher chip (📁 <repo> ⌄). When the host has supplied a menu (Repository
-      // / Report / Permission / History), the chip opens it directly; otherwise it falls
-      // back to the legacy agent-panel tap.
-      let usesMenu = agentControlMenu != nil
-      let repoLabel = agentControlRepoTitle.isEmpty ? (usesMenu ? "Repository" : agentControlTitle) : agentControlRepoTitle
-      var configuration = usesMenu ? UIButton.Configuration.gray() : UIButton.Configuration.filled()
-      configuration.title = usesMenu ? "\(repoLabel)  ⌄" : agentControlTitle
-      configuration.image =
-        usesMenu
-        ? UIImage(systemName: "folder", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
-        : nil
-      configuration.imagePlacement = .leading
-      configuration.imagePadding = 5
-      configuration.titleLineBreakMode = .byTruncatingTail
-      configuration.baseForegroundColor = usesMenu ? controlTint : .white
-      if !usesMenu { configuration.baseBackgroundColor = agentAccent }
-      configuration.cornerStyle = .capsule
-      configuration.contentInsets = NSDirectionalEdgeInsets(
-        top: 0,
-        leading: usesMenu ? 10 : 12,
-        bottom: 0,
-        trailing: usesMenu ? 10 : 12
-      )
-      configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
-        incoming in
-        var outgoing = incoming
-        outgoing.font = .systemFont(ofSize: 13.0, weight: .semibold)
-        return outgoing
-      }
-      attachButton.setImage(nil, for: .normal)
-      attachButton.configuration = configuration
-      attachButton.contentHorizontalAlignment = .center
-      attachButton.titleLabel?.lineBreakMode = .byTruncatingTail
-      attachButton.titleLabel?.numberOfLines = 1
-      attachButton.titleLabel?.adjustsFontSizeToFitWidth = true
-      attachButton.titleLabel?.minimumScaleFactor = 0.82
-      attachButton.menu = agentControlMenu
-      attachButton.showsMenuAsPrimaryAction = usesMenu
-      attachButton.accessibilityLabel = usesMenu ? "Repository and agent options" : "Open agents"
+      // AI agent chats: keep the UIMenu (+ attach actions + agent control items).
+      attachButton.accessibilityLabel = "Add to chat"
+      attachButton.removeTarget(self, action: #selector(attachButtonTapped), for: .touchUpInside)
     } else {
-      attachButton.configuration = nil
-      attachButton.setTitle(nil, for: .normal)
+      // Default chats: + opens the full Gallery/File/Location attachment sheet.
+      attachButton.accessibilityLabel = "Add attachment"
       attachButton.menu = nil
       attachButton.showsMenuAsPrimaryAction = false
-      attachButton.contentHorizontalAlignment = .center
-      applyControlGlyph(
-        button: attachButton,
-        symbolName: "plus",
-        symbolConfig: plusConfiguration,
-        tintColor: controlTint
-      )
-      attachButton.accessibilityLabel = "Add attachment"
+      attachButton.removeTarget(self, action: #selector(attachButtonTapped), for: .touchUpInside)
+      attachButton.addTarget(self, action: #selector(attachButtonTapped), for: .touchUpInside)
     }
     updatePlusButtonMenu()
   }
@@ -1574,12 +2506,21 @@ final class ChatInputBar: UIView {
   // MARK: - Input State Reset
 
   func setSelectionMode(_ active: Bool, animated: Bool) {
-    if isSelectionMode == active { return }
+    if isSelectionMode == active {
+      NSLog("[ChatShare] inputBar setSelectionMode already active=%@", active ? "Y" : "N")
+      return
+    }
     isSelectionMode = active
+    NSLog(
+      "[ChatShare] inputBar setSelectionMode active=%@ agentControl=%@",
+      active ? "Y" : "N",
+      agentControlMode ? "Y" : "N"
+    )
     // Recompute mic/send visibility when leaving selection. The selection layout
     // drives the mic alpha to zero, so preserving the previous alpha leaves it
     // permanently hidden after deselection.
     updateButtonStates(animated: false)
+    applySelectionInteractionState()
     if animated {
       UIView.animate(withDuration: 0.3, delay: 0, options: .curveEaseInOut) {
         self.setNeedsLayout()
@@ -1591,9 +2532,32 @@ final class ChatInputBar: UIView {
     }
   }
 
+  /// Keep selection chrome tappable: alpha-0 controls can still steal hits on some
+  /// glass effect paths; disable interaction + raise selection z-order.
+  private func applySelectionInteractionState() {
+    let selecting = isSelectionMode
+    attachGlass.isUserInteractionEnabled = !selecting
+    attachButton.isUserInteractionEnabled = !selecting
+    pillGlass.isUserInteractionEnabled = !selecting
+    micGlass.isUserInteractionEnabled = !selecting && micGlass.alpha > 0.01
+    micButton.isUserInteractionEnabled = micGlass.isUserInteractionEnabled
+    textView.isUserInteractionEnabled = !selecting
+    sendButton.isUserInteractionEnabled = !selecting && sendButton.alpha > 0.01
+    gifButton.isUserInteractionEnabled = !selecting
+    [selectionDeleteGlass, selectionShareOutsideGlass, selectionShareInsideGlass].forEach {
+      $0.isUserInteractionEnabled = selecting
+      $0.isHidden = !selecting
+    }
+    selectionDeleteButton.isHidden = !selecting
+    selectionDeleteButton.isUserInteractionEnabled = selecting
+    selectionShareOutsideButton.isUserInteractionEnabled = selecting
+    selectionShareInsideButton.isUserInteractionEnabled = selecting
+  }
+
   // MARK: - Public helpers
 
   func clearText() {
+    dismissDraftMusicBanner(animated: false)
     textView.text = ""
     setMentionBannerVisible(false, animated: false)
     updateButtonStates(animated: true)
@@ -1635,12 +2599,24 @@ final class ChatInputBar: UIView {
   }
 
   func setAgentStreaming(_ streaming: Bool) {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in
+        self?.setAgentStreaming(streaming)
+      }
+      return
+    }
     guard isAgentStreaming != streaming else { return }
     isAgentStreaming = streaming
     updateButtonStates(animated: true)
   }
 
   func setAgentControlMode(_ enabled: Bool) {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in
+        self?.setAgentControlMode(enabled)
+      }
+      return
+    }
     guard agentControlMode != enabled else { return }
     agentControlMode = enabled
     inlineAttachButton.isHidden = !enabled
@@ -1649,6 +2625,12 @@ final class ChatInputBar: UIView {
   }
 
   func setAgentControlTitle(_ title: String) {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in
+        self?.setAgentControlTitle(title)
+      }
+      return
+    }
     let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
     let next = trimmed.isEmpty ? "Open" : trimmed
     guard agentControlTitle != next else { return }
@@ -1659,6 +2641,12 @@ final class ChatInputBar: UIView {
 
   /// Repository name shown on the agent-control chip (📁 <repo>). Empty → "Repository".
   func setAgentControlRepoTitle(_ title: String) {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in
+        self?.setAgentControlRepoTitle(title)
+      }
+      return
+    }
     let next = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard agentControlRepoTitle != next else { return }
     agentControlRepoTitle = next
@@ -1669,6 +2657,12 @@ final class ChatInputBar: UIView {
   /// Host-built menu (Repository / Report / Permission / History) for the agent-control
   /// chip. Pass nil to fall back to the legacy agent-panel tap.
   func setAgentControlMenu(_ menu: UIMenu?) {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in
+        self?.setAgentControlMenu(menu)
+      }
+      return
+    }
     agentControlMenu = menu
     refreshAgentControlModeAppearance()
     setNeedsLayout()
@@ -1677,10 +2671,121 @@ final class ChatInputBar: UIView {
   /// Host-built slash-command menu shown by the "/" button at the pill's leading edge
   /// (agent chats only). Pass nil to hide the button.
   func setSlashCommandMenu(_ menu: UIMenu?) {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in
+        self?.setSlashCommandMenu(menu)
+      }
+      return
+    }
     slashCommandMenu = menu
     slashButton.menu = menu
     refreshAgentControlModeAppearance()
     setNeedsLayout()
+  }
+
+  /// Pending bridge sends while a run is live. Shown as compact rows inside the
+  /// input bar (preview + Steer + ✕) — replaces the old floating list overlay.
+  func setPendingQueueItems(_ items: [PendingQueueItem], animated: Bool = true) {
+    pendingQueueItems = items
+    let show = !items.isEmpty
+    rebuildPendingQueueRows()
+    if show == pendingQueueStripVisible {
+      setNeedsLayout()
+      layoutIfNeeded()
+      if show { delegate?.inputBarHeightDidChange() }
+      return
+    }
+    pendingQueueStripVisible = show
+    pendingQueueStrip.isHidden = !show
+    if animated, show {
+      pendingQueueStrip.alpha = 0
+      UIView.animate(withDuration: 0.2) {
+        self.pendingQueueStrip.alpha = 1
+        self.setNeedsLayout()
+        self.layoutIfNeeded()
+      } completion: { _ in
+        self.delegate?.inputBarHeightDidChange()
+      }
+    } else {
+      pendingQueueStrip.alpha = show ? 1 : 0
+      setNeedsLayout()
+      layoutIfNeeded()
+      delegate?.inputBarHeightDidChange()
+    }
+  }
+
+  private func rebuildPendingQueueRows() {
+    pendingQueueStack.arrangedSubviews.forEach {
+      pendingQueueStack.removeArrangedSubview($0)
+      $0.removeFromSuperview()
+    }
+    for item in pendingQueueItems {
+      pendingQueueStack.addArrangedSubview(makePendingQueueRow(item))
+    }
+  }
+
+  private func makePendingQueueRow(_ item: PendingQueueItem) -> UIView {
+    let row = UIView()
+    row.backgroundColor = UIColor.secondarySystemFill.withAlphaComponent(0.55)
+    row.layer.cornerRadius = 12
+    row.layer.cornerCurve = .continuous
+
+    let clock = UIImageView(
+      image: UIImage(
+        systemName: "clock",
+        withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)))
+    clock.tintColor = .secondaryLabel
+    clock.translatesAutoresizingMaskIntoConstraints = false
+
+    let label = UILabel()
+    label.font = .systemFont(ofSize: 13)
+    label.textColor = .label
+    label.numberOfLines = 1
+    label.lineBreakMode = .byTruncatingTail
+    label.text = item.text
+    label.translatesAutoresizingMaskIntoConstraints = false
+
+    var steerCfg = UIButton.Configuration.plain()
+    steerCfg.image = UIImage(
+      systemName: "bolt.fill",
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
+    steerCfg.title = "Steer"
+    steerCfg.imagePadding = 2
+    steerCfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6)
+    let steer = UIButton(configuration: steerCfg)
+    steer.tintColor = UIColor.systemOrange
+    steer.translatesAutoresizingMaskIntoConstraints = false
+    let mid = item.messageId
+    steer.addAction(UIAction { [weak self] _ in self?.onPendingQueueSteer?(mid) }, for: .touchUpInside)
+
+    let close = UIButton(type: .system)
+    close.setImage(
+      UIImage(
+        systemName: "xmark",
+        withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)),
+      for: .normal)
+    close.tintColor = .secondaryLabel
+    close.translatesAutoresizingMaskIntoConstraints = false
+    close.addAction(UIAction { [weak self] _ in self?.onPendingQueueCancel?(mid) }, for: .touchUpInside)
+
+    row.addSubview(clock)
+    row.addSubview(label)
+    row.addSubview(steer)
+    row.addSubview(close)
+    NSLayoutConstraint.activate([
+      row.heightAnchor.constraint(equalToConstant: pendingQueueRowH),
+      clock.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10),
+      clock.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+      label.leadingAnchor.constraint(equalTo: clock.trailingAnchor, constant: 8),
+      label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+      label.trailingAnchor.constraint(lessThanOrEqualTo: steer.leadingAnchor, constant: -6),
+      steer.trailingAnchor.constraint(equalTo: close.leadingAnchor, constant: -2),
+      steer.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+      close.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -8),
+      close.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+      close.widthAnchor.constraint(equalToConstant: 28),
+    ])
+    return row
   }
 
   /// Insert a chosen slash command into the composer (caret at end) so the user can add
@@ -1714,15 +2819,66 @@ final class ChatInputBar: UIView {
   private func makeTextContentSnapshot() -> UIView? {
     let textBounds = textView.bounds
     guard textBounds.width > 1.0, textBounds.height > 1.0 else { return nil }
-    let previousTint = textView.tintColor
-    textView.tintColor = .clear
-    defer {
-      textView.tintColor = previousTint
-    }
-    guard let snapshot = textView.snapshotView(afterScreenUpdates: true) else {
-      return nil
-    }
-    return snapshot
+
+    // Never put another UITextView in the flight. Even a non-editable/non-selectable
+    // UITextView owns private marked-text and selection-decoration layers; on iOS 26
+    // those can survive in drawHierarchy as the dark rectangle seen behind the first
+    // one-word send. Build a plain label from the committed string instead. This makes
+    // it structurally impossible for caret/selection/marked-text chrome to enter the
+    // morph while preserving the composer's font, color, alignment, and TextKit insets.
+    let wrapper = UIView(frame: CGRect(origin: .zero, size: textBounds.size))
+    wrapper.backgroundColor = .clear
+    wrapper.isOpaque = false
+    wrapper.isUserInteractionEnabled = false
+    wrapper.clipsToBounds = true
+
+    let committedText = textView.text ?? ""
+    // Direction comes from the TEXT, not the interface: the ghost has to land on a cell
+    // that shapes RTL and left-aligns the block, so it must start that way too.
+    let rtlBody = ChatNativeAgentTextRenderer.isRTL(committedText)
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.alignment = rtlBody ? .left : textView.textAlignment
+    paragraph.lineBreakMode = textView.textContainer.lineBreakMode
+    paragraph.baseWritingDirection =
+      rtlBody || textView.effectiveUserInterfaceLayoutDirection == .rightToLeft
+      ? .rightToLeft : .leftToRight
+    let cleanText = NSAttributedString(
+      string: committedText,
+      attributes: [
+        .font: textView.font ?? UIFont.systemFont(ofSize: 16),
+        .foregroundColor: textView.textColor ?? UIColor.label,
+        .paragraphStyle: paragraph,
+      ])
+    let label = UILabel()
+    label.backgroundColor = .clear
+    label.isOpaque = false
+    label.isUserInteractionEnabled = false
+    label.numberOfLines = textView.textContainer.maximumNumberOfLines
+    label.lineBreakMode = textView.textContainer.lineBreakMode
+    label.textAlignment = rtlBody ? .left : textView.textAlignment
+    label.semanticContentAttribute =
+      rtlBody ? .forceRightToLeft : textView.semanticContentAttribute
+    label.attributedText = cleanText
+
+    let insets = textView.textContainerInset
+    let fragmentPadding = textView.textContainer.lineFragmentPadding
+    let labelX = insets.left + fragmentPadding
+    let labelY = insets.top - textView.contentOffset.y
+    let labelWidth = max(
+      1.0,
+      textBounds.width - insets.left - insets.right - (fragmentPadding * 2.0))
+    let measured = label.sizeThatFits(
+      CGSize(width: labelWidth, height: CGFloat.greatestFiniteMagnitude))
+    // The destination cell pixel-aligns its label; an unaligned ghost resamples the
+    // glyphs and reads as a one-pixel slide through the crossfade.
+    let pixelScale = max(1.0, wrapper.window?.screen.scale ?? UIScreen.main.scale)
+    label.frame = CGRect(
+      x: (labelX * pixelScale).rounded() / pixelScale,
+      y: (labelY * pixelScale).rounded() / pixelScale,
+      width: labelWidth,
+      height: max(measured.height, textView.font?.lineHeight ?? 20.0))
+    wrapper.addSubview(label)
+    return wrapper
   }
 
   private func makeBackgroundSnapshot(captureRect: CGRect) -> UIView? {
@@ -1935,8 +3091,10 @@ final class ChatInputBar: UIView {
 
     // Keep the composer slightly closer to the bottom while still respecting
     // the home indicator area.
-    let safeBottomReduction = gifPanelVisible ? 0 : composerSafeBottomReduction
-    let safeBottom = max(0, bottomSafeAreaInset - safeBottomReduction)
+    // Same reduction whichever surface owns the bottom slot. The panel used to take the
+    // full inset while the keyboard took inset−6, so the composer sat 6pt lower over the
+    // panel — visible as a dip on every keyboard↔panel swap.
+    let safeBottom = max(0, bottomSafeAreaInset - composerSafeBottomReduction)
     let clampedSendProgress = max(0.0, min(1.0, sendProgress))
     let clampedRecordingExpand = max(0.0, min(1.0, recordingExpandProgress))
     let micVisibility = max(0.0, min(1.0, 1.0 - clampedSendProgress))
@@ -1953,11 +3111,11 @@ final class ChatInputBar: UIView {
     let pillRight = w - dynamicHPad - (sideSize * micVisibility) - (sideGap * micVisibility)
     let sendW: CGFloat = 44
     let sendH: CGFloat = 32
-    let gifButtonSize: CGFloat = 36
+    let gifButtonSize: CGFloat = 26
     let gifTextReserve: CGFloat =
       isRecording ? 0 : max(24, gifButtonSize - (8 * clampedSendProgress))
     let pillW = max(1, pillRight - pillX)
-    let sendActionReserve = (sendW + 2) * clampedSendProgress
+    let sendActionReserve = (sendW + 10) * clampedSendProgress
     let slashVisible = false
     let inlineAttachReserve: CGFloat = 0.0
     let textW = max(
@@ -1974,8 +3132,20 @@ final class ChatInputBar: UIView {
     let bannerExtra: CGFloat = replyBannerExtra + mentionBannerExtra + attachmentPreviewExtra + slashSuggestionExtra
     let pillH = clampedTextH + textInsetV * 2 + bannerExtra
 
-    let composerBottomVPad = keyboardHeightForPanels > 0 || keyboardProgress > 0.01 ? 6.0 : bottomVPad
-    let composerHeight = topVPad + pillH + composerBottomVPad + safeBottom
+    // Queue strip sits above the pill row (still part of the input bar height).
+    let queueCount = pendingQueueItems.count
+    let pendingQueueExtra: CGFloat =
+      pendingQueueStripVisible && queueCount > 0
+      ? (CGFloat(min(queueCount, 3)) * pendingQueueRowH
+        + CGFloat(max(0, min(queueCount, 3) - 1)) * pendingQueueStack.spacing
+        + pendingQueueGap)
+      : 0
+
+    // The panel stands in for the keyboard, so the composer keeps the SAME gap above
+    // either one. `bottomSlotOccupied` stays true across a keyboard↔panel swap, so the
+    // gap never flips back to the resting value for the frames in between.
+    let composerBottomVPad: CGFloat = bottomSlotOccupied ? 6.0 : bottomVPad
+    let composerHeight = topVPad + pendingQueueExtra + pillH + composerBottomVPad + safeBottom
     let panelHeight = gifPanelVisible ? preferredGifPanelHeight() : 0
     let totalH = composerHeight + panelHeight
     let prevH = barHeight
@@ -2021,13 +3191,33 @@ final class ChatInputBar: UIView {
       gapDebugBarOverlay.isHidden = true
     }
 
-    let rowY = topVPad
+    if pendingQueueExtra > 0 {
+      pendingQueueStrip.isHidden = false
+      pendingQueueStrip.frame = CGRect(
+        x: 0, y: topVPad, width: w, height: pendingQueueExtra - pendingQueueGap)
+    } else {
+      pendingQueueStrip.isHidden = true
+      pendingQueueStrip.frame = .zero
+    }
+
+    let rowY = topVPad + pendingQueueExtra
     let rowH = pillH
     contentRow.frame = CGRect(x: 0, y: rowY, width: w, height: rowH)
 
     if let panel = gifPanelIfLoaded {
-      panel.frame = CGRect(x: 0, y: composerHeight, width: w, height: panelHeight)
-      panel.isHidden = !gifPanelVisible && panel.alpha <= 0.01
+      // When the panel lives in the overlay window, NEVER set frame relative to the
+      // composer (y ≈ pill height). That coordinate system is the input bar's, but
+      // the overlay is full-screen — so y=composerHeight pins the panel near the
+      // TOP of the viewport. Overlay frames are owned by updateGifPanelOverlayFrame.
+      if panel.superview === self {
+        setGifPanelFrameKeepingTransform(
+          panel, CGRect(x: 0, y: composerHeight, width: w, height: panelHeight))
+      } else if gifPanelVisible, gifPanelHostController != nil {
+        updateGifPanelOverlayFrame()
+      }
+      // Hiding slides on transform and leaves alpha at 1, so the alpha test re-showed a
+      // dismissed panel on the next layout — that is the panel stranded under the keyboard.
+      panel.isHidden = !gifPanelVisible && !gifPanelTransitionInFlight
     }
 
     // Side buttons are perfectly circular
@@ -2117,7 +3307,11 @@ final class ChatInputBar: UIView {
       actualPillW - textInsetH * 2 - inlineAttachReserve - sendActionReserve - gifTextReserve
     )
     let tfY = bannerExtra + (clampedTextH + textInsetV * 2 - clampedTextH) / 2
-    textView.frame = CGRect(x: tfX, y: tfY, width: tfW, height: clampedTextH)
+    let minimumTextContentH = ceil(textView.font?.lineHeight ?? 0)
+    let fittedTextH = min(clampedTextH, max(minimumTextContentH, textH))
+    let textCenterOffsetY = max(0, (clampedTextH - fittedTextH) / 2)
+    textView.frame = CGRect(
+      x: tfX, y: tfY + textCenterOffsetY, width: tfW, height: fittedTextH)
     placeholderLabel.frame = CGRect(x: tfX + 2, y: tfY, width: tfW - 4, height: clampedTextH)
     let inlineButtonY = textRowBottom - 36.0 - max(2.0, (minPillH - 36.0) * 0.5)
     inlineAttachButton.frame = CGRect(
@@ -2129,30 +3323,76 @@ final class ChatInputBar: UIView {
     inlineAttachButton.isHidden = true
     // Slash-command button is removed in the new UI.
     slashButton.isHidden = true
-    let gifTrailingInsetCollapsed: CGFloat = textInsetH
+    let gifTrailingInsetCollapsed: CGFloat = 6
     let gifTrailingInsetExpanded: CGFloat = 2
     let gifTrailingInset =
       gifTrailingInsetCollapsed
       - ((gifTrailingInsetCollapsed - gifTrailingInsetExpanded) * clampedSendProgress)
     let gifX = actualPillW - gifTrailingInset - sendActionReserve - gifButtonSize
-    let gifBottomInset = max(3.0, (minPillH - gifButtonSize) * 0.5)
+    let textRowTop = bannerExtra
+    let gifY = textRowTop + (textRowH - gifButtonSize) * 0.5
     gifButton.frame = CGRect(
       x: gifX,
-      y: textRowBottom - gifButtonSize - gifBottomInset,
+      y: gifY,
       width: gifButtonSize,
       height: gifButtonSize
     )
     gifButton.isHidden = isRecording
 
+    if isRecording, recordingMode == .video {
+      let inset = bounds.height
+      if let recorder = videoNoteRecorderController, abs(recorder.bottomChromeInset - inset) > 0.5 {
+        recorder.bottomChromeInset = inset
+        recorder.view.setNeedsLayout()
+      }
+    }
+
     // Recording UI Layout
     if isRecording {
-      let dotSize: CGFloat = 6
-      recordingDot.frame = CGRect(x: 16, y: (pillH - dotSize) / 2, width: dotSize, height: dotSize)
-      recordingDot.layer.cornerRadius = dotSize / 2
+      let isVideo = recordingMode == .video
+      let showVideoTrash = isVideo && isLocked
+      let trashSide: CGFloat = showVideoTrash ? 32 : 0
+      let thumbSide: CGFloat = isVideoNotePaused ? 30 : 0
+      let pauseSide: CGFloat = (isVideo && isLocked) ? 36 : 0
+      let leadingChrome: CGFloat =
+        16 + trashSide + (trashSide > 0 ? 8 : 0) + (thumbSide > 0 ? thumbSide + 8 : 0)
+
+      if isVideoNotePaused, !videoNoteDraftThumbView.isHidden {
+        videoNoteDraftThumbView.frame = CGRect(
+          x: 8 + trashSide + (trashSide > 0 ? 8 : 0),
+          y: (pillH - thumbSide) / 2,
+          width: thumbSide,
+          height: thumbSide
+        )
+        videoNoteDraftThumbView.layer.cornerRadius = thumbSide / 2
+        recordingDot.frame = .zero
+      } else {
+        videoNoteDraftThumbView.frame = .zero
+        let dotSize: CGFloat = 6
+        recordingDot.frame = CGRect(
+          x: trashSide > 0 ? (8 + trashSide + 8) : 16,
+          y: (pillH - dotSize) / 2, width: dotSize, height: dotSize)
+        recordingDot.layer.cornerRadius = dotSize / 2
+      }
 
       let timerSize = recordingTimerLabel.sizeThatFits(CGSize(width: actualPillW, height: pillH))
       recordingTimerLabel.frame = CGRect(
-        x: 28, y: (pillH - timerSize.height) / 2, width: timerSize.width, height: timerSize.height)
+        x: max(28, leadingChrome),
+        y: (pillH - timerSize.height) / 2,
+        width: timerSize.width,
+        height: timerSize.height
+      )
+
+      if pauseSide > 0 {
+        videoNotePauseButton.frame = CGRect(
+          x: recordingTimerLabel.frame.maxX + 10,
+          y: (pillH - pauseSide) / 2,
+          width: pauseSide,
+          height: pauseSide
+        )
+      } else {
+        videoNotePauseButton.frame = .zero
+      }
 
       let cancelSize = slideToCancelLabel.sizeThatFits(CGSize(width: actualPillW, height: pillH))
       slideToCancelLabel.frame = CGRect(
@@ -2168,24 +3408,46 @@ final class ChatInputBar: UIView {
         width: chevronSize.width,
         height: chevronSize.height
       )
+      if isLocked, isVideo {
+        slideToCancelLabel.frame = .zero
+        slideChevronView.frame = .zero
+      }
 
       if !isLocked {
-        let lockW: CGFloat = 46
-        let lockH: CGFloat = 86
-        lockPill.frame = CGRect(
+        let lockW: CGFloat = 40
+        let lockH: CGFloat = 90
+        lockHintHost.frame = CGRect(
           x: micGlass.center.x - (lockW / 2),
-          y: micGlass.center.y - lockH - 24,
+          y: micGlass.center.y - lockH - 40,
           width: lockW,
           height: lockH
         )
+        lockPill.frame = lockHintHost.bounds
         lockPill.layer.cornerRadius = lockW / 2
         lockPill.clipsToBounds = true
-        lockArrowView.frame = CGRect(x: (lockW - 14) / 2, y: 16, width: 14, height: 14)
-        lockView.frame = CGRect(x: (lockW - 14) / 2, y: 46, width: 14, height: 18)
+        lockArrowView.frame = CGRect(x: (lockW - 12) / 2, y: 14, width: 12, height: 14)
+        lockView.frame = CGRect(x: (lockW - 13) / 2, y: 52, width: 13, height: 17)
       }
+    } else {
+      videoNotePauseButton.frame = .zero
+      videoNoteDraftThumbView.frame = .zero
+      lockHintHost.isHidden = true
     }
 
-    cancelOverlayButton.frame = pillContainer.bounds
+    // Visible trash when a video note is locked/paused; full-pill hit for voice cancel.
+    if isRecording, isLocked, recordingMode == .video {
+      let trash: CGFloat = 32
+      cancelOverlayButton.frame = CGRect(
+        x: 8, y: (pillH - trash) / 2, width: trash, height: trash)
+      let trashCfg = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+      cancelOverlayButton.setImage(
+        UIImage(systemName: "trash.fill", withConfiguration: trashCfg), for: .normal)
+      cancelOverlayButton.tintColor = .systemRed
+      cancelOverlayButton.isUserInteractionEnabled = true
+    } else {
+      cancelOverlayButton.setImage(nil, for: .normal)
+      cancelOverlayButton.frame = pillContainer.bounds
+    }
 
     // ── Mention banner is now inside the pill — no floating layout needed ──
 
@@ -2219,6 +3481,8 @@ final class ChatInputBar: UIView {
       $0.alpha = activeAlpha
       $0.isHidden = !isSelectionMode && $0.alpha == 0
     }
+    selectionDeleteButton.alpha = activeAlpha
+    selectionDeleteButton.isHidden = !isSelectionMode && activeAlpha == 0
     
     attachGlass.alpha = normalAlpha
     pillGlass.alpha = normalAlpha
@@ -2259,6 +3523,9 @@ final class ChatInputBar: UIView {
     if let gifImage = gifButton.imageView { gifButton.bringSubviewToFront(gifImage) }
     if let micImage = micButton.imageView { micButton.bringSubviewToFront(micImage) }
     if let sendImage = sendButton.imageView { sendButton.bringSubviewToFront(sendImage) }
+    if let cancelImage = cancelOverlayButton.imageView {
+      cancelOverlayButton.bringSubviewToFront(cancelImage)
+    }
     CATransaction.commit()
 
     if abs(prevH - barHeight) > 0.5 {
@@ -2270,16 +3537,35 @@ final class ChatInputBar: UIView {
     }
     bringSubviewToFront(contentRow)
     contentRow.bringSubviewToFront(attachGlass)
-    contentRow.bringSubviewToFront(micGlass)
-    contentRow.bringSubviewToFront(micVADView)
     contentRow.bringSubviewToFront(pillGlass)
+    // Mic / hold affordance MUST sit above the input pill text (was behind it).
+    contentRow.bringSubviewToFront(micVADView)
+    contentRow.bringSubviewToFront(micGlass)
+    if isRecording, !isLocked {
+      contentRow.bringSubviewToFront(lockHintHost)
+    }
     pillContainer.bringSubviewToFront(sendButton)
     pillContainer.bringSubviewToFront(gifButton)
+    pillContainer.bringSubviewToFront(videoNotePauseButton)
+    pillContainer.bringSubviewToFront(videoNoteDraftThumbView)
+    pillContainer.bringSubviewToFront(cancelOverlayButton)
     if mentionBannerVisible || !mentionBanner.isHidden {
       pillContainer.bringSubviewToFront(mentionBanner)
     }
     if replyBannerVisible || replyBannerAnimatingOut || !replyBanner.isHidden {
       pillContainer.bringSubviewToFront(replyBanner)
+    }
+    // Selection actions must sit above attach/pill/mic or taps never land
+    // (esp. agent control mode + iOS 26 glass).
+    if isSelectionMode {
+      contentRow.bringSubviewToFront(selectionDeleteGlass)
+      contentRow.bringSubviewToFront(selectionShareOutsideGlass)
+      contentRow.bringSubviewToFront(selectionShareInsideGlass)
+      selectionDeleteGlass.contentView.bringSubviewToFront(selectionDeleteButton)
+      if let deleteImage = selectionDeleteButton.imageView {
+        selectionDeleteButton.bringSubviewToFront(deleteImage)
+      }
+      applySelectionInteractionState()
     }
 
   }
@@ -2291,18 +3577,17 @@ final class ChatInputBar: UIView {
   /// on older iOS we fall back to UIBlurEffect(style: .systemMaterial).
   private func refreshGlass() {
     if #available(iOS 26.0, *) {
-      let attachEffect = UIGlassEffect()
-      attachEffect.isInteractive = true
-      attachGlass.effect = attachEffect
-
-      let micEffect = UIGlassEffect()
-      micEffect.isInteractive = true
-      micGlass.effect = micEffect
-
-      let pillEffect = UIGlassEffect()
-      pillEffect.isInteractive = true
-      pillGlass.effect = pillEffect
-      pillGlass.contentView.backgroundColor = pillTint
+      // Clear glass, same family as the header chips: a plate tint reads as flat gray.
+      func makeGlassEffect() -> UIGlassEffect {
+        let effect = UIGlassEffect(style: .regular)
+        effect.isInteractive = true
+        effect.tintColor = .clear
+        return effect
+      }
+      attachGlass.effect = makeGlassEffect()
+      micGlass.effect = makeGlassEffect()
+      pillGlass.effect = makeGlassEffect()
+      pillGlass.contentView.backgroundColor = .clear
 
       let lockEffect = UIGlassEffect()
       lockEffect.isInteractive = true
@@ -2340,6 +3625,64 @@ final class ChatInputBar: UIView {
     button.tintColor = tintColor
   }
 
+  private func gifGlyphTint(active: Bool) -> UIColor {
+    UIColor(white: active ? 0.72 : 0.58, alpha: 0.92)
+  }
+
+  private func applyComposerRecordGlyph(to button: UIButton, tintColor: UIColor) {
+    if isVideoMode {
+      let image = chatVideoNoteGlyphImage(size: CGSize(width: 22, height: 22))
+      button.setImage(image, for: .normal)
+      button.tintColor = tintColor
+    } else {
+      applyControlGlyph(
+        button: button,
+        symbolName: "mic",
+        symbolConfig: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium),
+        tintColor: tintColor)
+    }
+  }
+
+  private func setVideoNotePauseGlyph(paused: Bool) {
+    let cfg = UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+    let name = paused ? "play.fill" : "pause.fill"
+    videoNotePauseButton.setImage(UIImage(systemName: name, withConfiguration: cfg), for: .normal)
+  }
+
+  private func morphComposerRecordIcon() {
+    let tint = appearance.textColorThem.withAlphaComponent(0.9)
+    let incoming = micButton.imageView
+    let outgoing = incoming?.snapshotView(afterScreenUpdates: false)
+    applyComposerRecordGlyph(to: micButton, tintColor: tint)
+    incoming?.transform = CGAffineTransform(translationX: 0, y: 9).scaledBy(x: 0.72, y: 0.72)
+    if let outgoing, let incoming {
+      outgoing.frame = incoming.frame
+      micButton.addSubview(outgoing)
+      UIView.animate(
+        withDuration: 0.28,
+        delay: 0,
+        usingSpringWithDamping: 0.78,
+        initialSpringVelocity: 0.4,
+        options: [.beginFromCurrentState, .allowUserInteraction]
+      ) {
+        outgoing.transform = CGAffineTransform(translationX: 0, y: -10).scaledBy(x: 0.7, y: 0.7)
+        incoming.transform = .identity
+      } completion: { _ in
+        outgoing.removeFromSuperview()
+      }
+    } else {
+      UIView.animate(
+        withDuration: 0.24,
+        delay: 0,
+        usingSpringWithDamping: 0.82,
+        initialSpringVelocity: 0.3,
+        options: [.beginFromCurrentState]
+      ) {
+        incoming?.transform = .identity
+      }
+    }
+  }
+
   // MARK: - Button states
 
   private func updateButtonStates(animated: Bool = false) {
@@ -2372,15 +3715,17 @@ final class ChatInputBar: UIView {
         showSend
         ? CGAffineTransform(translationX: 8, y: 0).scaledBy(x: 0.88, y: 0.88)
         : .identity
-      self.micGlass.isUserInteractionEnabled = !showSend
-      self.micButton.isUserInteractionEnabled = !showSend
+      // Selection mode owns interaction for the bottom chrome.
+      if !self.isSelectionMode {
+        self.micGlass.isUserInteractionEnabled = !showSend
+        self.micButton.isUserInteractionEnabled = !showSend
+      }
 
       // GIF State (moves in toward Send area while Send expands)
       self.gifButton.alpha = showSend ? 0.9 : 1.0
+      // No inward slide: it walked the glyph into the send button as that one entered.
       self.gifButton.transform =
-        showSend
-        ? CGAffineTransform(translationX: 4, y: 0).scaledBy(x: 0.92, y: 0.92)
-        : .identity
+        showSend ? CGAffineTransform(scaleX: 0.92, y: 0.92) : .identity
 
       // Send State
       self.sendButton.alpha = showSend ? 1 : 0
@@ -2388,12 +3733,17 @@ final class ChatInputBar: UIView {
         showSend
         ? .identity
         : hiddenSendTransform
-      self.sendButton.isUserInteractionEnabled = showSend
+      if !self.isSelectionMode {
+        self.sendButton.isUserInteractionEnabled = showSend
+      }
 
       self.micGlass.isHidden = false
       self.sendButton.isHidden = false
       self.setNeedsLayout()
       self.layoutIfNeeded()
+      if self.isSelectionMode {
+        self.applySelectionInteractionState()
+      }
     }
 
     if animated {
@@ -2414,49 +3764,34 @@ final class ChatInputBar: UIView {
     placeholderLabel.isHidden = !(textView.text ?? "").isEmpty
   }
 
+  /// Matches the keyboard intersection and aligns both surfaces to one device-pixel edge.
+  private func matchedKeyboardPanelHeight() -> CGFloat {
+    let scale = max(traitCollection.displayScale, 1)
+    func aligned(_ height: CGFloat) -> CGFloat {
+      (height * scale).rounded() / scale
+    }
+    if keyboardHeightForPanels > 0 { return aligned(keyboardHeightForPanels) }
+    if lastKnownKeyboardHeight > 0 { return aligned(lastKnownKeyboardHeight) }
+    // Nothing this launch — fall back to the last height this device actually measured.
+    // Without this a cold launch has no keyboard number at all and lands on a constant
+    // that matches no real keyboard, which is the state the log above was captured in.
+    if Self.persistedKeyboardHeight > 0 { return aligned(Self.persistedKeyboardHeight) }
+    return defaultGifPanelHeight
+  }
+
+  /// Panel height always matches the keyboard slot. Search focus does not grow the panel
+  /// (that shoved the composer offscreen); the host lifts the bar via `isGifPanelSearchActive`.
   private func preferredGifPanelHeight() -> CGFloat {
-    let expansion = gifPanelIfLoaded?.preferredHeightExpansion ?? 0
-    let scaleBoost = gifPanelIfLoaded?.preferredHeightScaleBoost ?? 0
-    let matchedKeyboardHeight: CGFloat?
-    if keyboardHeightForPanels > 0 {
-      matchedKeyboardHeight = max(220, keyboardHeightForPanels)
-    } else if lastKnownKeyboardHeight > 0 {
-      matchedKeyboardHeight = max(220, lastKnownKeyboardHeight)
-    } else {
-      matchedKeyboardHeight = nil
-    }
-    let referenceHeight = matchedKeyboardHeight ?? defaultGifPanelHeight
-    let viewportHeight =
-      max(
-        bounds.height,
-        superview?.bounds.height ?? 0,
-        window?.bounds.height ?? UIScreen.main.bounds.height
-      )
-    let maxFocusedHeight = max(620, floor(viewportHeight * 0.9))
-    let baseHeight = referenceHeight + expansion
-    let boostedHeight = baseHeight + (referenceHeight * scaleBoost)
-    if scaleBoost > 0 {
-      return min(maxFocusedHeight, max(220, boostedHeight))
-    }
-    if let matchedKeyboardHeight {
-      return matchedKeyboardHeight
-    }
-    return min(560, max(220, baseHeight))
+    matchedKeyboardPanelHeight()
   }
 
   private func handleGifPanelPreferredHeightChange() {
     guard gifPanelVisible else { return }
-    UIView.animate(
-      withDuration: 0.24,
-      delay: 0,
-      options: [.curveEaseInOut, .allowUserInteraction, .beginFromCurrentState],
-      animations: {
-        self.setNeedsLayout()
-        self.layoutIfNeeded()
-        self.superview?.setNeedsLayout()
-        self.superview?.layoutIfNeeded()
-      }
-    )
+    setNeedsLayout()
+    layoutIfNeeded()
+    superview?.setNeedsLayout()
+    superview?.layoutIfNeeded()
+    delegate?.inputBarHeightDidChange()
   }
 
   /// Creates the GIF panel on first use. Must only be called from present paths.
@@ -2476,7 +3811,9 @@ final class ChatInputBar: UIView {
 
   private func maybePrepareGifPanel() {
     guard window != nil, let panel = gifPanelIfLoaded else { return }
-    panel.hostViewController = findViewController()
+    // Host MUST own the panel's superview or the Giphy child controller asserts on
+    // its parent. The panel is a subview of the conversation's view, so that is the host.
+    panel.hostViewController = gifPanelHostController ?? findViewController()
     panel.prepareIfNeeded()
   }
 
@@ -2488,114 +3825,90 @@ final class ChatInputBar: UIView {
     26.0 - (16.0 * accessoryLayoutProgress())
   }
 
-  private func agentControlButtonWidth() -> CGFloat {
-    // In menu mode the chip shows "📁 <repo>  ⌄" — size it from the repo label and add
-    // room for the folder icon + chevron; otherwise size from the plain control title.
-    let usesMenu = agentControlMenu != nil
-    let label =
-      usesMenu
-      ? "\(agentControlRepoTitle.isEmpty ? "Repository" : agentControlRepoTitle)  ⌄"
-      : agentControlTitle
-    let extra: CGFloat = usesMenu ? 48.0 : 28.0
-    let titleWidth =
-      (label as NSString).size(
-        withAttributes: [.font: UIFont.systemFont(ofSize: 13.0, weight: .semibold)]
-      ).width
-    return min(184.0, max(64.0, ceil(titleWidth + extra)))
-  }
 
+  /// Hosts the panel inside the conversation's own view.
+  ///
+  /// It used to live in a separate `UIWindow` above alert level, which is why it painted
+  /// over Home, outlived the chat, and sat above system alerts. Containment removes all
+  /// three: pop takes the panel with it.
+  ///
+  /// Host must be set BEFORE `prepareIfNeeded`, and must own the panel's superview — the
+  /// Giphy child controller asserts on its parent otherwise.
   @discardableResult
-  private func ensureGifOverlayHost() -> ChatGifPanelOverlayController? {
-    guard let hostWindow = window ?? findViewController()?.view.window else { return nil }
+  private func ensureGifPanelHost() -> UIViewController? {
+    guard let host = findViewController() else { return nil }
     let panel = loadGifPanelIfNeeded()
-    if let overlayWindow = gifOverlayWindow,
-      let overlayController = gifOverlayController,
-      overlayWindow.windowScene === hostWindow.windowScene
-    {
-      overlayWindow.frame = hostWindow.windowScene?.coordinateSpace.bounds ?? hostWindow.bounds
-      overlayWindow.windowLevel = UIWindow.Level(
-        rawValue: max(hostWindow.windowLevel.rawValue + 1, UIWindow.Level.alert.rawValue + 1))
-      if panel.superview !== overlayController.view {
-        panel.removeFromSuperview()
-        overlayController.view.addSubview(panel)
-      }
-      panel.hostViewController = overlayController
-      return overlayController
-    }
-
-    tearDownGifOverlayWindowIfNeeded()
-
-    guard let windowScene = hostWindow.windowScene else { return nil }
-    let overlayWindow = ChatGifPanelPassthroughWindow(windowScene: windowScene)
-    overlayWindow.frame = windowScene.coordinateSpace.bounds
-    overlayWindow.backgroundColor = .clear
-    overlayWindow.windowLevel = UIWindow.Level(
-      rawValue: max(hostWindow.windowLevel.rawValue + 1, UIWindow.Level.alert.rawValue + 1))
-    let overlayController = ChatGifPanelOverlayController()
-    overlayWindow.rootViewController = overlayController
-    overlayWindow.isHidden = false
-
-    gifOverlayWindow = overlayWindow
-    gifOverlayController = overlayController
-    panel.hostViewController = overlayController
-    if panel.superview !== overlayController.view {
+    if panel.superview !== host.view {
       panel.removeFromSuperview()
-      overlayController.view.addSubview(panel)
+      // Below the composer so the bar keeps reading on top of the panel.
+      host.view.insertSubview(panel, belowSubview: self)
     }
-    return overlayController
+    panel.hostViewController = host
+    gifPanelHostController = host
+    return host
   }
 
-  private func tearDownGifOverlayWindowIfNeeded() {
-    if let panel = gifPanelIfLoaded {
-      panel.setPanelVisible(false)
-      if panel.superview != nil {
-        panel.removeFromSuperview()
-      }
-      panel.isHidden = true
-      panel.alpha = 0
-      panel.transform = .identity
-      panel.hostViewController = nil
-    }
-    gifOverlayWindow?.isHidden = true
-    gifOverlayWindow?.rootViewController = nil
-    gifOverlayWindow = nil
-    gifOverlayController = nil
+  private func tearDownGifPanelHostIfNeeded() {
+    guard let panel = gifPanelIfLoaded else { return }
+    panel.setPanelVisible(false)
+    panel.removeFromSuperview()
+    panel.isHidden = true
+    panel.transform = .identity
+    panel.hostViewController = nil
+    gifPanelHostController = nil
   }
 
   private func desiredGifPanelFrame() -> CGRect {
     let panelHeight = preferredGifPanelHeight()
-    let panelX: CGFloat = 0
-    let panelWidth = max(1, bounds.width)
-    guard let hostWindow = window,
-      let overlayWindow = gifOverlayWindow
-    else {
-      return CGRect(x: panelX, y: bounds.height, width: panelWidth, height: panelHeight)
+    guard let host = gifPanelHostController?.view else {
+      // Inline: occupy the reserved bottom slice of the bar (flush, no gap).
+      return CGRect(
+        x: 0, y: max(0, bounds.height - panelHeight), width: max(1, bounds.width),
+        height: panelHeight)
     }
-    let originInHostWindow = convert(CGPoint(x: panelX, y: 0), to: hostWindow)
-    let originInOverlay = overlayWindow.convert(originInHostWindow, from: hostWindow)
-    let panelY = overlayWindow.bounds.height - panelHeight
-    return CGRect(x: originInOverlay.x, y: panelY, width: panelWidth, height: panelHeight)
+    return CGRect(
+      x: 0,
+      y: host.bounds.maxY - (isGifPanelSearchActive ? keyboardHeightForPanels : 0) - panelHeight,
+      width: host.bounds.width,
+      height: panelHeight
+    )
   }
 
   private func updateGifPanelOverlayFrame() {
-    guard gifPanelVisible, let overlayController = ensureGifOverlayHost() else { return }
+    guard gifPanelVisible, ensureGifPanelHost() != nil else { return }
     let panel = loadGifPanelIfNeeded()
-    gifOverlayWindow?.frame = window?.windowScene?.coordinateSpace.bounds ?? overlayController.view.bounds
-    overlayController.view.frame = gifOverlayWindow?.bounds ?? overlayController.view.frame
-    panel.frame = desiredGifPanelFrame()
+    // During a show/hide the transition owns the slide — see `gifPanelTransitionInFlight`.
+    // Reassigning it here mid-slide is what let the panel jump between sizes on open.
+    if !gifPanelTransitionInFlight {
+      setGifPanelFrameKeepingTransform(panel, desiredGifPanelFrame())
+    }
     panel.isHidden = false
     debugLogGifPanelGeometryIfNeeded(context: "updateGifPanelOverlayFrame")
   }
 
+  /// `frame` is undefined while a transform is applied, so drop it, resize, put it back.
+  private func setGifPanelFrameKeepingTransform(_ panel: UIView, _ frame: CGRect) {
+    let transform = panel.transform
+    if transform.isIdentity {
+      panel.frame = frame
+      return
+    }
+    panel.transform = .identity
+    panel.frame = frame
+    panel.transform = transform
+  }
+
   private func debugLogGifPanelGeometryIfNeeded(context: String) {
-    guard gifPanelVisible, let overlayWindow = gifOverlayWindow, let panel = gifPanelIfLoaded else { return }
+    guard gifPanelVisible, let host = gifPanelHostController?.view,
+      let panel = gifPanelIfLoaded
+    else { return }
     let signature = [
       context,
       NSCoder.string(for: frame),
       NSCoder.string(for: bounds),
       NSCoder.string(for: safeAreaInsets),
       NSCoder.string(for: panel.frame),
-      NSCoder.string(for: overlayWindow.frame),
+      NSCoder.string(for: host.bounds),
       String(format: "%.1f", preferredGifPanelHeight()),
       String(format: "%.1f", bottomSafeAreaInset),
       String(format: "%.1f", keyboardHeightForPanels),
@@ -2609,7 +3922,7 @@ final class ChatInputBar: UIView {
       NSCoder.string(for: bounds),
       NSCoder.string(for: safeAreaInsets),
       NSCoder.string(for: panel.frame),
-      NSCoder.string(for: overlayWindow.frame),
+      NSCoder.string(for: host.bounds),
       preferredGifPanelHeight(),
       bottomSafeAreaInset,
       keyboardHeightForPanels
@@ -2617,6 +3930,25 @@ final class ChatInputBar: UIView {
   }
 
   private func setGifPanelVisible(_ visible: Bool, animated: Bool) {
+    if !visible {
+      // A second close cancels a deferred open before the keyboard finishes hiding.
+      if pendingGifPanelOpen {
+        pendingGifPanelOpen = false
+        gifButton.tintColor = gifGlyphTint(active: false)
+        if !gifPanelVisible {
+          return
+        }
+      }
+    } else if keyboardHeightForPanels > 0 {
+      // Keyboard still owns the slot — dismiss it and present only after height hits zero.
+      pendingGifPanelOpen = true
+      window?.endEditing(true)
+      gifButton.tintColor = gifGlyphTint(active: true)
+      return
+    } else {
+      pendingGifPanelOpen = false
+    }
+
     guard visible != gifPanelVisible else { return }
     // Hide path must not force-create the panel.
     if !visible, gifPanelIfLoaded == nil {
@@ -2624,15 +3956,8 @@ final class ChatInputBar: UIView {
       return
     }
     let panel = loadGifPanelIfNeeded()
-    let panelOffset = max(18, min(48, preferredGifPanelHeight() * 0.12))
     gifPanelVisible = visible
-    if visible {
-      pendingGifPanelCloseForKeyboard = false
-      if textView.isFirstResponder {
-        textView.resignFirstResponder()
-      }
-    }
-    gifButton.tintColor = appearance.textColorThem.withAlphaComponent(visible ? 1.0 : 0.85)
+    gifButton.tintColor = gifGlyphTint(active: visible)
 
     let applyChanges = {
       self.setNeedsLayout()
@@ -2641,59 +3966,83 @@ final class ChatInputBar: UIView {
       self.superview?.layoutIfNeeded()
     }
 
-    let shouldAnimate = animated
+    // The keyboard's real duration and curve, as reported by its last notification.
+    let motionDuration = keyboardAnimation.duration
+    let motionOptions: UIView.AnimationOptions = [
+      keyboardAnimation.options, .allowUserInteraction, .beginFromCurrentState,
+    ]
+    let entryOptions: UIView.AnimationOptions = [
+      keyboardAnimation.options, .allowUserInteraction,
+    ]
 
     if visible {
-      _ = ensureGifOverlayHost()
+      // Panel and keyboard share one slot — never present while a keyboard is still up.
+      window?.endEditing(true)
+      let shouldAnimate = animated
+
+      // Host first, then prepare — never reverse this order.
+      _ = ensureGifPanelHost()
       maybePrepareGifPanel()
       panel.setPanelVisible(true)
       panel.layer.removeAllAnimations()
-      panel.transform = shouldAnimate ? CGAffineTransform(translationX: 0, y: panelOffset) : .identity
-      panel.alpha = shouldAnimate ? 0 : 1
-      panel.isHidden = false
+
+      gifPanelTransitionInFlight = true
+      // Slide on `transform`, never on `frame`. A freshly created panel still has a zero
+      // frame, and animating that grows it out of the top-left corner instead of rising.
+      // Seeded outside any ambient animation so the offset itself never animates.
+      let finalFrame = desiredGifPanelFrame()
+      UIView.performWithoutAnimation {
+        panel.alpha = 1
+        panel.isHidden = false
+        panel.transform = .identity
+        panel.frame = finalFrame
+        panel.layoutIfNeeded()
+        if shouldAnimate {
+          panel.transform = CGAffineTransform(translationX: 0, y: finalFrame.height)
+        }
+      }
+
       if shouldAnimate {
         UIView.animate(
-          withDuration: 0.25,
-          delay: 0,
-          options: [.curveEaseInOut, .allowUserInteraction, .beginFromCurrentState],
+          withDuration: motionDuration, delay: 0, options: entryOptions,
           animations: {
             applyChanges()
-            panel.alpha = 1
             panel.transform = .identity
+          },
+          completion: { [weak self] _ in
+            panel.transform = .identity
+            self?.gifPanelTransitionInFlight = false
           }
         )
       } else {
         applyChanges()
-        panel.alpha = 1
-        panel.transform = .identity
+        gifPanelTransitionInFlight = false
       }
       return
-    } else {
-      panel.setPanelVisible(false)
     }
 
+    panel.setPanelVisible(false)
     panel.layer.removeAllAnimations()
-    let cleanupPanel = {
-      panel.alpha = 0
-      panel.transform = CGAffineTransform(translationX: 0, y: panelOffset)
-    }
-    let finishHide = {
+    gifPanelTransitionInFlight = true
+    let finishHide = { [weak self] in
       panel.transform = .identity
       panel.isHidden = true
+      if let self {
+        panel.frame = self.desiredGifPanelFrame()
+      }
+      self?.gifPanelTransitionInFlight = false
     }
 
-    if shouldAnimate {
+    if animated {
+      let exitTransform = CGAffineTransform(
+        translationX: 0, y: max(1, panel.bounds.height))
       UIView.animate(
-        withDuration: 0.25,
-        delay: 0,
-        options: [.curveEaseInOut, .allowUserInteraction, .beginFromCurrentState],
+        withDuration: motionDuration, delay: 0, options: motionOptions,
         animations: {
           applyChanges()
-          cleanupPanel()
+          panel.transform = exitTransform
         },
-        completion: { _ in
-          finishHide()
-        }
+        completion: { _ in finishHide() }
       )
     } else {
       applyChanges()
@@ -2704,29 +4053,39 @@ final class ChatInputBar: UIView {
   // MARK: - Actions
 
   @objc private func gifTapped() {
+    if pendingGifPanelOpen {
+      setGifPanelVisible(false, animated: true)
+      return
+    }
     setGifPanelVisible(!gifPanelVisible, animated: true)
   }
 
-  @objc private func attachTapped() {
-    if agentControlMode {
-      delegate?.inputBarDidRequestAgentPanel()
-      return
-    }
-    presentAttachmentSheet(sourceView: attachGlass)
+  /// Close the panel from outside — used the moment a pick is committed, so the panel
+  /// leaves on the same beat the message appears rather than after the send round-trips.
+  func dismissGifPanel(animated: Bool) {
+    setGifPanelVisible(false, animated: animated)
   }
+
 
   @objc private func inlineAttachTapped() {
     presentAttachmentSheet(sourceView: inlineAttachButton)
   }
 
+  /// Default (non-agent) chat: + opens the full attachment tab sheet.
+  @objc private func attachButtonTapped() {
+    guard !agentControlMode else { return }
+    presentAttachmentSheet(sourceView: attachButton)
+  }
+
   private func presentAttachmentSheet(sourceView: UIView) {
     setGifPanelVisible(false, animated: false)
-    // Show native attachment sheet
+    // Show native attachment sheet (Gallery | File | Location) — default chat path.
     guard let vc = findViewController() else {
       delegate?.inputBarDidTapAttachment()
       return
     }
     let sheet = ChatAttachmentMenuController(appearance: appearance)
+    sheet.recipientName = attachRecipientName
     sheet.sourceButtonView = sourceView
     if let window = vc.view.window {
       sheet.sourceButtonFrameInWindow = sourceView.convert(sourceView.bounds, to: window)
@@ -2757,6 +4116,10 @@ final class ChatInputBar: UIView {
       self?.attachmentSheet = nil
       self?.delegate?.inputBarDidSelectLocation(latitude: lat, longitude: lon)
     }
+    sheet.onSelectText = { [weak self] text in
+      self?.attachmentSheet = nil
+      self?.delegate?.inputBarDidSend(text: text, attachments: [], imageLocalURIs: [])
+    }
     attachmentSheet = sheet
     vc.present(sheet, animated: true)
   }
@@ -2773,6 +4136,11 @@ final class ChatInputBar: UIView {
       toggleAgentDictation()
       return
     }
+    // Paused video note: mic sends; tap the draft thumb to resume.
+    if isRecording, isLocked, recordingMode == .video, isVideoNotePaused {
+      finishActiveRecording()
+      return
+    }
     if isRecording && isLocked {
       finishActiveRecording()
       return
@@ -2785,19 +4153,15 @@ final class ChatInputBar: UIView {
     }
 
     isVideoMode.toggle()
-    let iconName = isVideoMode ? "video" : "mic"
-    UIView.transition(with: micButton, duration: 0.2, options: .transitionCrossDissolve) {
-      let cfg = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-      self.applyControlGlyph(
-        button: self.micButton,
-        symbolName: iconName,
-        symbolConfig: cfg,
-        tintColor: self.appearance.textColorThem.withAlphaComponent(0.9)
-      )
-    }
+    morphComposerRecordIcon()
   }
 
   @objc private func handleSelectionDelete() {
+    NSLog(
+      "[ChatShare] inputBar tap delete selectionMode=%@ delegate=%@",
+      isSelectionMode ? "Y" : "N",
+      delegate != nil ? "Y" : "N"
+    )
     let alert = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
     alert.addAction(UIAlertAction(title: "Delete for me", style: .destructive, handler: { _ in
       self.delegate?.inputBarDidRequestSelectionAction("delete", payload: ["forEveryone": false])
@@ -2814,18 +4178,50 @@ final class ChatInputBar: UIView {
         topVC = presented
       }
       topVC.present(alert, animated: true, completion: nil)
+    } else {
+      NSLog("[ChatShare] inputBar delete alert FAILED: no window/rootVC")
     }
   }
   @objc private func handleSelectionShareOutside() {
-    delegate?.inputBarDidRequestSelectionAction("shareOutside", payload: nil)
+    NSLog(
+      "[ChatShare] inputBar tap shareOutside selectionMode=%@ delegate=%@ agentControl=%@",
+      isSelectionMode ? "Y" : "N",
+      delegate != nil ? "Y" : "N",
+      agentControlMode ? "Y" : "N"
+    )
+    guard let delegate else {
+      NSLog("[ChatShare] inputBar shareOutside FAILED: nil delegate")
+      return
+    }
+    delegate.inputBarDidRequestSelectionAction("shareOutside", payload: nil)
   }
   @objc private func handleSelectionShareInside() {
-    delegate?.inputBarDidRequestSelectionAction("shareInside", payload: nil)
+    NSLog(
+      "[ChatShare] inputBar tap shareInside selectionMode=%@ delegate=%@ agentControl=%@",
+      isSelectionMode ? "Y" : "N",
+      delegate != nil ? "Y" : "N",
+      agentControlMode ? "Y" : "N"
+    )
+    guard let delegate else {
+      NSLog("[ChatShare] inputBar shareInside FAILED: nil delegate")
+      return
+    }
+    delegate.inputBarDidRequestSelectionAction("shareInside", payload: nil)
   }
 
   @objc private func sendTapped() {
     if isAgentStreaming {
       delegate?.inputBarDidRequestStopStreaming()
+      return
+    }
+
+    // Forward draft: allow empty caption — just send the forwarded messages.
+    if activeForwardDraft {
+      let t = currentText
+      setMentionBannerVisible(false, animated: false)
+      delegate?.inputBarDidConfirmForward(caption: t)
+      clearText()
+      dismissReplyBanner(animated: true)
       return
     }
 
@@ -2852,7 +4248,21 @@ final class ChatInputBar: UIView {
         return
       }
       setMentionBannerVisible(false, animated: false)
-      delegate?.inputBarDidSendWithAgentMention(text: t, agentText: agentText)
+      let attachments = pendingAttachmentBlobs
+      let imageURIs = pendingImageLocalURIs
+      clearPendingAttachments()
+      delegate?.inputBarDidSendWithAgentMention(
+        text: t, agentText: agentText, attachments: attachments, imageLocalURIs: imageURIs)
+      clearText()
+
+    case .team:
+      setMentionBannerVisible(false, animated: false)
+      let attachments = pendingAttachmentBlobs
+      let imageURIs = pendingImageLocalURIs
+      clearPendingAttachments()
+      delegate?.inputBarDidSend(
+        text: t, attachments: attachments, imageLocalURIs: imageURIs)
+      clearText()
 
     case .standalone(let username, let agentText):
       guard !agentText.isEmpty else {
@@ -2860,21 +4270,34 @@ final class ChatInputBar: UIView {
         return
       }
       setMentionBannerVisible(false, animated: false)
+      let attachments = pendingAttachmentBlobs
+      let imageURIs = pendingImageLocalURIs
+      clearPendingAttachments()
       delegate?.inputBarDidSendWithStandaloneAgentMention(
         text: t,
         agentText: agentText,
-        agentUsername: username
+        agentUsername: username,
+        attachments: attachments,
+        imageLocalURIs: imageURIs
       )
+      clearText()
 
     case .none:
       setMentionBannerVisible(false, animated: false)
       let attachments = pendingAttachmentBlobs
-      pendingImages.removeAll()
-      pendingAttachmentBlobs.removeAll()
-      updateAttachmentPreviewVisibility()
-      delegate?.inputBarDidSend(text: t, attachments: attachments)
+      let imageURIs = pendingImageLocalURIs
+      clearPendingAttachments()
+      delegate?.inputBarDidSend(
+        text: t, attachments: attachments, imageLocalURIs: imageURIs)
       clearText()
     }
+  }
+
+  private func clearPendingAttachments() {
+    pendingImages.removeAll()
+    pendingAttachmentBlobs.removeAll()
+    pendingImageLocalURIs.removeAll()
+    updateAttachmentPreviewVisibility()
   }
 
   @objc private func mentionBannerTapped() {
@@ -2882,13 +4305,13 @@ final class ChatInputBar: UIView {
     case .none:
       return
 
-    case .mention:
+    case .mention(let suggestion):
       let text = textView.text ?? ""
       if let lastAtRange = text.range(of: "@", options: .backwards) {
         let beforeAt = text[text.startIndex..<lastAtRange.lowerBound]
-        textView.text = beforeAt + "@vibe "
+        textView.text = beforeAt + suggestion.insertion
       } else {
-        textView.text = (text.isEmpty ? "" : text + " ") + "@vibe "
+        textView.text = (text.isEmpty ? "" : text + " ") + suggestion.insertion
       }
       setMentionActive(true)
 
@@ -2958,9 +4381,9 @@ final class ChatInputBar: UIView {
     case .none:
       setMentionBannerVisible(false, animated: animated)
 
-    case .mention:
-      mentionNameLabel.text = "@vibe"
-      mentionDescLabel.text = "Ask AI"
+    case .mention(let suggestion):
+      mentionNameLabel.text = suggestion.token
+      mentionDescLabel.text = suggestion.description
       setMentionBannerVisible(true, animated: animated)
 
     case .slash(let suggestion):
@@ -3008,7 +4431,9 @@ final class ChatInputBar: UIView {
 
   private func updateMentionBorderGlow(pillFrame: CGRect) {
     let textString = (textView.text ?? "").lowercased()
-    let hasMention = textString.contains("@vibe") || textString.contains("@vibeagent") || textString.hasPrefix("/")
+    let hasMention =
+      textString.contains("@vibe") || textString.contains("@vibeagent")
+      || textString.contains("@team") || textString.hasPrefix("/")
     if hasMention != mentionActive {
       setMentionActive(hasMention)
     }
@@ -3017,8 +4442,15 @@ final class ChatInputBar: UIView {
   private enum MentionIntent {
     case none
     case group(String)
+    case team
     case builder
     case standalone(username: String, agentText: String)
+  }
+
+  private struct ReadyMentionSuggestion {
+    let token: String
+    let insertion: String
+    let description: String
   }
 
   private struct ReadyCommandSuggestion {
@@ -3029,9 +4461,18 @@ final class ChatInputBar: UIView {
 
   private enum ReadyBannerAction {
     case none
-    case mention
+    case mention(ReadyMentionSuggestion)
     case slash(ReadyCommandSuggestion)
   }
+
+  private static let readyMentionSuggestions: [ReadyMentionSuggestion] = [
+    ReadyMentionSuggestion(
+      token: "@team", insertion: "@team ", description: "Coordinate all agents"
+    ),
+    ReadyMentionSuggestion(
+      token: "@vibe", insertion: "@vibe ", description: "Ask the group agent"
+    ),
+  ]
 
   private static let builderSlashSuggestions: [ReadyCommandSuggestion] = [
     ReadyCommandSuggestion(command: "/newagent", insertion: "/newagent ", description: "Create a new agent"),
@@ -3083,6 +4524,9 @@ final class ChatInputBar: UIView {
     if username == "vibe" {
       return stripped.isEmpty ? .none : .group(stripped)
     }
+    if username == "team" {
+      return stripped.isEmpty ? .none : .team
+    }
 
     return stripped.isEmpty ? .none : .standalone(username: username, agentText: stripped)
   }
@@ -3092,18 +4536,21 @@ final class ChatInputBar: UIView {
       return .slash(suggestion)
     }
 
-    let shouldShowMention: Bool = {
-      guard !text.isEmpty else { return false }
-      guard let lastAtIndex = text.lastIndex(of: "@") else { return false }
+    let mentionSuggestion: ReadyMentionSuggestion? = {
+      guard !text.isEmpty else { return nil }
+      guard let lastAtIndex = text.lastIndex(of: "@") else { return nil }
       let afterAt = text[text.index(after: lastAtIndex)...].lowercased()
       let isAtStart = lastAtIndex == text.startIndex
       let isPrecededBySpace = !isAtStart && text[text.index(before: lastAtIndex)] == " "
-      guard isAtStart || isPrecededBySpace else { return false }
-      guard !afterAt.contains(" ") else { return false }
-      return "vibe".hasPrefix(afterAt) || afterAt.isEmpty
+      guard isAtStart || isPrecededBySpace else { return nil }
+      guard !afterAt.contains(" ") else { return nil }
+      return Self.readyMentionSuggestions.first {
+        let name = String($0.token.dropFirst()).lowercased()
+        return name.hasPrefix(afterAt) || afterAt.isEmpty
+      }
     }()
 
-    return shouldShowMention ? .mention : .none
+    return mentionSuggestion.map(ReadyBannerAction.mention) ?? .none
   }
 
   private func resolveSlashSuggestion(in text: String) -> ReadyCommandSuggestion? {
@@ -3167,18 +4614,23 @@ final class ChatInputBar: UIView {
 
   private func setupRecordingUI() {
     // Lock hint pill (hidden initially)
-    lockPill.isHidden = true
+    lockHintHost.isHidden = true
+    lockHintHost.isUserInteractionEnabled = false
+    lockHintHost.clipsToBounds = false
+    contentRow.addSubview(lockHintHost)
+    lockPill.isHidden = false
     lockPill.isUserInteractionEnabled = false
-    contentRow.addSubview(lockPill)
+    lockHintHost.addSubview(lockPill)
+    lockArrowView.isHidden = false
+    lockView.isHidden = false
 
     lockArrowView.tintColor = .white
     lockArrowView.contentMode = .scaleAspectFit
-    lockPill.contentView.addSubview(lockArrowView)
+    lockHintHost.addSubview(lockArrowView)
 
-    // Lock icon
     lockView.tintColor = .white
     lockView.contentMode = .scaleAspectFit
-    lockPill.contentView.addSubview(lockView)
+    lockHintHost.addSubview(lockView)
 
     // Slide To Cancel
     slideToCancelLabel.text = "Slide to cancel"
@@ -3205,11 +4657,46 @@ final class ChatInputBar: UIView {
     recordingDot.isHidden = true
     pillContainer.addSubview(recordingDot)
 
+    // Video-note pause (inside input pill while locked + recording).
+    let pauseCfg = UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+    videoNotePauseButton.setImage(
+      UIImage(systemName: "pause.fill", withConfiguration: pauseCfg), for: .normal)
+    videoNotePauseButton.tintColor = appearance.textColorThem.withAlphaComponent(0.9)
+    videoNotePauseButton.isHidden = true
+    videoNotePauseButton.addTarget(
+      self, action: #selector(handleVideoNotePauseTapped), for: .touchUpInside)
+    pillContainer.addSubview(videoNotePauseButton)
+
+    videoNoteDraftThumbView.contentMode = .scaleAspectFill
+    videoNoteDraftThumbView.clipsToBounds = true
+    videoNoteDraftThumbView.backgroundColor = UIColor.black.withAlphaComponent(0.35)
+    videoNoteDraftThumbView.isHidden = true
+    videoNoteDraftThumbView.layer.cornerCurve = .continuous
+    videoNoteDraftThumbView.isUserInteractionEnabled = true
+    let thumbTap = UITapGestureRecognizer(
+      target: self, action: #selector(handleVideoNoteThumbResumeTapped))
+    videoNoteDraftThumbView.addGestureRecognizer(thumbTap)
+    pillContainer.addSubview(videoNoteDraftThumbView)
+
     // Gesture
     let longPress = UILongPressGestureRecognizer(
       target: self, action: #selector(handleMicGesture(_:)))
     longPress.minimumPressDuration = 0.2
     micButton.addGestureRecognizer(longPress)
+  }
+
+  @objc private func handleVideoNotePauseTapped() {
+    guard recordingMode == .video, isRecording, isLocked else { return }
+    if isVideoNotePaused {
+      videoNoteRecorderController?.resumeRecording()
+    } else {
+      videoNoteRecorderController?.pauseRecording()
+    }
+  }
+
+  @objc private func handleVideoNoteThumbResumeTapped() {
+    guard recordingMode == .video, isRecording, isLocked, isVideoNotePaused else { return }
+    videoNoteRecorderController?.resumeRecording()
   }
 
   @objc private func handleMicGesture(_ g: UILongPressGestureRecognizer) {
@@ -3219,6 +4706,13 @@ final class ChatInputBar: UIView {
     case .began:
       suppressNextMicTap = true
       recordingGestureStartPoint = g.location(in: nil)
+      recordingGestureLastPoint = recordingGestureStartPoint
+      NSLog(
+        "[VideoNote] longPress.began videoMode=%@ agent=%@ isRecording=%@",
+        isVideoMode ? "Y" : "N",
+        agentControlMode ? "Y" : "N",
+        isRecording ? "Y" : "N"
+      )
       if isVideoMode {
         startVideoRecording()
       } else {
@@ -3233,10 +4727,24 @@ final class ChatInputBar: UIView {
       }
 
       let point = g.location(in: nil)
+      let stepDx = point.x - recordingGestureLastPoint.x
+      let stepDy = point.y - recordingGestureLastPoint.y
+      recordingGestureLastPoint = point
+      // Inserting the full-screen video-note overlay under the finger (or a later
+      // relayout while the touch is held) can make UIKit report an implausible
+      // single-frame jump in touch location — a real finger never moves >120pt
+      // between two consecutive .changed callbacks. Treat that as a coordinate
+      // glitch and resync the baseline instead of reading it as slide-to-cancel,
+      // which was silently killing recordings within ~1s of starting.
+      if recordingMode == .video, hypot(stepDx, stepDy) > 120 {
+        recordingGestureStartPoint = point
+        return
+      }
+
       let dy = point.y - recordingGestureStartPoint.y
       let dx = point.x - recordingGestureStartPoint.x
 
-      lockPill.transform = CGAffineTransform(translationX: 0, y: min(0, (dy * 0.6) + 6))
+      lockHintHost.transform = CGAffineTransform(translationX: 0, y: min(0, (dy * 0.6) + 6))
 
       if dx < 0 && abs(dx) > abs(dy) {
         let stretchAmount = abs(max(-100, dx))
@@ -3275,11 +4783,40 @@ final class ChatInputBar: UIView {
         self?.suppressNextMicTap = false
       }
     case .cancelled, .failed:
-      cancelActiveRecording()
+      // Inserting the video-note overlay into the hierarchy under the finger causes
+      // UIKit to cancel this long-press. Do NOT treat that as "user cancelled" —
+      // lock recording so trash/send stay available (Telegram-style hold→lock).
+      NSLog(
+        "[VideoNote] longPress.%@ mode=%@ recording=%@ locked=%@ videoActive=%@",
+        g.state == .cancelled ? "cancelled" : "failed",
+        recordingMode == .video ? "video" : (recordingMode == .voice ? "voice" : "none"),
+        isRecording ? "Y" : "N",
+        isLocked ? "Y" : "N",
+        isVideoRecordingActive ? "Y" : "N"
+      )
+      if recordingMode == .video, isRecording || isVideoRecordingActive {
+        if !isLocked {
+          lockActiveRecording()
+        }
+        // Re-assert overlay z-order if it was installed mid-gesture.
+        reassertVideoNoteOverlayZOrder()
+      } else {
+        cancelActiveRecording()
+      }
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
         self?.suppressNextMicTap = false
       }
     default: break
+    }
+  }
+
+  private func reassertVideoNoteOverlayZOrder() {
+    guard let host = superview, let recorder = videoNoteRecorderController else { return }
+    if let list = host as? ChatListView {
+      list.installVideoNoteRecorderView(recorder.view, belowInput: self)
+    } else if recorder.view.superview === host {
+      host.insertSubview(recorder.view, belowSubview: self)
+      host.bringSubviewToFront(self)
     }
   }
 
@@ -3408,32 +4945,116 @@ final class ChatInputBar: UIView {
 
   @discardableResult
   private func startVideoNoteRecording() -> Bool {
-    guard !isVideoRecordingActive else { return false }
-    guard let hostVC = findViewController() else { return false }
-    var presenter = hostVC
-    while let next = presenter.presentedViewController, !next.isBeingDismissed {
-      presenter = next
+    guard !isVideoRecordingActive else {
+      NSLog("[VideoNote] start SKIP already active")
+      return false
     }
-    guard presenter.presentedViewController == nil else { return false }
+    // Host inside ChatListView (our superview) so the input bar stays ABOVE the
+    // overlay — original z-order. Full-screen modal put the composer behind.
+    guard let hostView = superview else {
+      NSLog("[VideoNote] start FAIL no superview")
+      return false
+    }
+    guard let hostVC = findViewController() else {
+      NSLog("[VideoNote] start FAIL no hostVC")
+      return false
+    }
 
     isVideoRecordingActive = true
+    isVideoNotePaused = false
+    videoNoteDraftDuration = 0
+    videoNoteDraftThumb = nil
 
     let recorder = VideoNoteRecorderViewController()
-    recorder.modalPresentationStyle = .overFullScreen
-    recorder.modalTransitionStyle = .crossDissolve
-    recorder.onFinished = { [weak self] url, duration, shouldSend in
+    recorder.morphCoordinateView = hostView
+    recorder.onFinished = { [weak self] url, duration, shouldSend, morphImage, morphFrame in
       guard let self else { return }
+      NSLog(
+        "[VideoNote] onFinished send=%@ url=%@ dur=%.2f",
+        shouldSend ? "Y" : "N",
+        url?.lastPathComponent ?? "nil",
+        duration
+      )
       self.videoNoteRecorderController = nil
       self.isVideoRecordingActive = false
+      self.isVideoNotePaused = false
+      self.videoNotePauseButton.isHidden = true
+      self.videoNoteDraftThumbView.isHidden = true
+      self.videoNoteDraftThumbView.image = nil
       if shouldSend, let url {
-        self.delegate?.inputBarDidRecordVideoNote(uri: url.absoluteString, duration: duration)
+        // Morph first (list will hide the optimistic cell until flight ends).
+        if let morphImage, morphFrame.width > 1 {
+          NotificationCenter.default.post(
+            name: .videoNoteReleaseMorph,
+            object: nil,
+            userInfo: [
+              "image": morphImage,
+              "frame": NSValue(cgRect: morphFrame),
+              "uri": url.absoluteString,
+              "duration": duration,
+            ]
+          )
+        }
+        self.delegate?.inputBarDidRecordVideoNote(
+          uri: url.absoluteString,
+          duration: duration
+        )
       } else if self.pendingVideoStopShouldSend {
         self.delegate?.inputBarRecordingDidCancel()
       }
       self.pendingVideoStopShouldSend = true
     }
+    recorder.onPaused = { [weak self] draftURL, duration in
+      guard let self else { return }
+      self.applyVideoNotePausedInputState(draftURL: draftURL, duration: duration)
+    }
+    recorder.onResumed = { [weak self] in
+      self?.applyVideoNoteRecordingInputState()
+    }
+    recorder.onDurationTick = { [weak self] total in
+      guard let self, self.recordingMode == .video, self.isRecording, !self.isVideoNotePaused else {
+        return
+      }
+      let min = Int(total) / 60
+      let sec = Int(total) % 60
+      let ms = Int((total.truncatingRemainder(dividingBy: 1)) * 100)
+      self.recordingTimerLabel.text = String(format: "%d:%02d.%02d", min, sec, ms)
+      self.recordingDot.alpha = (Int(total * 2) % 2 == 0) ? 1 : 0
+    }
     videoNoteRecorderController = recorder
-    presenter.present(recorder, animated: true)
+    recorder.bottomChromeInset = bounds.height
+    recorder.loadViewIfNeeded()
+    // Warm camera before the view is inserted so the circle never flashes solid.
+    recorder.prepareCameraAndStart { ok in
+      NSLog("[VideoNote] prepareCamera ok=%@", ok ? "Y" : "N")
+    }
+
+    // Install immediately (not deferred). Gesture cancel is handled by locking
+    // instead of cancelling — see handleMicGesture .cancelled.
+    // Place ABOVE the collection (so it is visible) but BELOW the input bar.
+    hostVC.addChild(recorder)
+    recorder.view.frame = hostView.bounds
+    recorder.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    recorder.view.isUserInteractionEnabled = true
+    if let list = hostView as? ChatListView {
+      // Explicit z: collection < recorder < input < transition (layout may re-pin).
+      list.installVideoNoteRecorderView(recorder.view, belowInput: self)
+    } else {
+      hostView.insertSubview(recorder.view, belowSubview: self)
+      hostView.bringSubviewToFront(self)
+    }
+    recorder.didMove(toParent: hostVC)
+    recorder.playEntranceAnimation()
+    NSLog(
+      "[VideoNote] installed frame=%@ host=%@ subviews=%d",
+      NSCoder.string(for: recorder.view.frame),
+      String(describing: type(of: hostView)),
+      hostView.subviews.count
+    )
+    // Re-pin after the recording expand animation lays out the list.
+    DispatchQueue.main.async { [weak self] in
+      self?.reassertVideoNoteOverlayZOrder()
+    }
     return true
   }
 
@@ -3470,7 +5091,7 @@ final class ChatInputBar: UIView {
     slideToCancelLabel.text = "Slide to cancel"
     recordingTimerLabel.isHidden = false
     recordingDot.isHidden = false
-    lockPill.isHidden = false
+    lockHintHost.isHidden = false
     recordingTimerLabel.text = "0:00.00"
 
     recordingStartTime = Date()
@@ -3620,10 +5241,81 @@ final class ChatInputBar: UIView {
     }
 
     slideToCancelLabel.text = "Cancel"
+    slideToCancelLabel.isHidden = recordingMode == .video
     slideChevronView.isHidden = true
-    lockPill.isHidden = true
+    lockHintHost.isHidden = true
     cancelOverlayButton.isHidden = false
 
+    if recordingMode == .video {
+      // Trash (cancel) + pause in pill + send on mic — matches Telegram video-note hold.
+      videoNotePauseButton.isHidden = false
+      setVideoNotePauseGlyph(paused: false)
+      videoNoteDraftThumbView.isHidden = true
+      let sendTint =
+        appearance.bubbleMeGradient.first
+        ?? appearance.textColorThem.withAlphaComponent(0.9)
+      UIView.transition(with: micButton, duration: 0.2, options: .transitionCrossDissolve) {
+        self.applyControlGlyph(
+          button: self.micButton,
+          symbolName: "arrow.up.circle.fill",
+          symbolConfig: UIImage.SymbolConfiguration(pointSize: 22, weight: .medium),
+          tintColor: sendTint
+        )
+      }
+    } else {
+      videoNotePauseButton.isHidden = true
+      let sendTint =
+        appearance.bubbleMeGradient.first
+        ?? appearance.textColorThem.withAlphaComponent(0.9)
+      UIView.transition(with: micButton, duration: 0.2, options: .transitionCrossDissolve) {
+        self.applyControlGlyph(
+          button: self.micButton,
+          symbolName: "arrow.up.circle.fill",
+          symbolConfig: UIImage.SymbolConfiguration(pointSize: 22, weight: .medium),
+          tintColor: sendTint
+        )
+      }
+    }
+    micGlass.transform = CGAffineTransform(scaleX: 1.3, y: 1.3)
+
+    stopRecordingHintAnimations()
+    slideToCancelLabel.transform = .identity
+    lockHintHost.transform = .identity
+    setNeedsLayout()
+    layoutIfNeeded()
+
+    delegate?.inputBarRecordingStateDidChange(
+      isRecording: true,
+      isLocked: true,
+      mode: recordingModeString()
+    )
+  }
+
+  private func applyVideoNotePausedInputState(draftURL: URL?, duration: Double) {
+    isVideoNotePaused = true
+    videoNoteDraftDuration = duration
+    videoNotePauseButton.isHidden = false
+    setVideoNotePauseGlyph(paused: true)
+    cancelOverlayButton.isHidden = false
+    slideToCancelLabel.isHidden = true
+    slideChevronView.isHidden = true
+    lockHintHost.isHidden = true
+    recordingDot.isHidden = true
+
+    let mins = Int(duration) / 60
+    let secs = Int(duration) % 60
+    let ms = Int((duration.truncatingRemainder(dividingBy: 1)) * 100)
+    recordingTimerLabel.isHidden = false
+    recordingTimerLabel.text = String(format: "%d:%02d.%02d", mins, secs, ms)
+
+    // Draft thumb inside the pill (shared recording chrome — not a separate element).
+    if let draftURL {
+      videoNoteDraftThumb = videoNoteThumbnail(from: draftURL)
+    }
+    videoNoteDraftThumbView.image = videoNoteDraftThumb
+    videoNoteDraftThumbView.isHidden = videoNoteDraftThumb == nil
+
+    // Mic sends the paused draft; the thumb resumes recording.
     let sendTint =
       appearance.bubbleMeGradient.first
       ?? appearance.textColorThem.withAlphaComponent(0.9)
@@ -3635,19 +5327,42 @@ final class ChatInputBar: UIView {
         tintColor: sendTint
       )
     }
-    micGlass.transform = CGAffineTransform(scaleX: 1.3, y: 1.3)
-
-    stopRecordingHintAnimations()
-    slideToCancelLabel.transform = .identity
-    lockPill.transform = .identity
     setNeedsLayout()
     layoutIfNeeded()
+  }
 
-    delegate?.inputBarRecordingStateDidChange(
-      isRecording: true,
-      isLocked: true,
-      mode: recordingModeString()
-    )
+  private func applyVideoNoteRecordingInputState() {
+    isVideoNotePaused = false
+    videoNotePauseButton.isHidden = !isLocked
+    setVideoNotePauseGlyph(paused: false)
+    videoNoteDraftThumbView.isHidden = true
+    recordingDot.isHidden = false
+    if isLocked {
+      cancelOverlayButton.isHidden = false
+      let sendTint =
+        appearance.bubbleMeGradient.first
+        ?? appearance.textColorThem.withAlphaComponent(0.9)
+      UIView.transition(with: micButton, duration: 0.2, options: .transitionCrossDissolve) {
+        self.applyControlGlyph(
+          button: self.micButton,
+          symbolName: "arrow.up.circle.fill",
+          symbolConfig: UIImage.SymbolConfiguration(pointSize: 22, weight: .medium),
+          tintColor: sendTint
+        )
+      }
+    }
+    setNeedsLayout()
+    layoutIfNeeded()
+  }
+
+  private func videoNoteThumbnail(from url: URL) -> UIImage? {
+    let asset = AVURLAsset(url: url)
+    let gen = AVAssetImageGenerator(asset: asset)
+    gen.appliesPreferredTrackTransform = true
+    gen.maximumSize = CGSize(width: 120, height: 120)
+    let time = CMTime(seconds: 0.05, preferredTimescale: 600)
+    guard let cg = try? gen.copyCGImage(at: time, actualTime: nil) else { return nil }
+    return UIImage(cgImage: cg)
   }
 
   private func cancelRecording() {
@@ -3707,81 +5422,59 @@ final class ChatInputBar: UIView {
     }
     glassTarget.frame = trashContainer.bounds
     glassTarget.isUserInteractionEnabled = false
+    glassTarget.clipsToBounds = false
     trashContainer.addSubview(glassTarget)
+    trashContainer.clipsToBounds = false
 
-    let trashIconContainer = UIView(frame: CGRect(x: 0, y: 0, width: 24, height: 24))
-    trashIconContainer.center = CGPoint(x: sideSize / 2, y: attachHeight / 2)
-    trashContainer.addSubview(trashIconContainer)
-
-    let trashIcon = UIImageView(
-      image: UIImage(
-        systemName: "trash",
-        withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)
-      )
-    )
-    trashIcon.tintColor = .systemRed
-    trashIcon.frame = trashIconContainer.bounds
-    trashIconContainer.addSubview(trashIcon)
-
+    let trashGlyph = TrashCanGlyphView(frame: CGRect(x: 0, y: 0, width: 22, height: 22))
+    trashGlyph.center = CGPoint(x: glassTarget.bounds.midX, y: glassTarget.bounds.midY)
+    glassTarget.contentView.addSubview(trashGlyph)
+    glassTarget.contentView.bringSubviewToFront(trashGlyph)
+    bringSubviewToFront(trashContainer)
     bringSubviewToFront(animatedDot)
 
-    // Animate Trash Container fading in slightly before the dot jumps
     UIView.animate(withDuration: 0.2, delay: 0.05, options: .curveEaseOut) {
       trashContainer.alpha = 1
       trashContainer.transform = .identity
     } completion: { _ in
-      // Step 1: Open door & jump
+      trashGlyph.setLidOpen(true, animated: true)
       let path = UIBezierPath()
       path.move(to: dotStart)
-
-      let jumpHeight: CGFloat = 40
-      // Ensure the curve goes "up and over"
+      let jumpHeight: CGFloat = 44
       let controlY = min(dotStart.y, dotEnd.y) - jumpHeight
       let controlX = (dotStart.x + dotEnd.x) / 2
-      path.addQuadCurve(
-        to: dotEnd, controlPoint: CGPoint(x: controlX, y: controlY))
+      path.addQuadCurve(to: dotEnd, controlPoint: CGPoint(x: controlX, y: controlY))
 
       let jumpAnim = CAKeyframeAnimation(keyPath: "position")
       jumpAnim.path = path.cgPath
-      jumpAnim.duration = 0.35
-      // Use EaseIn to accelerate into the trash can
+      jumpAnim.duration = 0.38
       jumpAnim.timingFunction = CAMediaTimingFunction(name: .easeIn)
-
-      // Open Trash Can Lid (Translate Up + Scale)
-      UIView.animate(
-        withDuration: 0.25, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0.2,
-        options: .curveEaseOut
-      ) {
-        trashIconContainer.transform = CGAffineTransform(translationX: 0, y: -4).scaledBy(
-          x: 1.15, y: 1.15)
-      }
 
       CATransaction.begin()
       CATransaction.setCompletionBlock {
-        // Step 2: Dot falls in, make it shrink rapidly
-        UIView.animate(withDuration: 0.1, delay: 0, options: [.curveLinear]) {
-          animatedDot.transform = CGAffineTransform(scaleX: 0.1, y: 0.1)
+        UIView.animate(withDuration: 0.12, delay: 0, options: [.curveLinear]) {
+          animatedDot.transform = CGAffineTransform(scaleX: 0.08, y: 0.08)
           animatedDot.alpha = 0
-
-          // Trash "closes door" with a sudden drop
-          trashIconContainer.transform = CGAffineTransform(translationX: 0, y: 2).scaledBy(
-            x: 0.9, y: 0.9)
         } completion: { _ in
           animatedDot.removeFromSuperview()
-          // Step 3: Bounce back to identity smoothly (Trash settles)
+          trashGlyph.setLidOpen(false, animated: true)
           UIView.animate(
-            withDuration: 0.15, delay: 0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.5,
+            withDuration: 0.18, delay: 0.04,
+            usingSpringWithDamping: 0.55, initialSpringVelocity: 0.65,
             options: [.curveEaseOut]
           ) {
-            trashIconContainer.transform = .identity
+            trashGlyph.transform = CGAffineTransform(translationX: 0, y: 1.5)
           } completion: { _ in
-            // Step 4: Reset back to plus icon
-            UIView.animate(withDuration: 0.2, delay: 0.2, options: .curveEaseInOut) {
-              trashContainer.alpha = 0
-              trashContainer.transform = CGAffineTransform(scaleX: 0.5, y: 0.5)
-              self.attachGlass.alpha = 1
+            UIView.animate(withDuration: 0.16) {
+              trashGlyph.transform = .identity
             } completion: { _ in
-              trashContainer.removeFromSuperview()
+              UIView.animate(withDuration: 0.2, delay: 0.16, options: .curveEaseInOut) {
+                trashContainer.alpha = 0
+                trashContainer.transform = CGAffineTransform(scaleX: 0.5, y: 0.5)
+                self.attachGlass.alpha = 1
+              } completion: { _ in
+                trashContainer.removeFromSuperview()
+              }
             }
           }
         }
@@ -3849,6 +5542,12 @@ final class ChatInputBar: UIView {
     recordingStartTime = nil
     recordingFileURL = nil
     recordingWaveformSamples.removeAll(keepingCapacity: true)
+    isVideoNotePaused = false
+    videoNoteDraftDuration = 0
+    videoNoteDraftThumb = nil
+    videoNotePauseButton.isHidden = true
+    videoNoteDraftThumbView.isHidden = true
+    videoNoteDraftThumbView.image = nil
     textView.alpha = 1
     textView.isUserInteractionEnabled = true
     textView.isHidden = false
@@ -3858,10 +5557,10 @@ final class ChatInputBar: UIView {
     slideChevronView.isHidden = true
     recordingTimerLabel.isHidden = true
     recordingDot.isHidden = true
-    lockPill.isHidden = true
+    lockHintHost.isHidden = true
     slideToCancelLabel.transform = .identity
     slideChevronView.transform = .identity
-    lockPill.transform = .identity
+    lockHintHost.transform = .identity
     stopRecordingHintAnimations()
     updateButtonStates(animated: true)
     setNeedsLayout()
@@ -3881,14 +5580,9 @@ final class ChatInputBar: UIView {
       self.micVADView.transform = .identity
       self.micGlass.alpha = 1
 
-      let micCfg = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-      let iconName = self.isVideoMode ? "video" : "mic"
-      self.applyControlGlyph(
-        button: self.micButton,
-        symbolName: iconName,
-        symbolConfig: micCfg,
-        tintColor: self.appearance.textColorThem.withAlphaComponent(0.9)
-      )
+      self.applyComposerRecordGlyph(
+        to: self.micButton,
+        tintColor: self.appearance.textColorThem.withAlphaComponent(0.9))
 
       self.cancelOverlayButton.isHidden = true
 
@@ -3982,6 +5676,19 @@ final class ChatInputBar: UIView {
   }
 }  // End Class
 
+// MARK: - UIGestureRecognizerDelegate
+
+extension ChatInputBar: UIGestureRecognizerDelegate {
+  /// The panel swipe shares its touches with the GIF/sticker/emoji grids underneath it.
+  /// Without this the pan wins outright and the grids stop scrolling.
+  func gestureRecognizer(
+    _ gestureRecognizer: UIGestureRecognizer,
+    shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+  ) -> Bool {
+    true
+  }
+}
+
 // MARK: - ChatGifPanelViewDelegate
 
 extension ChatInputBar: ChatGifPanelViewDelegate {
@@ -3991,7 +5698,8 @@ extension ChatInputBar: ChatGifPanelViewDelegate {
       url: gif.url,
       previewUrl: gif.previewUrl,
       width: gif.width,
-      height: gif.height
+      height: gif.height,
+      localData: gif.localData
     )
   }
 
@@ -4039,13 +5747,22 @@ extension ChatInputBar: ChatGifPanelViewDelegate {
 
 extension ChatInputBar: UITextViewDelegate {
   func textViewDidBeginEditing(_ textView: UITextView) {
-    if gifPanelVisible {
-      if keyboardHeightForPanels > 0 || keyboardProgress > 0.01 {
-        setGifPanelVisible(false, animated: true)
-      } else {
-        pendingGifPanelCloseForKeyboard = true
-      }
+    // Claim the slot for the keyboard now; its height only arrives a notification later.
+    if keyboardHeightForPanels <= 0 {
+      keyboardArrivalPending = true
     }
+    // Same slot, one occupant. Focusing the composer cancels a pending open or hides the panel.
+    guard gifPanelVisible || pendingGifPanelOpen else { return }
+    setGifPanelVisible(false, animated: true)
+  }
+
+  func textViewDidEndEditing(_ textView: UITextView) {
+    // Focus can be dropped with no keyboard notification behind it; without this the bar
+    // keeps reserving the slot and the list keeps a keyboard's worth of bottom inset.
+    guard keyboardArrivalPending else { return }
+    keyboardArrivalPending = false
+    setNeedsLayout()
+    delegate?.inputBarHeightDidChange()
   }
 
   func textViewDidChange(_ tv: UITextView) {
@@ -4053,6 +5770,7 @@ extension ChatInputBar: UITextViewDelegate {
     updateButtonStates(animated: true)
 
     let textString = tv.text ?? ""
+    updateDraftMusicPreview(from: textString)
     delegate?.inputBarTextDidChange(text: textString)
 
     let isCloudOrCodex = provider?.lowercased().contains("claude") == true || provider?.lowercased().contains("codex") == true || provider?.lowercased().contains("grok") == true || provider?.lowercased().contains("agy") == true || provider?.lowercased().contains("antigravity") == true || agentControlMode
@@ -4364,6 +6082,16 @@ private final class CLLocationManagerWrapper: NSObject, CLLocationManagerDelegat
 extension ChatInputBar: PHPickerViewControllerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentPickerDelegate {
   
   private func updatePlusButtonMenu() {
+    // UIMenu on + is AI-agent chat only (attach quick actions + agent control items).
+    // Default chats open the full attachment tab sheet via attachButtonTapped.
+    inlineAttachButton.menu = nil
+    inlineAttachButton.showsMenuAsPrimaryAction = false
+
+    guard agentControlMode else {
+      attachButton.menu = nil
+      attachButton.showsMenuAsPrimaryAction = false
+      return
+    }
 
     let cameraAction = UIAction(title: "Camera", image: UIImage(systemName: "camera")) { [weak self] _ in
       self?.openCamera()
@@ -4375,7 +6103,11 @@ extension ChatInputBar: PHPickerViewControllerDelegate, UIImagePickerControllerD
       self?.openFilePicker()
     }
 
-    let attachGroup = UIMenu(title: "", options: .displayInline, children: [cameraAction, photoAction, fileAction])
+    let attachGroup = UIMenu(
+      title: "",
+      options: .displayInline,
+      children: [cameraAction, photoAction, fileAction]
+    )
     var menuChildren: [UIMenuElement] = [attachGroup]
 
     if let agentMenu = agentControlMenu {
@@ -4383,11 +6115,8 @@ extension ChatInputBar: PHPickerViewControllerDelegate, UIImagePickerControllerD
       menuChildren.append(agentGroup)
     }
 
-    let menu = UIMenu(title: "", children: menuChildren)
-    attachButton.menu = menu
+    attachButton.menu = UIMenu(title: "", children: menuChildren)
     attachButton.showsMenuAsPrimaryAction = true
-    inlineAttachButton.menu = nil
-    inlineAttachButton.showsMenuAsPrimaryAction = false
   }
 
   private func openCamera() {
@@ -4422,17 +6151,39 @@ extension ChatInputBar: PHPickerViewControllerDelegate, UIImagePickerControllerD
   private func stageImage(_ image: UIImage) {
     let scaled = ChatInputBar.scaledImage(image, maxDimension: 1024)
     guard let data = scaled.jpegData(compressionQuality: 0.55) else { return }
+    let fileName = "image-\(Int(Date().timeIntervalSince1970 * 1000)).jpg"
     let object: [String: Any] = [
-      "name": "image-\(Int(Date().timeIntervalSince1970 * 1000)).jpg",
+      "name": fileName,
       "mime": "image/jpeg",
       "dataB64": data.base64EncodedString(),
     ]
-    guard let blob = AgentRuntimeCrypto.encrypt(object) else { return }
-    
+    // Always write a durable local file so send never depends only on sealed blobs
+    // (decrypt/materialize can fail; agents still get blobs when present).
+    let localURI: String? = {
+      let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        ?? FileManager.default.temporaryDirectory
+      let dir = caches.appendingPathComponent("chat-local-attachments", isDirectory: true)
+      try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+      let url = dir.appendingPathComponent("\(UUID().uuidString.lowercased())-\(fileName)")
+      do {
+        try data.write(to: url, options: .atomic)
+        return url.absoluteString
+      } catch {
+        NSLog("[ChatInputBar] stageImage write failed %@", error.localizedDescription)
+        return nil
+      }
+    }()
+    let blob = AgentRuntimeCrypto.encrypt(object)
+
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       self.pendingImages.append(image)
-      self.pendingAttachmentBlobs.append(blob)
+      if let blob { self.pendingAttachmentBlobs.append(blob) }
+      if let localURI { self.pendingImageLocalURIs.append(localURI) }
+      // Keep arrays aligned if encrypt fails: pad blobs with empty so URI index still works.
+      while self.pendingAttachmentBlobs.count < self.pendingImageLocalURIs.count {
+        self.pendingAttachmentBlobs.append("")
+      }
       self.updateAttachmentPreviewVisibility()
       self.updateButtonStates(animated: true)
     }
@@ -4507,7 +6258,13 @@ extension ChatInputBar: PHPickerViewControllerDelegate, UIImagePickerControllerD
     let index = sender.tag
     guard index < pendingImages.count else { return }
     pendingImages.remove(at: index)
-    pendingAttachmentBlobs.remove(at: index)
+    if index < pendingAttachmentBlobs.count { pendingAttachmentBlobs.remove(at: index) }
+    if index < pendingImageLocalURIs.count {
+      let uri = pendingImageLocalURIs.remove(at: index)
+      if let url = URL(string: uri), url.isFileURL {
+        try? FileManager.default.removeItem(at: url)
+      }
+    }
     updateAttachmentPreviewVisibility()
     updateButtonStates(animated: true)
   }

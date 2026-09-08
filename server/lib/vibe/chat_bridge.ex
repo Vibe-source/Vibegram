@@ -10,7 +10,7 @@ defmodule Vibe.ChatBridge do
   alias Vibe.Chat.MessageRead
   alias Vibe.Repo
   alias Vibe.RepoRLS
-  alias Vibe.SupabaseStorage
+  alias Vibe.Storage
 
   @poll_limit 200
   @long_poll_timeout_ms 25_000
@@ -86,6 +86,16 @@ defmodule Vibe.ChatBridge do
         "delivery-receipt" ->
           Chat.mark_delivered(message_id, user.id)
 
+          receipt_payload = %{
+            chatId: chat_id,
+            messageId: message_id,
+            readerId: user.id,
+            status: "delivered"
+          }
+
+          broadcast_bridge_event("chat:#{chat_id}", "message-delivered", receipt_payload)
+          Chat.broadcast_message_receipt(chat_id, message_id, user.id, "delivered")
+
           {:ok,
            %{
              accepted: true,
@@ -96,6 +106,16 @@ defmodule Vibe.ChatBridge do
 
         "read-receipt" ->
           Chat.mark_read(message_id, user.id)
+
+          receipt_payload = %{
+            chatId: chat_id,
+            messageId: message_id,
+            readerId: user.id,
+            status: "read"
+          }
+
+          broadcast_bridge_event("chat:#{chat_id}", "message-read", receipt_payload)
+          Chat.broadcast_message_receipt(chat_id, message_id, user.id, "read")
 
           {:ok,
            %{
@@ -120,6 +140,7 @@ defmodule Vibe.ChatBridge do
   def chat_history(%User{} = user, attrs) when is_map(attrs) do
     chat_id =
       normalize_string(attrs["chatId"] || attrs[:chatId] || attrs["chat_id"] || attrs[:chat_id])
+
     saved_messages? =
       truthy?(attrs["savedMessages"] || attrs[:savedMessages] || attrs["saved_messages"]) ||
         chat_id == "saved_messages"
@@ -209,8 +230,7 @@ defmodule Vibe.ChatBridge do
   def bundle do
     raw =
       System.get_env("BLACKOUT_BRIDGE_BUNDLE_JSON") ||
-        System.get_env("VIBE_BRIDGE_BUNDLE_JSON") ||
-        System.get_env("EXPO_PUBLIC_BLACKOUT_BRIDGE_BUNDLE")
+        System.get_env("VIBE_BRIDGE_BUNDLE_JSON")
 
     cond do
       !is_binary(raw) or String.trim(raw) == "" ->
@@ -251,7 +271,8 @@ defmodule Vibe.ChatBridge do
 
             {:error, _changeset} ->
               case get_existing_message(user.id, message_attrs.id) do
-                %Message{} = existing when existing.chat_id == chat_id and existing.from_id == user.id ->
+                %Message{} = existing
+                when existing.chat_id == chat_id and existing.from_id == user.id ->
                   {:ok, send_message_response(existing)}
 
                 _ ->
@@ -270,20 +291,29 @@ defmodule Vibe.ChatBridge do
         payload["encryptedContent"] || payload[:encryptedContent] || payload["encrypted_content"]
       )
 
-    edited_at = normalize_integer(payload["editedAt"] || payload[:editedAt] || payload["edited_at"])
+    edited_at =
+      normalize_integer(payload["editedAt"] || payload[:editedAt] || payload["edited_at"])
 
     with {:ok, chat_id} <- require_chat_id(chat_id),
          {:ok, message_id} <- require_message_id(message_id),
          {:ok, encrypted_content} <- require_encrypted_content(encrypted_content),
          :ok <- ensure_participant(chat_id, user.id),
-         {:ok, _message} <-
+         {:ok, message} <-
            Chat.edit_message(chat_id, message_id, user.id, encrypted_content, edited_at) do
-      broadcast_bridge_event("chat:#{chat_id}", "message-edited", %{
+      mutation_payload = %{
         chatId: chat_id,
         messageId: message_id,
         encryptedContent: encrypted_content,
-        editedAt: edited_at
-      })
+        editedAt: edited_at,
+        message:
+          message
+          |> Chat.client_message_payload()
+          |> Chat.mirrored_message_payload()
+      }
+
+      broadcast_bridge_event("chat:#{chat_id}", "message-edited", mutation_payload)
+      Chat.broadcast_user_chat_event(chat_id, "message-edited", mutation_payload)
+
       {:ok,
        %{
          accepted: true,
@@ -312,18 +342,30 @@ defmodule Vibe.ChatBridge do
 
   defp delete_message(%User{} = user, chat_id, payload) do
     message_id = normalize_string(payload["messageId"] || payload[:messageId] || payload["id"])
-    for_everyone = truthy?(payload["forEveryone"] || payload[:forEveryone] || payload["for_everyone"], true)
+
+    for_everyone =
+      truthy?(payload["forEveryone"] || payload[:forEveryone] || payload["for_everyone"], true)
 
     with {:ok, chat_id} <- require_chat_id(chat_id),
          {:ok, message_id} <- require_message_id(message_id),
          :ok <- ensure_participant(chat_id, user.id),
          {:ok, _message} <- Chat.delete_message(chat_id, message_id, user.id, for_everyone) do
-      broadcast_bridge_event("chat:#{chat_id}", "message-deleted", %{
+      mutation_payload = %{
         chatId: chat_id,
         messageId: message_id,
         deletedBy: user.id,
         forEveryone: for_everyone
-      })
+      }
+
+      broadcast_bridge_event("chat:#{chat_id}", "message-deleted", mutation_payload)
+
+      Chat.broadcast_user_chat_event(
+        chat_id,
+        "message-deleted",
+        mutation_payload,
+        if(for_everyone, do: nil, else: [user.id])
+      )
+
       {:ok,
        %{
          accepted: true,
@@ -377,6 +419,8 @@ defmodule Vibe.ChatBridge do
 
     VibeWeb.Endpoint.broadcast("chat:#{message.chat_id}", "message", payload)
 
+    mirrored_message = Chat.mirrored_message_payload(payload)
+
     participant_ids = Chat.get_participant_ids(message.chat_id) || []
 
     Enum.each(participant_ids, fn pid ->
@@ -384,7 +428,8 @@ defmodule Vibe.ChatBridge do
         VibeWeb.Endpoint.broadcast("user:#{pid}", "new_message", %{
           chatId: message.chat_id,
           fromId: message.from_id,
-          messageId: message.id
+          messageId: message.id,
+          message: mirrored_message
         })
       end
     end)
@@ -430,10 +475,11 @@ defmodule Vibe.ChatBridge do
     message_events =
       RepoRLS.with_user(user_id, fn ->
         Repo.all(
-          from m in Message,
+          from(m in Message,
             where: m.chat_id in ^chat_ids and m.inserted_at >= ^from_dt,
             order_by: [asc: m.inserted_at, asc: m.id],
             limit: ^@poll_limit
+          )
         )
       end)
       |> ensure_list()
@@ -443,12 +489,13 @@ defmodule Vibe.ChatBridge do
     delivered_events =
       RepoRLS.with_user(user_id, fn ->
         Repo.all(
-          from m in Message,
+          from(m in Message,
             where:
               m.chat_id in ^chat_ids and m.from_id == ^user_id and m.status == "delivered" and
                 m.updated_at >= ^from_dt,
             order_by: [asc: m.updated_at, asc: m.id],
             limit: ^@poll_limit
+          )
         )
       end)
       |> ensure_list()
@@ -458,7 +505,7 @@ defmodule Vibe.ChatBridge do
     read_events =
       RepoRLS.with_user(user_id, fn ->
         Repo.all(
-          from r in MessageRead,
+          from(r in MessageRead,
             join: m in Message,
             on: m.id == r.message_id,
             where:
@@ -472,6 +519,7 @@ defmodule Vibe.ChatBridge do
               message_id: m.id,
               chat_id: m.chat_id
             }
+          )
         )
       end)
       |> ensure_list()
@@ -510,7 +558,12 @@ defmodule Vibe.ChatBridge do
     }
   end
 
-  defp read_event(%{inserted_at: inserted_at, reader_id: reader_id, message_id: message_id, chat_id: chat_id}) do
+  defp read_event(%{
+         inserted_at: inserted_at,
+         reader_id: reader_id,
+         message_id: message_id,
+         chat_id: chat_id
+       }) do
     inserted_ms = naive_to_ms(inserted_at) || 0
     normalized_message_id = normalize_string(message_id) || ""
     normalized_chat_id = normalize_string(chat_id) || ""
@@ -635,17 +688,26 @@ defmodule Vibe.ChatBridge do
 
   defp build_message_attrs(chat_id, from_id, payload) when is_map(payload) do
     message_id =
-      normalize_string(payload["id"] || payload[:id] || payload["messageId"] || payload[:messageId])
+      normalize_string(
+        payload["id"] || payload[:id] || payload["messageId"] || payload[:messageId]
+      )
 
     encrypted_content =
       normalize_string(
         payload["encryptedContent"] || payload[:encryptedContent] || payload["encrypted_content"]
       )
 
-    timestamp = normalize_integer(payload["timestamp"] || payload[:timestamp]) || System.system_time(:millisecond)
+    timestamp =
+      normalize_integer(payload["timestamp"] || payload[:timestamp]) ||
+        System.system_time(:millisecond)
+
     type = normalize_string(payload["type"] || payload[:type]) || "text"
-    media_url = normalize_string(payload["mediaUrl"] || payload[:mediaUrl] || payload["media_url"])
-    reply_to_id = normalize_string(payload["replyToId"] || payload[:replyToId] || payload["reply_to_id"])
+
+    media_url =
+      normalize_string(payload["mediaUrl"] || payload[:mediaUrl] || payload["media_url"])
+
+    reply_to_id =
+      normalize_string(payload["replyToId"] || payload[:replyToId] || payload["reply_to_id"])
 
     with {:ok, message_id} <- require_message_id(message_id),
          {:ok, encrypted_content} <- require_encrypted_content(encrypted_content) do
@@ -805,7 +867,7 @@ defmodule Vibe.ChatBridge do
     normalize_integer(Map.get(message, :timestamp) || Map.get(message, "timestamp")) || 0
   end
 
-  defp rewrite_media_url(url), do: SupabaseStorage.rewrite_public_url(url)
+  defp rewrite_media_url(url), do: Storage.rewrite_public_url(url)
 
   defp ms_to_naive(ms) when is_integer(ms) do
     ms

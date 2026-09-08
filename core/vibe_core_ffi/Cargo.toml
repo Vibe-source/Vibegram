@@ -1,0 +1,72 @@
+# Standalone until integration: an empty `[workspace]` table keeps this crate
+# out of the parent workspace so it cannot break `cargo test` in `core/` while
+# it is being written. The lead adds it to `members` at integration.
+[workspace]
+
+[package]
+name = "vibe_core_ffi"
+version = "0.1.0"
+description = "UniFFI boundary for vibe_core: one worker thread, a command queue, and a panic-safe FFI surface. No synchronous read API by design."
+edition = "2021"
+rust-version = "1.82"
+license = "UNLICENSED"
+publish = false
+
+[lib]
+# `staticlib` is what the XCFramework links; `lib` is what the tests use.
+crate-type = ["staticlib", "cdylib", "lib"]
+name = "vibe_core_ffi"
+
+[dependencies]
+vibe_core = { path = "../vibe_core" }
+# The store crate, linked so history/paging/backfill can move off the Swift engine's
+# serial queue. It brings bundled SQLite (never the system one) and compiles into the
+# same staticlib the XCFramework ships.
+vibe_core_store = { path = "../vibe_core_store" }
+# The MLS session layer. Linked here rather than into `vibe_core`, because
+# `vibe_core` is deliberately deterministic and I/O-free and an MLS state machine
+# is neither — the two are siblings that meet only at this boundary. See
+# docs/secure-core-architecture.md §4.
+vibe_secure = { path = "../vibe_secure" }
+# The MLS provider that holds a device's key material. Already in the graph via
+# `vibe_secure`; named here because this boundary owns the provider instance and
+# hands it to every session built from the same identity.
+openmls_rust_crypto = "0.5"
+uniffi = { version = "0.28", features = ["cli"] }
+# Already in the graph via vibe_core; declared here so the unwrapped content key
+# handed over by the platform is scrubbed on this side of the boundary too.
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }
+
+[dev-dependencies]
+uniffi = { version = "0.28", features = ["bindgen-tests"] }
+
+[lints.rust]
+# Same posture as the parent workspace: the whole point of choosing Rust here
+# was memory safety, so a hand-written unsafe block would be self-defeating.
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+doc_markdown = "allow"
+too_many_lines = "allow"
+# A `#[uniffi::export]` method cannot take a reference across the boundary — the
+# generated scaffolding hands it an owned value. The lint is right in general and
+# unactionable here.
+needless_pass_by_value = "allow"
+
+[profile.release]
+lto = true
+codegen-units = 1
+# Never `abort`: a core panic must degrade to the Swift path, not kill the host.
+panic = "unwind"

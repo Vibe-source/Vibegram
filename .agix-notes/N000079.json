@@ -1,0 +1,18 @@
+{
+  "id": 79,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — assist\nGOAL: still its wrong its more like It's more than like it's similar to no ise instead of shader. So shaders should likely freely move when inside it, you know, each dot is like f loating, the inside it. Imagine that tiny dot. Look at this image. We don't need that, for example. Icon just blurness is imp…\nNEXT: Implement: (1) ChatEngine.logPendingSendDiagnostics skip in-flight sends + activeMediaUploadTasksByMessageId, stamp inFlightOutboundMessageIds when sendMessage dispatches the global upload/send work and clear on complete/fail; (2) handleNativeVideoNoteSend must NOT map accepted=true to status sent — leave sending; (3) rewrite runVideoNoteReleaseMorph: no reloadData, fade overlay not circle, keep recorder circle unti…\nDID: run_terminal_command()\nFILES: /Users/mohammadshayani/Vibe/ios/ChatModule/ChatListView.swift, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatListViewCells.swift, /Users/mohammadshayani/Vibe/ios/Sources/App/MetalKeyMaskView.swift, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatViewOnceShineCoverView.swift, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatAttachmentMenuController.swift, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatAttachComposerViews.swift (+2)",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "976f6743c48673d437c1888db94b2627a35089b5",
+  "agent": "grok",
+  "author": "Vibe Team",
+  "created_at": 1787821724,
+  "updated_at": 1787830813
+}

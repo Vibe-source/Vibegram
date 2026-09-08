@@ -1,0 +1,18 @@
+{
+  "id": 47,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Blank 14:09 cell in DM 3250b4d6c6dc is RECOVERABLE, not forward-secrecy loss (ios/Sources/Core/VibeSecureSessions.swift). Prod DB: welcome from peer 3af70d06 for that chat inserted 2026-08-26 10:08:18Z, delivered_at 10:08:25Z. ack() only fires after a successful joinSession (VibeSecureEstablishment.swift:601-609); the skip-and-ack tie-break needs adoptIncoming==false and sender 3AF70D06 < self CFAC3A0D so it always adopts -- the device DID join. Both blank rows (14:09:01, 17:55:32) decode as MLSMessage v1 wire_format=2 private_message, group 9a109ee54d8cd43ecd124d5ce9c5a68e, epoch 1, content_type=1 application: the exact epoch a welcome-joined member starts at, and the group never advanced. Nothing cryptographic is lost; the phone build predates the session-layer fix sitting uncommitted in this tree.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787752920,
+  "updated_at": 1787752920
+}

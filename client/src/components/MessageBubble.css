@@ -1,9 +1,10 @@
 /* MessageBubble.css - Telegram-style message bubble styles */
 :root {
-    --bubble-me-dark-start: #489090;
-    --bubble-me-dark-end: #3C8181;
-    --bubble-me-light-start: #5CB8B8;
-    --bubble-me-light-end: #4CA3A3;
+    /* Match iOS glacier dark bubbleMeGradient */
+    --bubble-me-dark-start: #8B7CFF;
+    --bubble-me-dark-end: #08C6B4;
+    --bubble-me-light-start: #8B7CFF;
+    --bubble-me-light-end: #08C6B4;
 }
 
 /* Message Row Container */
@@ -22,26 +23,18 @@
 
 /* Sent message bubble with tail */
 .msg-box--sent {
-     background: var(--bubble-me-gradient, linear-gradient(135deg, var(--bubble-me-dark-start) 0%, var(--bubble-me-dark-end) 100%));
-    color: #ffffff;
-    border-radius: 18px 18px 4px 18px;
+    background: var(--bubble-me-gradient, linear-gradient(135deg, var(--bubble-me-dark-start) 0%, var(--bubble-me-dark-end) 100%));
+    color: var(--bubble-me-text, #ffffff);
+    border-radius: var(--message-corner-radius, 18px);
     margin-right: 0;
     z-index: 1;
 }
-
-@media (prefers-color-scheme: light) {
-    .msg-box--sent {
-         background: var(--bubble-me-gradient, linear-gradient(135deg, var(--bubble-me-light-start) 0%, var(--bubble-me-light-end) 100%));
-    }
-}
-
-/* ... tails ... */
 
 /* In-Bubble Time & Tick */
 .msg-time {
     float: right;
     font-size: 10px;
-    color: rgba(255, 255, 255, 0.6);
+    color: var(--time-color-me, rgba(255, 255, 255, 0.68));
     margin-left: 8px;
     margin-top: 6px;
     display: flex;
@@ -51,11 +44,10 @@
     pointer-events: none;
     position: relative;
     top: 2px;
-    /* Visual tweak to align with baseline better */
 }
 
 .msg-box--received .msg-time {
-    color: rgba(255, 255, 255, 0.5);
+    color: var(--time-color-them, rgba(255, 255, 255, 0.52));
 }
 
 .msg-tick {
@@ -89,67 +81,44 @@
 
 /* Sent message bubble with tail */
 .msg-box--sent {
-    background: var(--bubble-me-gradient, linear-gradient(135deg, #489090 0%, #3C8181 100%));
-    color: #ffffff;
-    border-radius: 18px 18px 4px 18px;
+    background: var(--bubble-me-gradient, linear-gradient(135deg, #8B7CFF 0%, #08C6B4 100%));
+    color: var(--bubble-me-text, #ffffff);
+    border-radius: var(--message-corner-radius, 18px);
     margin-right: 0;
+    position: relative;
+    overflow: visible;
+    isolation: isolate;
     z-index: 1;
 }
 
-/* Telegram-style tail for sent messages */
-.msg-box--sent::before {
-    content: '';
+/* Exact iOS three-cubic lobe. The parent body covers its closing chord. */
+.message-bubble-tail {
     position: absolute;
-    right: -6px;
-    bottom: 0;
-    width: 11px;
-    height: 20px;
-    background: var(--bubble-me, #3C8181);
+    display: block;
+    overflow: visible;
+    pointer-events: none;
+    z-index: -1;
 }
 
-.msg-box--sent::after {
-    content: '';
-    position: absolute;
-    right: -11px;
-    bottom: 0;
-    width: 11px;
-    height: 20px;
-    background: var(--bg-primary, #191919);
-    border-bottom-left-radius: 10px;
+.message-bubble-tail--sent {
+    color: var(--bubble-me, #08C6B4);
 }
 
 /* Received message bubble with tail */
 .msg-box--received {
-    background: var(--bubble-them-gradient, linear-gradient(135deg, #2d2d2d 0%, #262626 100%));
+    background: var(--bubble-them-gradient, linear-gradient(135deg, #252936 0%, #1A202C 100%));
     color: #ffffff;
-    border-radius: 18px 18px 18px 4px;
+    border-radius: var(--message-corner-radius, 18px);
     margin-left: 0;
+    position: relative;
+    overflow: visible;
+    isolation: isolate;
     z-index: 1;
 }
 
-/* Telegram-style tail for received messages */
-.msg-box--received::before {
-    content: '';
-    position: absolute;
-    left: -6px;
-    bottom: 0;
-    width: 11px;
-    height: 20px;
-    background: #262626;
-    /* Matches visual gradient */
-}
-
-
-
-.msg-box--received::after {
-    content: '';
-    position: absolute;
-    left: -11px;
-    bottom: 0;
-    width: 11px;
-    height: 20px;
-    background: var(--bg-primary, #191919);
-    border-bottom-right-radius: 10px;
+.message-bubble-tail--received {
+    color: var(--bubble-them, #252936);
+    transform: scaleX(-1);
 }
 
 /* --- SEQUENTIAL BUBBLE LOGIC --- */
@@ -159,30 +128,27 @@
 
 /* First in sequence: Top-Right rounded, Bottom-Right sharp (to connect to next) */
 .msg-row--sent.msg-seq-start .msg-box--sent {
-    border-bottom-right-radius: 4px;
+    border-bottom-right-radius: 5px;
 }
 
-.msg-row--sent.msg-seq-start .msg-box--sent::before,
-.msg-row--sent.msg-seq-start .msg-box--sent::after {
+.msg-row--sent.msg-seq-start .message-bubble-tail {
     display: none;
 }
 
 /* Middle in sequence: Top-Right sharp, Bottom-Right sharp */
 .msg-row--sent.msg-seq-middle .msg-box--sent {
-    border-top-right-radius: 12px;
-    border-bottom-right-radius: 4px;
+    border-top-right-radius: 8px;
+    border-bottom-right-radius: 5px;
 }
 
-.msg-row--sent.msg-seq-middle .msg-box--sent::before,
-.msg-row--sent.msg-seq-middle .msg-box--sent::after {
+.msg-row--sent.msg-seq-middle .message-bubble-tail {
     display: none;
 }
 
 /* Last in sequence: Top-Right sharp, Bottom-Right rounded (With Tail) */
 .msg-row--sent.msg-seq-end .msg-box--sent {
-    border-top-right-radius: 12px;
-    border-bottom-right-radius: 4px;
-    /* Standard tail corner */
+    border-top-right-radius: 8px;
+    border-bottom-right-radius: var(--message-corner-radius, 18px);
 }
 
 /* Tail is shown by default on .msg-box--sent, so we just let it be. 
@@ -193,55 +159,50 @@
 
 /* First in sequence: Top-Left rounded, Bottom-Left sharp */
 .msg-row--received.msg-seq-start .msg-box--received {
-    border-bottom-left-radius: 12px;
+    border-bottom-left-radius: 5px;
 }
 
-.msg-row--received.msg-seq-start .msg-box--received::before,
-.msg-row--received.msg-seq-start .msg-box--received::after {
+.msg-row--received.msg-seq-start .message-bubble-tail {
     display: none;
 }
 
 /* Middle: Top-Left sharp, Bottom-Left sharp */
 .msg-row--received.msg-seq-middle .msg-box--received {
-    border-top-left-radius: 12px;
-    border-bottom-left-radius: 12px;
+    border-top-left-radius: 5px;
+    border-bottom-left-radius: 5px;
 }
 
-.msg-row--received.msg-seq-middle .msg-box--received::before,
-.msg-row--received.msg-seq-middle .msg-box--received::after {
+.msg-row--received.msg-seq-middle .message-bubble-tail {
     display: none;
 }
 
 /* Last: Top-Left sharp, Bottom-Left rounded (Tail) */
 .msg-row--received.msg-seq-end .msg-box--received {
-    border-top-left-radius: 12px;
-    border-bottom-left-radius: 12px;
+    border-top-left-radius: 5px;
+    border-bottom-left-radius: var(--message-corner-radius, 18px);
 }
 
 /* Single Message (Start AND End) -> Full Rounded + Tail */
 /* For a single message, it's both start and end. The default border-radius already handles this.
    We just need to ensure the tail is visible. */
 .msg-row.msg-seq-start.msg-seq-end .msg-box--sent {
-    border-radius: 18px 18px 4px 18px;
+    border-radius: var(--message-corner-radius, 18px);
     /* Revert to default for single sent message */
 }
 
 .msg-row.msg-seq-start.msg-seq-end .msg-box--received {
-    border-radius: 18px 18px 18px 4px;
+    border-radius: var(--message-corner-radius, 18px);
     /* Revert to default for single received message */
 }
 
 /* Explicitly hide tails for start and middle messages */
-.msg-row.msg-seq-start .msg-box::before,
-.msg-row.msg-seq-start .msg-box::after,
-.msg-row.msg-seq-middle .msg-box::before,
-.msg-row.msg-seq-middle .msg-box::after {
+.msg-row.msg-seq-start .message-bubble-tail,
+.msg-row.msg-seq-middle .message-bubble-tail {
     display: none;
 }
 
 /* Ensure tail is visible for end messages (and single messages, which are also 'end') */
-.msg-row.msg-seq-end .msg-box::before,
-.msg-row.msg-seq-end .msg-box::after {
+.msg-row.msg-seq-end .message-bubble-tail {
     display: block;
     /* Override the 'display: none' from start/middle if applied */
 }
@@ -264,8 +225,7 @@
     border-color: rgba(255, 255, 255, 0.1);
 }
 
-.msg-box--image::before,
-.msg-box--image::after {
+.msg-box--image .message-bubble-tail {
     display: none !important;
 }
 
@@ -632,4 +592,32 @@
 .call-duration-label {
     font-size: 12px;
     color: rgba(255, 255, 255, 0.6);
+}
+.msg-file-card {
+  display: flex;
+  min-width: 190px;
+  max-width: 280px;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.msg-file-card__text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.msg-file-card__name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-file-card__kind {
+  font-size: 11px;
+  opacity: 0.7;
 }

@@ -1,0 +1,67 @@
+# Standalone for now — empty workspace so this crate does not join the parent
+# `core/` workspace until the lead wires it in at integration.
+[workspace]
+
+[package]
+name = "vibe_secure"
+version = "0.1.0"
+description = "MLS (RFC 9420) session layer over OpenMLS: device identity, group sessions, forward secrecy and post-compromise security."
+edition = "2021"
+rust-version = "1.82"
+license = "UNLICENSED"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+doc_markdown = "allow"
+
+[dependencies]
+# Pinned to the 0.5.x line to match what `openmls 0.8.1` itself depends on
+# (`openmls_traits ^0.5.0`). Do not bump these independently and do not let
+# any 0.4.x companion back in — two versions of `openmls_traits` in the graph
+# means `SignatureKeyPair` (from `openmls_basic_credential`) implements a
+# `Signer` trait that isn't the one `openmls`'s own functions ask for, which
+# surfaces as a baffling "expected trait `Signer`, found trait `Signer`".
+openmls = "0.8"
+openmls_rust_crypto = "0.5"
+openmls_basic_credential = "0.5"
+openmls_traits = "0.5"
+base64 = "0.22"
+# Safety-number derivation (trust.rs). Not used for any message crypto —
+# that all lives inside OpenMLS.
+sha2 = "0.10"
+
+# SQLite-backed OpenMLS storage (`provider.rs`). Pinned to 0.2.0 deliberately:
+# it depends on `openmls_traits ^0.5.0`, matching the pin above. The 0.3.0-rc.x
+# line depends on `openmls_traits ^0.6.0-rc.x` instead — taking it would put
+# two incompatible versions of `openmls_traits` in the graph, which surfaces as
+# a baffling "expected trait `Signer`, found trait `Signer`" (see the comment
+# on the pins above; same failure mode, same root cause).
+openmls_sqlite_storage = "0.2.0"
+# Same crate + feature vibe_core_store already pins, so the two never disagree
+# on how SQLite is linked. Bundled: never link the system SQLite, and the only
+# way iOS cross-compilation works at all.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# `openmls_sqlite_storage`'s `Codec` is generic over the wire format; nothing
+# in this workspace ships one, so `provider.rs` implements a small JSON one
+# with these two directly (matching the pattern in the storage crate's own
+# `tests/proposals.rs`).
+serde = "1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+# Padding's round-trip property (pad then unpad is the identity, for any
+# input length) is the kind of claim a handful of examples cannot make.
+proptest = "1"

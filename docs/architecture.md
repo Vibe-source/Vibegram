@@ -135,37 +135,24 @@ Phoenix Channel subscription
 
 ## Deployment Architecture
 
-```
-┌──────────────┐
-│ Load Balancer│
-│ (HTTPS/TLS)  │
-└────────┬─────┘
-         │
-    ┌────┴────────────┬────────────┐
-    │                 │            │
-┌───▼────┐      ┌─────▼────┐  ┌──▼───┐
-│Phoenix  │──┬───┤PostgreSQL│  │Redis │
-│Server 1 │  │   │Database  │  │Cache │
-└────┬────┘  │   └──────────┘  └──────┘
-     │       │
-┌────▼────┐  │
-│Phoenix  │  │
-│Server 2 │──┘
-└────┬────┘
-     │
-┌────▼──────────────┐
-│File Storage       │
-│(Encrypted Uploads)│
-└───────────────────┘
-```
+Target (2026-08, replaces Railway): one VPS running a Podman/Docker compose stack —
+Caddy (TLS) → `vibe-core` (this Phoenix app) and `vibe-agent-runtime` (the isolated agent
+service), Postgres behind PgBouncer, Valkey, a Rust `sandbox-gateway` that gives each agent a
+sandboxed computer on an internal-only network, encrypted backups to R2.
+
+- Service boundaries, trust boundaries and the core ↔ runtime contract: [agent-platform-v1.md](agent-platform-v1.md)
+- Compose stack, host hardening, migration and restore runbooks: [vps-deployment.md](vps-deployment.md)
+- What the readiness checklist still flags: [security-readiness-gap-2026-08.md](security-readiness-gap-2026-08.md)
 
 ## Scalability
 
-- **Horizontal**: Multiple Phoenix instances behind load balancer
-- **Caching**: Redis for session & message caching
-- **Database**: PostgreSQL with read replicas
-- **Media**: S3-compatible object storage
-- **Real-time**: Phoenix PubSub with distributed mode
+- **Vertical first**: one BEAM node serves far more than the current load; PgBouncer transaction
+  pooling keeps Postgres connections bounded.
+- **Second node**: `CLUSTER_STRATEGY=gossip|dns` (libcluster) for PubSub/Presence,
+  `RATE_LIMIT_BACKEND=valkey` for shared limits, `Vibe.Cache` invalidation over PubSub.
+- **Agents**: the runtime scales independently of chat; sandboxes are capped per host
+  (`SANDBOX_MAX_CONTAINERS`) and per agent (one computer each).
+- **Media**: object storage (Supabase / Cloudflare R2), never the app container.
 
 ## Performance Optimization
 

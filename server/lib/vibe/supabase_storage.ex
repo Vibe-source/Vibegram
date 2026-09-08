@@ -1,8 +1,6 @@
 defmodule Vibe.SupabaseStorage do
   @moduledoc """
   Supabase Storage client for uploading and managing files.
-  Used for caching audio files that can be served via Supabase CDN.
-  Uses Finch HTTP client for reliable HTTP requests.
   """
 
   require Logger
@@ -20,7 +18,6 @@ defmodule Vibe.SupabaseStorage do
     |> String.trim()
   end
 
-  # JWT compact serialization is 3 dot-separated segments.
   defp jwt_compact?(token) when is_binary(token) do
     case String.split(token, ".", parts: 4) do
       [_h, _p, _s] -> true
@@ -290,6 +287,11 @@ defmodule Vibe.SupabaseStorage do
       String.ends_with?(path, ".heic") -> "image/heic"
       String.ends_with?(path, ".wav") -> "audio/wav"
       String.ends_with?(path, ".mov") -> "video/quicktime"
+      String.ends_with?(path, ".pdf") -> "application/pdf"
+      String.ends_with?(path, ".csv") -> "text/csv"
+      String.ends_with?(path, ".txt") -> "text/plain"
+      String.ends_with?(path, ".json") -> "application/json"
+      String.ends_with?(path, ".xlsx") -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       true -> "application/octet-stream"
     end
   end

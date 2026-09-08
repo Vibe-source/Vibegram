@@ -1,0 +1,18 @@
+{
+  "id": 92,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "Profile hero pull-to-expand re-arms on collapse (not only at offset >= 0). Collapse start sets expandGestureArmed=true; settle assigns armed before heroMorphInFlight=false so the first post-freeze negative sample can fire.",
+  "selector": "ios/ChatModule/ChatProfileMainView.swift::ChatProfileSwiftUIRootView.setHeroExpanded",
+  "path": "ios/ChatModule/ChatProfileMainView.swift",
+  "fqn": "ChatProfileSwiftUIRootView.setHeroExpanded",
+  "line": 1804,
+  "anchor_hash": "f269007f0365969ad8f15a44ebfeedfc876bfd23605dcafc1cbb4dc9c314fdd0",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787835436,
+  "updated_at": 1787835436
+}

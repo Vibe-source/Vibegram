@@ -1,0 +1,18 @@
+{
+  "id": 27,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "welcome_status is sender-scoped pending/delivered plus incomingPending/incomingDelivered. Client must not discard a group when incoming>0. Join marks peer confirmed.",
+  "selector": "server/lib/vibe/mls.ex::Vibe.Mls.welcome_status",
+  "path": "server/lib/vibe/mls.ex",
+  "fqn": "Vibe.Mls.welcome_status",
+  "line": 377,
+  "anchor_hash": "7e7959f6024c4ac69028bb9862aaef288ab3837cf0afab07a6c92f114a7aec5e",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787746927,
+  "updated_at": 1787746927
+}

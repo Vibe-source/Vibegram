@@ -3,8 +3,8 @@ defmodule Vibe.Accounts.UserBlock do
   import Ecto.Changeset
 
   schema "user_blocks" do
-    belongs_to :user, Vibe.Accounts.User
-    belongs_to :blocked_user, Vibe.Accounts.User
+    belongs_to :user, Vibe.Accounts.User, type: :binary_id
+    belongs_to :blocked_user, Vibe.Accounts.User, type: :binary_id
 
     timestamps()
   end

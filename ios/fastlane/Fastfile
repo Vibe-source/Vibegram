@@ -1,0 +1,54 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Push a new beta build to TestFlight"
+  lane :beta do
+    increment_build_number(xcodeproj: "Vibe.xcodeproj")
+
+    get_certificates
+    get_provisioning_profile(app_identifier: "com.vibegram.app")
+    get_provisioning_profile(app_identifier: "com.vibegram.app.NotificationServiceExtension")
+
+    build_app(
+      project: "Vibe.xcodeproj",
+      scheme: "Vibe",
+      export_method: "app-store",
+      export_options: {
+        provisioningProfiles: {
+          "com.vibegram.app" => "com.vibegram.app AppStore",
+          "com.vibegram.app.NotificationServiceExtension" => "com.vibegram.app.NotificationServiceExtension AppStore"
+        }
+      }
+    )
+
+    upload_to_testflight(
+      uses_non_exempt_encryption: false
+    )
+  end
+
+  desc "Upload the already exported IPA to TestFlight"
+  lane :upload_existing do
+    upload_to_testflight(
+      username: "mohammadshayani2@icloud.com",
+      app_identifier: "com.vibegram.app",
+      ipa: "Vibe.ipa",
+      uses_non_exempt_encryption: false
+    )
+  end
+
+  desc "Replace App Store screenshots without uploading a build"
+  lane :screenshots do
+    deliver(
+      app_identifier: "com.vibegram.app",
+      username: "mohammadshayani2@icloud.com",
+      app_version: "1.0.0",
+      screenshots_path: "fastlane/screenshots",
+      overwrite_screenshots: true,
+      skip_binary_upload: true,
+      skip_metadata: true,
+      skip_app_version_update: true,
+      submit_for_review: false,
+      force: true
+    )
+  end
+end

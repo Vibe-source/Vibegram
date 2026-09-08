@@ -147,11 +147,14 @@ class LocalKeyStore {
     private clearAllLocalStorage(): void {
         try {
             localStorage.removeItem(LS_SESSION_KEY);
-            // Clear all key backups
+            // Clear all key backups (vibe_keys_* and securechat_backup_*)
             const keysToRemove: string[] = [];
             for (let i = 0; i < localStorage.length; i++) {
                 const key = localStorage.key(i);
-                if (key?.startsWith(LS_KEYS_PREFIX)) {
+                if (
+                    key?.startsWith(LS_KEYS_PREFIX) ||
+                    key?.startsWith('securechat_backup_')
+                ) {
                     keysToRemove.push(key);
                 }
             }

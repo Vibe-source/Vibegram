@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 enum PacketRuntimeError: LocalizedError {
   case invalidBootstrap(String)
@@ -13,103 +12,91 @@ enum PacketRuntimeError: LocalizedError {
   }
 }
 
-private func vibePacketLogCallback(_ message: UnsafePointer<CChar>?) {
-  guard let message else { return }
-  ChatEngineStore.shared.appendJournal([
-    "at": Int(Date().timeIntervalSince1970 * 1000),
-    "source": "packet",
-    "message": String(cString: message),
-  ])
-}
-
+/// Owns the packet engine process: starts the active proxy entry and publishes the
+/// loopback port it bound. Nothing here knows about chat — it only opens the hop.
 final class PacketRuntime {
   static let shared = PacketRuntime()
 
   private let queue = DispatchQueue(label: "vibe.packet.runtime")
   private var currentSnapshot: PacketTransportSnapshot?
+  private var currentProfileID: UUID?
 
   private init() {
-    phantom_set_log_callback(vibePacketLogCallback)
+    PacketProxyEngine.installLogCallback()
   }
 
-  func ensureStarted(config: AppSessionConfig) async throws -> PacketTransportSnapshot {
-    let bootstrap = try await PacketBootstrapService.cachedOrRefresh(config: config)
-    return try queue.sync {
-      try startLocked(bootstrap: bootstrap)
+  /// Starts the engine for the active entry in Settings → Proxy, or returns the running one.
+  @discardableResult
+  func ensureStarted() throws -> PacketTransportSnapshot {
+    let store = PacketProxyStore.shared
+    guard store.useProxy else {
+      throw PacketRuntimeError.startFailed("proxy is off")
     }
+    guard let profile = store.activeProfile else {
+      throw PacketRuntimeError.invalidBootstrap("no proxy selected")
+    }
+    if let error = profile.validationError {
+      throw PacketRuntimeError.invalidBootstrap(error)
+    }
+    return try queue.sync { try startLocked(profile: profile) }
+  }
+
+  /// The HTTP session for the current route. Starts the engine on demand, so call it off
+  /// the main thread; on main it kicks the start and hands back what is ready now.
+  func session() -> URLSession {
+    guard PacketProxyStore.shared.useProxy else { return .shared }
+    guard PacketProxyRoute.current() == nil else { return VibeHTTP.shared }
+
+    if Thread.isMainThread {
+      Task.detached(priority: .utility) { try? PacketRuntime.shared.ensureStarted() }
+      return VibeHTTP.shared
+    }
+    do {
+      try ensureStarted()
+    } catch {
+      NSLog("[PacketRuntime] proxy start failed: %@", error.localizedDescription)
+    }
+    return VibeHTTP.shared
   }
 
   func stop(resetToDirect: Bool = false) {
-    // `stopLocked` calls the blocking `phantom_stop_client()` FFI, which can hang
-    // for a long time (or indefinitely) when the mesh is in a wedged state. This
-    // method is invoked directly on the main thread (e.g. from the connection-mode
-    // picker in Settings), so a synchronous `queue.sync` would freeze the entire UI
-    // for the full duration of that FFI call. Dispatch asynchronously instead: no
-    // caller depends on stop() completing synchronously, and the serial queue still
-    // preserves stop→start ordering for any subsequent `ensureStarted`.
+    // Async on purpose: the stop FFI can hang on a wedged engine and this is called from
+    // the main thread. The serial queue still preserves stop→start ordering.
     queue.async { [self] in
       stopLocked(resetToDirect: resetToDirect)
     }
   }
 
-  func makeURLSession(snapshot: PacketTransportSnapshot) -> URLSession {
-    let configuration = URLSessionConfiguration.default
-    configuration.timeoutIntervalForRequest = 30
-    configuration.connectionProxyDictionary = [
-      "SOCKSEnable": 1,
-      "SOCKSProxy": snapshot.proxyHost,
-      "SOCKSPort": snapshot.proxyPort,
-    ]
-    return URLSession(
-      configuration: configuration,
-      delegate: PacketPinnedSessionDelegate(),
-      delegateQueue: nil
-    )
-  }
-
-  private func startLocked(bootstrap: PacketBootstrapPayload) throws -> PacketTransportSnapshot {
-    try bootstrap.validate()
-
-    if let currentSnapshot,
-       currentSnapshot.activeBridgeID == (bootstrap.activePacketBridgeId ?? bootstrap.usableDescriptor?.id),
-       currentSnapshot.proxyPort > 0
-    {
-      return currentSnapshot
+  private func startLocked(profile: PacketProxyProfile) throws -> PacketTransportSnapshot {
+    if let snapshot = currentSnapshot, currentProfileID == profile.id, snapshot.proxyPort > 0 {
+      return snapshot
     }
 
     stopLocked(resetToDirect: false)
 
-    let startPayload = try bootstrap.meshStartPayload()
-    guard JSONSerialization.isValidJSONObject(startPayload),
-          let data = try? JSONSerialization.data(withJSONObject: startPayload),
-          let text = String(data: data, encoding: .utf8)
-    else {
-      throw PacketRuntimeError.startFailed("packet mesh config serialization failed")
-    }
-
-    let port = text.withCString { value in
-      Int(phantom_start_mesh(value, 0))
-    }
-
+    let port = Int(PacketProxyEngine.start(profile: profile))
     guard port > 0 else {
+      let message = "packet engine start failed (code \(port))"
       ChatEngineStore.shared.updateConfig([
         "packetStatus": "failed",
-        "packetLastError": "packet mesh start failed",
+        "packetLastError": message,
         "packetProxyPort": nil,
       ])
-      throw PacketRuntimeError.startFailed("packet mesh start failed")
+      VibeHTTP.reset()
+      throw PacketRuntimeError.startFailed(message)
     }
 
-    let stats = meshStatsLocked()
+    let stats = PacketProxyEngine.stats()
     let snapshot = PacketTransportSnapshot(
-      status: stats?.status ?? "running",
-      proxyHost: bootstrap.proxyHost,
-      proxyPort: stats?.proxyPort ?? port,
-      activeBridgeID: stats?.activeBridgeID ?? bootstrap.activePacketBridgeId ?? bootstrap.usableDescriptor?.id,
+      status: stats?.state ?? "running",
+      proxyHost: "127.0.0.1",
+      proxyPort: Int(stats?.listenPort ?? UInt16(port)),
+      activeBridgeID: profile.id.uuidString,
       lastError: stats?.lastError
     )
 
     currentSnapshot = snapshot
+    currentProfileID = profile.id
     ChatEngineStore.shared.updateConfig([
       "packetStatus": snapshot.status,
       "packetProxyHost": snapshot.proxyHost,
@@ -117,47 +104,19 @@ final class PacketRuntime {
       "activePacketBridgeId": snapshot.activeBridgeID,
       "packetLastError": snapshot.lastError,
     ])
+    VibeHTTP.reset()
     return snapshot
   }
 
   private func stopLocked(resetToDirect: Bool) {
-    phantom_stop_client()
+    PacketProxyEngine.stop()
     currentSnapshot = nil
+    currentProfileID = nil
     ChatEngineStore.shared.updateConfig([
       "packetStatus": resetToDirect ? PacketTransportMode.direct.rawValue : "idle",
       "packetProxyPort": nil,
       "packetLastError": nil,
     ])
-  }
-
-  private func meshStatsLocked() -> PacketMeshStats? {
-    guard let raw = phantom_copy_mesh_stats_json() else { return nil }
-    defer { phantom_free_string(raw) }
-    let json = String(cString: raw)
-    guard let data = json.data(using: .utf8) else { return nil }
-    return try? JSONDecoder().decode(PacketMeshStats.self, from: data)
-  }
-}
-
-private final class PacketPinnedSessionDelegate: NSObject, URLSessionDelegate {
-  func urlSession(
-    _ session: URLSession,
-    didReceive challenge: URLAuthenticationChallenge,
-    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-  ) {
-    guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-          let serverTrust = challenge.protectionSpace.serverTrust
-    else {
-      completionHandler(.performDefaultHandling, nil)
-      return
-    }
-
-    var error: CFError?
-    guard SecTrustEvaluateWithError(serverTrust, &error) else {
-      completionHandler(.cancelAuthenticationChallenge, nil)
-      return
-    }
-
-    completionHandler(.useCredential, URLCredential(trust: serverTrust))
+    VibeHTTP.reset()
   }
 }

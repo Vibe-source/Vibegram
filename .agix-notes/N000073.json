@@ -1,0 +1,18 @@
+{
+  "id": 73,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "View-once cells use ChatViewOnceShineCoverView (CI blur + Metal sparkle blit to UIImageView). Delete after consume reuses ChatBubbleFragmentDisintegrationView via animateVisibleMessageDisintegration; skip if cell alpha already 0 so hold-menu delete does not double-animate.",
+  "selector": "docs/contributing.md::Contributing Guide > Coding Standards > Swift",
+  "path": "docs/contributing.md",
+  "fqn": "Contributing Guide > Coding Standards > Swift",
+  "line": 202,
+  "anchor_hash": "ac489313ae960469ab900b3c01928370b36920c79efea1c1161ed15703617ea6",
+  "branch": "main",
+  "commit": "976f6743c48673d437c1888db94b2627a35089b5",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787770372,
+  "updated_at": 1787770372
+}

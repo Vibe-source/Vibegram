@@ -1,0 +1,18 @@
+{
+  "id": 46,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — assist\nGOAL: scale now happend btu scale cause it goes behid te input ratehr then push prevoius contet also scale is small comapre to telegrm ad feel jumy rather then smooth scale [attached text · 1 lines · 429 words] path: .agix/pastes/0019-text.txt headline: eScale id=f5049309-176f-4510-99bf- index=58 height…\nNEXT: Implement: (1) ChatEngine.logPendingSendDiagnostics skip in-flight sends + activeMediaUploadTasksByMessageId, stamp inFlightOutboundMessageIds when sendMessage dispatches the global upload/send work and clear on complete/fail; (2) handleNativeVideoNoteSend must NOT map accepted=true to status sent — leave sending; (3) rewrite runVideoNoteReleaseMorph: no reloadData, fade overlay not circle, keep recorder circle unti…\nDID: run_terminal_command()\nFILES: /Users/mohammadshayani/Vibe/ios/ChatModule/ChatListView.swift, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatListViewCells.swift, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatListViewConstants.swift, /Users/mohammadshayani/Vibe/.vibe/memory.md, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatInputBar.swift",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "grok",
+  "author": "Vibe Team",
+  "created_at": 1787752426,
+  "updated_at": 1787755205
+}

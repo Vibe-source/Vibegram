@@ -22,27 +22,22 @@ final class ChatHomeCardCell: UITableViewCell {
   }
 
   /// Whether the last bridge-status snapshot reports a task actively running for `chatId`.
-  /// Read synchronously so a home row can show "Working…" even before its chat channel is
-  /// joined (a run started on the Mac/IDE, or a cold launch) — the status poll owns this
-  /// signal, independent of the per-chat agent-stream frames that drive `agentProgress`.
-  static func hasRunningBridgeTask(chatId: String) -> Bool {
+  /// Only exact chatId matches count. Provider-wide / empty-chatId desktop tasks used
+  /// to paint every DM for that provider as "Working…" after sessions settled — false
+  /// positive. Desktop-only runs still surface via live `agentProgress` once the chat
+  /// channel is joined.
+  static func hasRunningBridgeTask(chatId: String, provider: String?) -> Bool {
     let key = chatId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !key.isEmpty else { return false }
     return (AgentPairingService.lastStatusSnapshot?.runningTasks ?? [])
-      .contains { $0.chatId.trimmingCharacters(in: .whitespacesAndNewlines) == key }
+      .contains { task in
+        let taskChat = task.chatId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return taskChat == key
+      }
   }
 
   static func getFallbackInitials(from name: String) -> String {
-    let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !cleanName.isEmpty else { return "" }
-    let components = cleanName.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-    if components.count >= 2 {
-      let first = components[0].prefix(1)
-      let second = components[1].prefix(1)
-      return (first + second).uppercased()
-    } else {
-      return String(cleanName.prefix(2)).uppercased()
-    }
+    ChatAvatarNodeView.fallbackInitials(from: name)
   }
 
   private let pressOverlayView = UIView()
@@ -56,10 +51,7 @@ final class ChatHomeCardCell: UITableViewCell {
   private let trailingFullSwipeView = ChatHomeSwipeActionTileView(frame: .zero)
   private let rowContentContainer = UIView()
   private let editSelectionContainer = UIView()
-  private let avatarContainer = UIView()
-  private let avatarImageView = UIImageView()
-  private let avatarFallbackIconView = UIImageView()
-  private let avatarFallbackLabel = UILabel()
+  private let avatarNode = ChatAvatarNodeView()
   private let editSelectionBackgroundView = UIView()
   private let editSelectionCheckView = UIImageView()
   private let onlineDot = UIView()
@@ -67,22 +59,22 @@ final class ChatHomeCardCell: UITableViewCell {
   private let titleLabel = UILabel()
   private let tierBadgeImageView = UIImageView()
   private let previewLabel = UILabel()
+  private let reactionPreviewLabel = UILabel()
   private let timeLabel = UILabel()
+  private let receiptStatusView = UIImageView()
   private let unreadBadge = UIView()
   private let unreadLabel = UILabel()
   private let muteIconView = UIImageView()
   private let pinIconView = UIImageView()
   private let rightCheckmarkView = UIImageView()
 
-  private var avatarLoadTask: Task<Void, Never>?
-  private var avatarToken = UUID().uuidString
-  private var lastAvatarURLString: String?
-  // Archive / Saved Messages rows use a glyph fallback (archivebox / bookmark);
-  // every other row falls back to gradient + initials. Tracked so the async
-  // image-load completion knows which fallback to reveal when there's no photo.
-  private var usesIconFallback = false
   private var rowContentLeadingConstraint: NSLayoutConstraint?
+  private var avatarWidthConstraint: NSLayoutConstraint?
+  private var avatarHeightConstraint: NSLayoutConstraint?
+  private var receiptStatusWidthConstraint: NSLayoutConstraint?
   private var currentEditingLayout = false
+  private var compactForwardStyle = false
+  private var renderedReceiptStatus: String?
   private lazy var swipePanGestureRecognizer: UIPanGestureRecognizer = {
     let gesture = UIPanGestureRecognizer(target: self, action: #selector(handleSwipePan(_:)))
     gesture.delegate = self
@@ -90,6 +82,7 @@ final class ChatHomeCardCell: UITableViewCell {
     return gesture
   }()
   private var currentRow: ChatHomeListRow?
+  private var lastBridgePreviewSignature: String?
   private var manualSwipeActionsEnabled = true
   private var isSwipeEnabled = true
   private var swipeOffset: CGFloat = 0
@@ -97,6 +90,8 @@ final class ChatHomeCardCell: UITableViewCell {
   private var hasCommittedSwipeGesture = false
   private var isPerformingSwipeAction = false
   private var didEmitLargeSwipeHaptic = false
+  private var suppressesPressOverlay = false
+  private var swipeSurfaceColor = UIColor.clear
   private var leadingDisplaySpecs: [ChatHomeSwipeActionSpec] = []
   private var trailingDisplaySpecs: [ChatHomeSwipeActionSpec] = []
   private var leadingActionButtons: [ChatHomeSwipeActionButton] = []
@@ -104,7 +99,6 @@ final class ChatHomeCardCell: UITableViewCell {
   private var leadingFullSwipeSpec: ChatHomeSwipeActionSpec?
   private var trailingFullSwipeSpec: ChatHomeSwipeActionSpec?
   private let largeSwipeHapticGenerator = UIImpactFeedbackGenerator(style: .medium)
-  private let avatarGradientLayerName = "avatarGradient"
 
   weak var swipeDelegate: ChatHomeCardCellSwipeDelegate?
 
@@ -130,15 +124,7 @@ final class ChatHomeCardCell: UITableViewCell {
 
   override func prepareForReuse() {
     super.prepareForReuse()
-    avatarLoadTask?.cancel()
-    avatarLoadTask = nil
-    avatarToken = UUID().uuidString
-    lastAvatarURLString = nil
-    avatarImageView.image = nil
-    usesIconFallback = false
-    avatarFallbackIconView.isHidden = true
-    avatarFallbackLabel.isHidden = false
-    avatarContainer.layer.sublayers?.removeAll(where: { $0.name == self.avatarGradientLayerName })
+    avatarNode.prepareForReuse()
     unreadBadge.isHidden = true
     tierBadgeImageView.isHidden = true
     muteIconView.isHidden = true
@@ -149,7 +135,20 @@ final class ChatHomeCardCell: UITableViewCell {
     editSelectionBackgroundView.isHidden = true
     editSelectionCheckView.isHidden = true
     rowContentLeadingConstraint?.constant = 0
+    avatarWidthConstraint?.constant = 60
+    avatarHeightConstraint?.constant = 60
+    compactForwardStyle = false
+    previewLabel.isHidden = false
+    reactionPreviewLabel.text = nil
+    reactionPreviewLabel.isHidden = true
+    receiptStatusView.image = nil
+    receiptStatusView.isHidden = false
+    receiptStatusWidthConstraint?.constant = 20
+    renderedReceiptStatus = nil
+    rightCheckmarkView.image = UIImage(systemName: "circle")
+    rightCheckmarkView.transform = .identity
     currentRow = nil
+    lastBridgePreviewSignature = nil
     leadingDisplaySpecs = []
     trailingDisplaySpecs = []
     leadingFullSwipeSpec = nil
@@ -160,6 +159,11 @@ final class ChatHomeCardCell: UITableViewCell {
     closeSwipe(animated: false, notifyDelegate: false)
     currentEditingLayout = false
     transform = .identity
+    suppressesPressOverlay = false
+    pressOverlayView.alpha = 0
+    dividerView.alpha = 1
+    dividerView.isHidden = false
+    dividerView.transform = .identity
   }
 
   override func setHighlighted(_ highlighted: Bool, animated: Bool) {
@@ -177,10 +181,13 @@ final class ChatHomeCardCell: UITableViewCell {
     isDark: Bool,
     avatarBackgroundColor: UIColor?,
     avatarGradientColors: (UIColor, UIColor)?,
+    unreadBadgeColor: UIColor? = nil,
     isEditing: Bool,
     isEditSelected: Bool,
-    showsRightCheckmark: Bool = false
+    showsRightCheckmark: Bool = false,
+    compactForwardStyle: Bool = false
   ) {
+    self.compactForwardStyle = compactForwardStyle
     let primary =
       isDark ? UIColor.white : UIColor(red: 22 / 255, green: 28 / 255, blue: 36 / 255, alpha: 1)
     let secondary =
@@ -192,9 +199,10 @@ final class ChatHomeCardCell: UITableViewCell {
       ? UIColor(red: 138 / 255, green: 202 / 255, blue: 255 / 255, alpha: 1)
       : UIColor(red: 43 / 255, green: 135 / 255, blue: 210 / 255, alpha: 1)
     let badgeBackground =
-      isDark
-      ? UIColor(red: 157 / 255, green: 216 / 255, blue: 255 / 255, alpha: 1)
-      : UIColor(red: 23 / 255, green: 132 / 255, blue: 209 / 255, alpha: 1)
+      unreadBadgeColor
+      ?? (isDark
+        ? UIColor(red: 157 / 255, green: 216 / 255, blue: 255 / 255, alpha: 1)
+        : UIColor(red: 23 / 255, green: 132 / 255, blue: 209 / 255, alpha: 1))
     let pressedColor =
       isDark
       ? UIColor.white.withAlphaComponent(0.08)
@@ -203,10 +211,12 @@ final class ChatHomeCardCell: UITableViewCell {
       isDark
       ? UIColor.white.withAlphaComponent(0.06)
       : UIColor.black.withAlphaComponent(0.035)
+    // Visible hairline under every row (system-separator-ish, stronger than
+    // the previous near-invisible 3–6% wash).
     let dividerColor =
       isDark
-      ? UIColor.white.withAlphaComponent(0.06)
-      : UIColor.black.withAlphaComponent(0.03)
+      ? UIColor.white.withAlphaComponent(0.14)
+      : UIColor.black.withAlphaComponent(0.10)
     let selectionRingColor =
       isDark
       ? UIColor.white.withAlphaComponent(0.22)
@@ -218,136 +228,299 @@ final class ChatHomeCardCell: UITableViewCell {
 
     titleLabel.text = row.title
     titleLabel.textColor = primary
+    titleLabel.font = .systemFont(ofSize: compactForwardStyle ? 15.5 : 17, weight: .medium)
     rowContentContainer.isHidden = false
     rowContentContainer.alpha = 1.0
-    tierBadgeImageView.isHidden = !row.isGoldTier
-    if row.isGoldTier {
+    tierBadgeImageView.isHidden = compactForwardStyle || !row.isGoldTier
+    if row.isGoldTier && !compactForwardStyle {
       let goldColor = UIColor(red: 255 / 255, green: 205 / 255, blue: 84 / 255, alpha: 1)
       tierBadgeImageView.image = UIImage(systemName: "checkmark.seal.fill")
       tierBadgeImageView.tintColor = goldColor
     }
-    // Bridge agent rows carry a static "Start session" preview. While a run is actually
-    // live, surface the current working state (thinking / tool step, e.g. "Reading …")
-    // instead so the home reflects active sessions rather than always reading "Start
-    // session". `agentProgress` returns nil once the run finishes, so the row falls back
-    // to its normal preview automatically.
-    if row.isBridgeAgentSurface,
+    let bridgeProvider = ChatHomeListRow.bridgeProvider(
+      peerUserId: row.peerUserId,
+      name: row.title,
+      isAgent: row.isAgentFriend,
+      agentId: row.peerAgentId
+    )
+    // Forward sheet: name-only rows (no preview / time / badges) — denser list.
+    if compactForwardStyle {
+      previewLabel.text = nil
+      previewLabel.isHidden = true
+    } else if row.isBridgeAgentSurface,
       let progress = ChatEngine.shared.agentProgress(chatId: row.chatId),
       let liveLabel = (progress["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
       !liveLabel.isEmpty
     {
+      previewLabel.isHidden = false
       previewLabel.text = liveLabel
       previewLabel.textColor = typingColor
-    } else if row.isBridgeAgentSurface, Self.hasRunningBridgeTask(chatId: row.chatId) {
+      traceBridgePreview(row: row, provider: bridgeProvider, state: "progress:\(liveLabel)")
+    } else if row.isBridgeAgentSurface,
+      Self.hasRunningBridgeTask(
+        chatId: row.chatId,
+        provider: bridgeProvider
+      )
+    {
       // No live agent-stream label yet (a run started on the Mac / IDE, or a cold launch
       // before this chat's channel is joined) — but the bridge status snapshot reports a
       // task running for this chat. Show the working state instead of the idle
       // "Start session" preview so home reflects the in-flight session.
+      previewLabel.isHidden = false
       previewLabel.text = "Working…"
       previewLabel.textColor = typingColor
+      traceBridgePreview(row: row, provider: bridgeProvider, state: "working")
+    } else if row.isBridgeAgentSurface {
+      // Agent DMs are launch surfaces, not ordinary chat previews. A persisted
+      // message may still exist in the Home row/cache, but it must never replace
+      // the explicit idle state after a live task settles or on cold launch.
+      previewLabel.isHidden = false
+      previewLabel.text = "Start session"
+      previewLabel.textColor = secondary
+      traceBridgePreview(row: row, provider: bridgeProvider, state: "idle")
     } else {
+      previewLabel.isHidden = false
       previewLabel.text = row.isTyping ? "typing..." : row.preview
       previewLabel.textColor = row.isTyping ? typingColor : secondary
     }
+    reactionPreviewLabel.text = row.latestReactionPreview
+    reactionPreviewLabel.isHidden = compactForwardStyle || row.isTyping || row.latestReactionPreview == nil
+    reactionPreviewLabel.textColor = primary
+    reactionPreviewLabel.backgroundColor = isDark
+      ? UIColor.white.withAlphaComponent(0.12)
+      : UIColor.black.withAlphaComponent(0.07)
 
-    timeLabel.isHidden = showsRightCheckmark
+    timeLabel.isHidden = showsRightCheckmark || compactForwardStyle
     timeLabel.text = row.timeLabel
     timeLabel.textColor = secondary
 
-    unreadBadge.isHidden = showsRightCheckmark || !(row.unreadCount > 0 || row.markedUnread)
-    unreadLabel.text = row.unreadCount > 0 ? "\(row.unreadCount)" : ""
-    unreadLabel.textColor = isDark ? UIColor.black : UIColor.white
+    let receiptStatus = (showsRightCheckmark || compactForwardStyle)
+      ? nil
+      : row.latestOutgoingDisplayStatus?.lowercased()
+    let receiptGlyphStatus: String? = {
+      switch receiptStatus {
+      case "sent", "delivered": return "single"
+      case "read": return "double"
+      default: return nil
+      }
+    }()
+    // Keep a fixed slot throughout the lifecycle of an outgoing message, including
+    // pending/sending before its first tick appears. Incoming rows reserve no blank gap.
+    // This prevents receipt arrival from shifting the title/preview or looking doubled.
+    receiptStatusView.isHidden = false
+    let reservesReceiptSlot = !(showsRightCheckmark || compactForwardStyle)
+      && ["pending", "sending", "sent", "delivered", "read"].contains(receiptStatus ?? "")
+    receiptStatusWidthConstraint?.constant = reservesReceiptSlot ? 20 : 0
+    receiptStatusView.isAccessibilityElement = receiptGlyphStatus != nil
+    receiptStatusView.accessibilityLabel = receiptGlyphStatus == "double"
+      ? NSLocalizedString("Read", comment: "Home list outgoing message receipt")
+      : NSLocalizedString("Sent", comment: "Home list outgoing message receipt")
+    receiptStatusView.image = receiptGlyphStatus.map {
+      homeStatusCheckImage(
+        double: $0 == "double",
+        color: $0 == "double" ? badgeBackground : secondary
+      )
+    }
+    if let previous = renderedReceiptStatus,
+      previous != receiptGlyphStatus,
+      receiptGlyphStatus != nil,
+      window != nil
+    {
+      receiptStatusView.transform = CGAffineTransform(scaleX: 0.78, y: 0.78)
+      receiptStatusView.alpha = 0.35
+      UIView.animate(
+        withDuration: 0.22,
+        delay: 0,
+        usingSpringWithDamping: 0.72,
+        initialSpringVelocity: 0.25,
+        options: [.beginFromCurrentState, .allowUserInteraction]
+      ) {
+        self.receiptStatusView.transform = .identity
+        self.receiptStatusView.alpha = 1
+      }
+    } else {
+      receiptStatusView.transform = .identity
+      receiptStatusView.alpha = 1
+    }
+    renderedReceiptStatus = receiptGlyphStatus
+
+    let unreadVisible =
+      !showsRightCheckmark && !compactForwardStyle && (row.unreadCount > 0 || row.markedUnread)
+    unreadBadge.isHidden = !unreadVisible
+    unreadLabel.text = unreadVisible ? "\(max(1, row.unreadCount))" : ""
+    unreadLabel.textColor = .white
     unreadBadge.backgroundColor = badgeBackground
 
-    muteIconView.isHidden = showsRightCheckmark || !row.muted
-    pinIconView.isHidden = showsRightCheckmark || !row.pinned
+    muteIconView.isHidden = showsRightCheckmark || compactForwardStyle || !row.muted
+    pinIconView.isHidden = showsRightCheckmark || compactForwardStyle || !row.pinned
     muteIconView.tintColor = secondary
     pinIconView.tintColor = secondary
-    onlineDot.isHidden = !row.isOnline
+    onlineDot.isHidden = compactForwardStyle || !row.isOnline
     selectionOverlayView.backgroundColor = selectedOverlayColor
-    selectionOverlayView.alpha = isEditSelected ? 1 : 0
-    editSelectionContainer.alpha = isEditing ? 1 : 0
-    editSelectionBackgroundView.isHidden = !isEditing
+    // Soft fill morph for selection (forward sheet + edit mode).
+    let wantOverlay = isEditSelected && (isEditing || showsRightCheckmark)
+    if selectionOverlayView.alpha != (wantOverlay ? 1 : 0) {
+      UIView.animate(
+        withDuration: 0.26,
+        delay: 0,
+        options: [.beginFromCurrentState, .curveEaseInOut, .allowUserInteraction]
+      ) {
+        self.selectionOverlayView.alpha = wantOverlay ? 1 : 0
+      }
+    }
+
+    // Selection chrome visibility is driven by updateEditingLayout (animated).
+    // Don't snap alpha/hidden here or the edit gutter "pops".
     editSelectionBackgroundView.backgroundColor = isEditSelected ? badgeBackground : selectionIdleBackgroundColor
     editSelectionBackgroundView.layer.borderColor = (isEditSelected ? badgeBackground : selectionRingColor).cgColor
     editSelectionCheckView.isHidden = !(isEditing && isEditSelected)
     editSelectionCheckView.tintColor = isDark ? UIColor.black : UIColor.white
 
     rightCheckmarkView.isHidden = !showsRightCheckmark
-    rightCheckmarkView.tintColor = isEditSelected ? badgeBackground : secondary.withAlphaComponent(0.3)
-
-    usesIconFallback = row.isArchiveEntry || row.isSavedMessages
-    if usesIconFallback {
-      let fallbackSystemImageName = row.isArchiveEntry ? "archivebox.fill" : "bookmark.fill"
-      avatarFallbackIconView.image = UIImage(systemName: fallbackSystemImageName)
-      avatarFallbackIconView.tintColor = .white
+    // Morph empty circle → filled check (no pop).
+    let radioName = isEditSelected ? "checkmark.circle.fill" : "circle"
+    let nextRadio = UIImage(systemName: radioName)
+    if rightCheckmarkView.image !== nextRadio {
+      if showsRightCheckmark, window != nil {
+        UIView.transition(
+          with: rightCheckmarkView,
+          duration: 0.22,
+          options: [.transitionCrossDissolve, .beginFromCurrentState, .allowUserInteraction]
+        ) {
+          self.rightCheckmarkView.image = nextRadio
+          self.rightCheckmarkView.tintColor = isEditSelected
+            ? badgeBackground
+            : secondary.withAlphaComponent(0.45)
+          self.rightCheckmarkView.transform = isEditSelected
+            ? CGAffineTransform(scaleX: 1.06, y: 1.06)
+            : .identity
+        } completion: { _ in
+          UIView.animate(withDuration: 0.16) {
+            self.rightCheckmarkView.transform = .identity
+          }
+        }
+      } else {
+        rightCheckmarkView.image = nextRadio
+        rightCheckmarkView.tintColor = isEditSelected
+          ? badgeBackground
+          : secondary.withAlphaComponent(0.45)
+      }
     } else {
-      avatarFallbackLabel.text = Self.getFallbackInitials(from: row.title)
+      rightCheckmarkView.tintColor = isEditSelected
+        ? badgeBackground
+        : secondary.withAlphaComponent(0.45)
     }
-    // Reveal the fallback for now; the async image load hides it if a photo lands.
-    showAvatarFallback(true)
 
-    // Every row now has a gradient behind the fallback: an explicit one if the
-    // caller passed it, the Saved/Archive teal, else the SAME deterministic
-    // gradient the profile hero and chat header derive — so a photoless avatar
-    // is a coloured initials tile everywhere (never a flat grey block, never an
-    // icon).
-    let resolvedAvatarGradientColors =
-      avatarGradientColors
-      ?? (usesIconFallback
-        ? Self.savedMessagesGradientColors(isDark: isDark)
-        : ChatProfileAppearanceStore.avatarColors(
-          title: row.title, peerUserId: row.peerUserId, chatId: row.chatId))
-    applyAvatarGradient(
-      startColor: resolvedAvatarGradientColors.0,
-      endColor: resolvedAvatarGradientColors.1
+    let avatarSide: CGFloat = compactForwardStyle ? 36 : 60
+    avatarWidthConstraint?.constant = avatarSide
+    avatarHeightConstraint?.constant = avatarSide
+
+    let avatarKind: ChatAvatarKind =
+      row.isSavedMessages ? .savedMessages : (row.isArchiveEntry ? .archive : .standard)
+    avatarNode.configure(
+      with: ChatAvatarDescriptor(
+        title: row.title,
+        rawAvatarURI: row.avatarUri,
+        peerUserId: row.peerUserId,
+        chatId: row.chatId,
+        kind: avatarKind,
+        isGroup: row.isGroup || row.isChannel,
+        members: row.members,
+        preferPushAvatar: !row.isGroup && !row.isChannel,
+        gradientColors: avatarGradientColors
+      ),
+      isDark: isDark,
+      renderingSide: avatarSide
     )
     pressOverlayView.backgroundColor = pressedColor
     dividerView.backgroundColor = dividerColor
+    // Swipe-delete animation zeros alpha; always restore on reconfigure.
+    dividerView.alpha = 1
+    dividerView.isHidden = false
+    // SwiftUI-List-style swipe surface: while displaced, the row becomes an
+    // opaque elevated card (secondary background) instead of a transparent
+    // slab the action tiles show through.
+    swipeSurfaceColor = isDark ? UIColor(white: 0.12, alpha: 1) : UIColor.white
+    updateSwipeChrome()
     updateEditingLayout(isEditing, animated: true)
     configureSwipeActions(for: row, isEditing: isEditing)
+  }
 
-    // Telegram-style group rows: when the group has no photo of its own, build a
-    // mosaic from its members' avatars so you see who's in it right from the list.
-    let ownAvatar = (row.avatarUri ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    if row.isGroup, ownAvatar.isEmpty, row.members.count >= 2 {
-      loadGroupCompositeAvatar(members: row.members, isDark: isDark)
-    } else {
-      loadAvatarImage(urlString: row.avatarUri)
-    }
+  private func traceBridgePreview(row: ChatHomeListRow, provider: String?, state: String) {
+    let signature = "\(row.chatId)|\(state)"
+    guard signature != lastBridgePreviewSignature else { return }
+    lastBridgePreviewSignature = signature
+    AppUITrace.notice(
+      "ChatHomeCell bridgeState provider=\(provider ?? "?") chatId=\(String(row.chatId.prefix(12))) state=\(state) tasks=\(AgentPairingService.lastStatusSnapshot?.runningTasks.count ?? 0)"
+    )
   }
 
   private func updateEditingLayout(_ isEditing: Bool, animated: Bool) {
     let targetLeading: CGFloat = isEditing ? 44 : 0
     let updates = {
       self.rowContentLeadingConstraint?.constant = targetLeading
+      self.contentView.layoutIfNeeded()
       self.layoutIfNeeded()
     }
 
     let shouldAnimate = animated && currentEditingLayout != isEditing
     currentEditingLayout = isEditing
 
+    // Crossfade selection chrome with the leading shift so edit mode doesn't pop.
     if shouldAnimate {
+      if isEditing {
+        editSelectionContainer.alpha = 0
+        editSelectionBackgroundView.isHidden = false
+      }
       UIView.animate(
-        withDuration: 0.24,
+        withDuration: 0.30,
         delay: 0,
-        options: [.curveEaseInOut, .beginFromCurrentState]
+        usingSpringWithDamping: 0.88,
+        initialSpringVelocity: 0.15,
+        options: [.curveEaseInOut, .beginFromCurrentState, .allowUserInteraction]
       ) {
         updates()
+        self.editSelectionContainer.alpha = isEditing ? 1 : 0
+      } completion: { _ in
+        if !isEditing {
+          self.editSelectionBackgroundView.isHidden = true
+        }
       }
     } else {
       updates()
+      editSelectionContainer.alpha = isEditing ? 1 : 0
+      editSelectionBackgroundView.isHidden = !isEditing
     }
   }
 
   private func setPressedState(_ pressed: Bool, animated: Bool) {
-    let targetAlpha: CGFloat = pressed ? 1 : 0
+    let targetAlpha: CGFloat = (pressed && !suppressesPressOverlay) ? 1 : 0
     if animated {
       UIView.animate(withDuration: 0.14) {
         self.pressOverlayView.alpha = targetAlpha
       }
     } else {
       pressOverlayView.alpha = targetAlpha
+    }
+  }
+
+  /// The preview hold is its own gesture, not a tap: once it engages, the tap
+  /// highlight must leave the card (and stay out of the expansion snapshot).
+  /// Quick taps never reach suppression, so they keep their normal flash.
+  func setPressOverlaySuppressed(_ suppressed: Bool, animated: Bool) {
+    suppressesPressOverlay = suppressed
+    guard suppressed else { return }
+    if animated {
+      UIView.animate(
+        withDuration: 0.12,
+        delay: 0,
+        options: [.beginFromCurrentState, .allowUserInteraction]
+      ) {
+        self.pressOverlayView.alpha = 0
+      }
+    } else {
+      pressOverlayView.layer.removeAllAnimations()
+      pressOverlayView.alpha = 0
     }
   }
 
@@ -365,37 +538,7 @@ final class ChatHomeCardCell: UITableViewCell {
 
   override func layoutSubviews() {
     super.layoutSubviews()
-    avatarContainer.layer.sublayers?.first(where: { $0.name == avatarGradientLayerName })?.frame =
-      avatarContainer.bounds
     layoutSwipeActionViews()
-  }
-
-  private func applyAvatarGradient(startColor: UIColor, endColor: UIColor) {
-    var gradient =
-      avatarContainer.layer.sublayers?.first(where: { $0.name == avatarGradientLayerName })
-      as? CAGradientLayer
-    if gradient == nil {
-      gradient = CAGradientLayer()
-      gradient?.name = avatarGradientLayerName
-      avatarContainer.layer.insertSublayer(gradient!, at: 0)
-    }
-    gradient?.colors = [startColor.cgColor, endColor.cgColor]
-    gradient?.startPoint = CGPoint(x: 0.5, y: 0)
-    gradient?.endPoint = CGPoint(x: 0.5, y: 1)
-    gradient?.frame = avatarContainer.bounds
-    avatarContainer.backgroundColor = .clear
-  }
-
-  private static func savedMessagesGradientColors(isDark: Bool) -> (UIColor, UIColor) {
-    let startColor =
-      isDark
-      ? UIColor(red: 77 / 255, green: 217 / 255, blue: 229 / 255, alpha: 1)
-      : UIColor(red: 43 / 255, green: 165 / 255, blue: 181 / 255, alpha: 1)
-    let endColor =
-      isDark
-      ? UIColor(red: 43 / 255, green: 165 / 255, blue: 181 / 255, alpha: 1)
-      : UIColor(red: 0 / 255, green: 122 / 255, blue: 124 / 255, alpha: 1)
-    return (startColor, endColor)
   }
 
   private func configureView() {
@@ -429,6 +572,7 @@ final class ChatHomeCardCell: UITableViewCell {
 
     dividerView.translatesAutoresizingMaskIntoConstraints = false
     dividerView.isUserInteractionEnabled = false
+    dividerView.backgroundColor = UIColor.black.withAlphaComponent(0.10)
 
     rowContentContainer.translatesAutoresizingMaskIntoConstraints = false
     rowContentContainer.backgroundColor = .clear
@@ -438,25 +582,7 @@ final class ChatHomeCardCell: UITableViewCell {
     editSelectionContainer.alpha = 0
     editSelectionContainer.isUserInteractionEnabled = false
 
-    avatarContainer.translatesAutoresizingMaskIntoConstraints = false
-    avatarContainer.layer.cornerRadius = 30
-    avatarContainer.clipsToBounds = true
-
-    avatarImageView.translatesAutoresizingMaskIntoConstraints = false
-    avatarImageView.contentMode = .scaleAspectFill
-    avatarImageView.clipsToBounds = true
-
-    avatarFallbackIconView.translatesAutoresizingMaskIntoConstraints = false
-    avatarFallbackIconView.contentMode = .scaleAspectFit
-    avatarFallbackIconView.image = UIImage(systemName: "person.fill")
-    avatarFallbackIconView.tintColor = UIColor.white
-
-    avatarFallbackLabel.translatesAutoresizingMaskIntoConstraints = false
-    avatarFallbackLabel.textAlignment = .center
-    avatarFallbackLabel.textColor = .white
-    avatarFallbackLabel.font = UIFont.systemFont(ofSize: 22, weight: .semibold)
-    avatarFallbackLabel.adjustsFontSizeToFitWidth = true
-    avatarFallbackLabel.minimumScaleFactor = 0.8
+    avatarNode.translatesAutoresizingMaskIntoConstraints = false
 
     editSelectionBackgroundView.translatesAutoresizingMaskIntoConstraints = false
     editSelectionBackgroundView.backgroundColor = .clear
@@ -493,11 +619,26 @@ final class ChatHomeCardCell: UITableViewCell {
     previewLabel.font = .systemFont(ofSize: 15, weight: .regular)
     previewLabel.numberOfLines = 1
 
+    reactionPreviewLabel.translatesAutoresizingMaskIntoConstraints = false
+    reactionPreviewLabel.font = .systemFont(ofSize: 13)
+    reactionPreviewLabel.textAlignment = .center
+    reactionPreviewLabel.layer.cornerRadius = 9
+    reactionPreviewLabel.layer.cornerCurve = .continuous
+    reactionPreviewLabel.clipsToBounds = true
+    reactionPreviewLabel.setContentHuggingPriority(.required, for: .horizontal)
+    reactionPreviewLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
     timeLabel.translatesAutoresizingMaskIntoConstraints = false
-    timeLabel.font = .systemFont(ofSize: 13, weight: .medium)
+    timeLabel.font = .systemFont(ofSize: 13, weight: .regular)
     timeLabel.textAlignment = .right
     timeLabel.setContentHuggingPriority(.required, for: .horizontal)
     timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+    receiptStatusView.translatesAutoresizingMaskIntoConstraints = false
+    receiptStatusView.contentMode = .scaleAspectFit
+    receiptStatusView.isHidden = false
+    receiptStatusView.setContentHuggingPriority(.required, for: .horizontal)
+    receiptStatusView.setContentCompressionResistancePriority(.required, for: .horizontal)
 
     unreadBadge.translatesAutoresizingMaskIntoConstraints = false
     unreadBadge.layer.cornerRadius = 10
@@ -538,7 +679,13 @@ final class ChatHomeCardCell: UITableViewCell {
     titleRowStack.spacing = 6
     titleRowStack.alignment = .center
 
-    let textStack = UIStackView(arrangedSubviews: [titleRowStack, previewLabel])
+    let previewStack = UIStackView(arrangedSubviews: [reactionPreviewLabel, previewLabel])
+    previewStack.translatesAutoresizingMaskIntoConstraints = false
+    previewStack.axis = .horizontal
+    previewStack.spacing = 5
+    previewStack.alignment = .center
+
+    let textStack = UIStackView(arrangedSubviews: [titleRowStack, previewStack])
     textStack.translatesAutoresizingMaskIntoConstraints = false
     textStack.axis = .vertical
     textStack.spacing = 2
@@ -546,18 +693,38 @@ final class ChatHomeCardCell: UITableViewCell {
     textStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
     textStack.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
 
+    NSLayoutConstraint.activate([
+      reactionPreviewLabel.heightAnchor.constraint(equalToConstant: 18),
+      reactionPreviewLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 28),
+    ])
+
     let iconStack = UIStackView(arrangedSubviews: [muteIconView, pinIconView])
     iconStack.translatesAutoresizingMaskIntoConstraints = false
     iconStack.axis = .horizontal
     iconStack.spacing = 7
     iconStack.alignment = .center
 
-    let metaStack = UIStackView(arrangedSubviews: [timeLabel, unreadBadge, iconStack])
+    // Telegram-style metadata: receipt immediately beside the date on the title line;
+    // unread/mute/pin occupy the preview line. The former equal-spacing vertical stack
+    // centered all three items as a loose column and made the date visibly drift down.
+    let topMetaStack = UIStackView(arrangedSubviews: [receiptStatusView, timeLabel])
+    topMetaStack.translatesAutoresizingMaskIntoConstraints = false
+    topMetaStack.axis = .horizontal
+    topMetaStack.spacing = 3
+    topMetaStack.alignment = .center
+
+    let bottomMetaStack = UIStackView(arrangedSubviews: [iconStack, unreadBadge])
+    bottomMetaStack.translatesAutoresizingMaskIntoConstraints = false
+    bottomMetaStack.axis = .horizontal
+    bottomMetaStack.spacing = 7
+    bottomMetaStack.alignment = .center
+
+    let metaStack = UIStackView(arrangedSubviews: [topMetaStack, bottomMetaStack])
     metaStack.translatesAutoresizingMaskIntoConstraints = false
     metaStack.axis = .vertical
-    metaStack.spacing = 5
+    metaStack.spacing = 2
     metaStack.alignment = .trailing
-    metaStack.distribution = .equalSpacing
+    metaStack.distribution = .fillEqually
     metaStack.setContentHuggingPriority(.required, for: .horizontal)
     metaStack.setContentCompressionResistancePriority(.required, for: .horizontal)
 
@@ -565,15 +732,13 @@ final class ChatHomeCardCell: UITableViewCell {
     contentView.addSubview(trailingActionsContainer)
     contentView.addSubview(selectionOverlayView)
     contentView.addSubview(pressOverlayView)
-    contentView.addSubview(dividerView)
     contentView.addSubview(editSelectionContainer)
     contentView.addSubview(rowContentContainer)
+    // Divider above row chrome so the hairline is never covered.
+    contentView.addSubview(dividerView)
     leadingActionsContainer.addSubview(leadingFullSwipeView)
     trailingActionsContainer.addSubview(trailingFullSwipeView)
-    rowContentContainer.addSubview(avatarContainer)
-    avatarContainer.addSubview(avatarImageView)
-    avatarContainer.addSubview(avatarFallbackIconView)
-    avatarContainer.addSubview(avatarFallbackLabel)
+    rowContentContainer.addSubview(avatarNode)
     editSelectionContainer.addSubview(editSelectionBackgroundView)
     editSelectionBackgroundView.addSubview(editSelectionCheckView)
     rowContentContainer.addSubview(onlineDot)
@@ -607,11 +772,6 @@ final class ChatHomeCardCell: UITableViewCell {
       pressOverlayView.topAnchor.constraint(equalTo: contentView.topAnchor),
       pressOverlayView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
-      dividerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-      dividerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-      dividerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-      dividerView.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
-
       editSelectionContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
       editSelectionContainer.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
       editSelectionContainer.widthAnchor.constraint(equalToConstant: 44),
@@ -622,25 +782,26 @@ final class ChatHomeCardCell: UITableViewCell {
       rowContentContainer.topAnchor.constraint(equalTo: contentView.topAnchor),
       rowContentContainer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
-      avatarContainer.leadingAnchor.constraint(equalTo: rowContentContainer.leadingAnchor, constant: 16),
-      avatarContainer.centerYAnchor.constraint(equalTo: rowContentContainer.centerYAnchor),
-      avatarContainer.widthAnchor.constraint(equalToConstant: 60),
-      avatarContainer.heightAnchor.constraint(equalToConstant: 60),
+      avatarNode.leadingAnchor.constraint(equalTo: rowContentContainer.leadingAnchor, constant: 16),
+      avatarNode.centerYAnchor.constraint(equalTo: rowContentContainer.centerYAnchor),
+      {
+        let w = avatarNode.widthAnchor.constraint(equalToConstant: 60)
+        self.avatarWidthConstraint = w
+        return w
+      }(),
+      {
+        let h = avatarNode.heightAnchor.constraint(equalToConstant: 60)
+        self.avatarHeightConstraint = h
+        return h
+      }(),
 
-      avatarImageView.leadingAnchor.constraint(equalTo: avatarContainer.leadingAnchor),
-      avatarImageView.trailingAnchor.constraint(equalTo: avatarContainer.trailingAnchor),
-      avatarImageView.topAnchor.constraint(equalTo: avatarContainer.topAnchor),
-      avatarImageView.bottomAnchor.constraint(equalTo: avatarContainer.bottomAnchor),
-
-      avatarFallbackIconView.centerXAnchor.constraint(equalTo: avatarContainer.centerXAnchor),
-      avatarFallbackIconView.centerYAnchor.constraint(equalTo: avatarContainer.centerYAnchor),
-      avatarFallbackIconView.widthAnchor.constraint(equalToConstant: 24),
-      avatarFallbackIconView.heightAnchor.constraint(equalToConstant: 24),
-
-      avatarFallbackLabel.centerXAnchor.constraint(equalTo: avatarContainer.centerXAnchor),
-      avatarFallbackLabel.centerYAnchor.constraint(equalTo: avatarContainer.centerYAnchor),
-      avatarFallbackLabel.widthAnchor.constraint(equalTo: avatarContainer.widthAnchor, constant: -8),
-      avatarFallbackLabel.heightAnchor.constraint(equalTo: avatarContainer.heightAnchor, constant: -8),
+      // Align under the text stack (after avatar + gap). Tracks edit shift
+      // because it is relative to the avatar, not fixed contentView leading.
+      dividerView.leadingAnchor.constraint(
+        equalTo: avatarNode.trailingAnchor, constant: 14),
+      dividerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+      dividerView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+      dividerView.heightAnchor.constraint(equalToConstant: max(1 / UIScreen.main.scale, 0.5)),
 
       editSelectionBackgroundView.centerXAnchor.constraint(equalTo: editSelectionContainer.centerXAnchor),
       editSelectionBackgroundView.centerYAnchor.constraint(equalTo: editSelectionContainer.centerYAnchor),
@@ -653,16 +814,26 @@ final class ChatHomeCardCell: UITableViewCell {
 
       onlineDot.widthAnchor.constraint(equalToConstant: 12),
       onlineDot.heightAnchor.constraint(equalToConstant: 12),
-      onlineDot.trailingAnchor.constraint(equalTo: avatarContainer.trailingAnchor, constant: -1),
-      onlineDot.bottomAnchor.constraint(equalTo: avatarContainer.bottomAnchor, constant: -1),
+      onlineDot.trailingAnchor.constraint(equalTo: avatarNode.trailingAnchor, constant: -1),
+      onlineDot.bottomAnchor.constraint(equalTo: avatarNode.bottomAnchor, constant: -1),
 
-      textStack.leadingAnchor.constraint(equalTo: avatarContainer.trailingAnchor, constant: 14),
+      textStack.leadingAnchor.constraint(equalTo: avatarNode.trailingAnchor, constant: 14),
       textStack.centerYAnchor.constraint(equalTo: rowContentContainer.centerYAnchor),
       textStack.trailingAnchor.constraint(equalTo: metaStack.leadingAnchor, constant: -10),
 
       metaStack.trailingAnchor.constraint(equalTo: rowContentContainer.trailingAnchor, constant: -16),
-      metaStack.centerYAnchor.constraint(equalTo: rowContentContainer.centerYAnchor),
+      // Exact two-line alignment: receipt/date follows the title baseline and lower
+      // metadata follows the preview baseline, independent of which icons are hidden.
+      metaStack.topAnchor.constraint(equalTo: textStack.topAnchor),
+      metaStack.bottomAnchor.constraint(equalTo: textStack.bottomAnchor),
       metaStack.widthAnchor.constraint(greaterThanOrEqualToConstant: 30),
+
+      {
+        let width = receiptStatusView.widthAnchor.constraint(equalToConstant: 20)
+        self.receiptStatusWidthConstraint = width
+        return width
+      }(),
+      receiptStatusView.heightAnchor.constraint(equalToConstant: 14),
 
       unreadBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 20),
       unreadBadge.heightAnchor.constraint(equalToConstant: 20),
@@ -1042,6 +1213,7 @@ final class ChatHomeCardCell: UITableViewCell {
       self.dividerView.transform = transform
       self.rowContentContainer.transform = transform
       self.editSelectionContainer.transform = transform
+      self.updateSwipeChrome()
       self.layoutSwipeActionViews()
     }
 
@@ -1056,6 +1228,19 @@ final class ChatHomeCardCell: UITableViewCell {
     } else {
       updates()
     }
+  }
+
+  /// SwiftUI-List-style swipe chrome: while the row is displaced it becomes an
+  /// OPAQUE rounded card (secondary background + continuous corners animating
+  /// with the same transaction) sliding over the action tiles. A
+  /// clear-background row read as transparent — the actions showed through
+  /// the content itself.
+  private func updateSwipeChrome() {
+    let active = abs(swipeOffset) > 0.5
+    rowContentContainer.layer.cornerCurve = .continuous
+    rowContentContainer.layer.cornerRadius = active ? 22 : 0
+    rowContentContainer.layer.masksToBounds = active
+    rowContentContainer.backgroundColor = active ? swipeSurfaceColor : .clear
   }
 
   private func closeSwipe(animated: Bool, notifyDelegate: Bool) {
@@ -1242,120 +1427,51 @@ final class ChatHomeCardCell: UITableViewCell {
     min(1, max(0, value))
   }
 
-  /// Show/hide the no-photo fallback as one unit: the glyph for archive/saved
-  /// rows, the gradient+initials label for everything else. Photo present ⇒ both
-  /// hidden, so a loaded avatar never has a letter sitting on top of it.
-  private func showAvatarFallback(_ show: Bool) {
-    avatarFallbackIconView.isHidden = !(show && usesIconFallback)
-    avatarFallbackLabel.isHidden = !(show && !usesIconFallback)
-  }
+}
 
-  private func loadAvatarImage(urlString: String?) {
-    let normalizedURL = (urlString ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    if normalizedURL == lastAvatarURLString {
-      if avatarImageView.image != nil {
-        showAvatarFallback(false)
-        return
-      }
-      if avatarLoadTask != nil {
-        showAvatarFallback(true)
-        return
-      }
+/// Compact one/two-tick renderer shared by every Home cell configuration. One tick is
+/// sent/delivered; two ticks are read. Drawing the paths avoids font-dependent spacing
+/// and keeps the mark crisp at the small list-row size.
+private func homeStatusCheckImage(double: Bool, color: UIColor) -> UIImage {
+  let size = CGSize(width: 20, height: 14)
+  return UIGraphicsImageRenderer(size: size).image { context in
+    // ~7.5pt visual height: still balanced with the adjacent 13pt date, but a touch
+    // quieter than the first enlarged pass. The old 0.60 scale was only ~5.5pt tall.
+    let scale: CGFloat = 0.82
+    let baseX: CGFloat = 0.16
+    let baseY = (size.height - (24 * scale)) * 0.5
+    func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+      CGPoint(x: baseX + x * scale, y: baseY + y * scale)
     }
 
-    if normalizedURL != lastAvatarURLString {
-      avatarLoadTask?.cancel()
-      avatarLoadTask = nil
+    color.setStroke()
+    let first = UIBezierPath()
+    if double {
+      first.move(to: point(4, 12.9))
+      first.addLine(to: point(7.14286, 16.5))
+      first.addLine(to: point(15, 7.5))
+    } else {
+      first.move(to: point(4, 12))
+      first.addLine(to: point(8.94975, 16.9497))
+      first.addLine(to: point(19.5572, 6.34326))
     }
-    avatarToken = UUID().uuidString
-    lastAvatarURLString = normalizedURL
+    first.lineWidth = (double ? 1.5 : 1.7) * scale
+    first.lineCapStyle = .round
+    first.lineJoinStyle = .round
+    first.stroke()
 
-    guard !normalizedURL.isEmpty else {
-      avatarImageView.image = nil
-      showAvatarFallback(true)
-      lastAvatarURLString = nil
-      return
+    if double {
+      let second = UIBezierPath()
+      second.move(to: point(20, 7.5625))
+      second.addLine(to: point(11.4283, 16.5625))
+      second.addLine(to: point(11, 16))
+      second.lineWidth = 1.5 * scale
+      second.lineCapStyle = .round
+      second.lineJoinStyle = .round
+      second.stroke()
     }
-
-    if let cached = ChatAvatarImageStore.cached(for: normalizedURL) {
-      avatarImageView.image = cached
-      showAvatarFallback(false)
-      return
-    }
-
-    // No cached photo yet — keep the gradient+initials (or glyph) up while it loads.
-    avatarImageView.image = nil
-    showAvatarFallback(true)
-
-    let token = avatarToken
-    let task = Task { [weak self] in
-      let image = await ChatAvatarImageStore.load(from: normalizedURL)
-      guard !Task.isCancelled else { return }
-      await MainActor.run {
-        guard let self, token == self.avatarToken else { return }
-        self.avatarLoadTask = nil
-        if let image {
-          self.avatarImageView.image = image
-          self.showAvatarFallback(false)
-        }
-      }
-    }
-    avatarLoadTask = task
-  }
-
-  /// Build (and cache) a mosaic avatar from up to four group members. Members with
-  /// a photo show it; the rest show a coloured initials tile. Slot parsing +
-  /// rendering are shared with the group profile hero via `GroupCompositeAvatar`.
-  private func loadGroupCompositeAvatar(members: [[String: Any]], isDark: Bool) {
-    let usable = Array(GroupCompositeAvatar.slots(from: members).prefix(4))
-    guard usable.count >= 2 else {
-      loadAvatarImage(urlString: nil)
-      return
-    }
-
-    let cacheKey = "group-composite:" + usable.map(\.id).joined(separator: ",")
-    if cacheKey == lastAvatarURLString, avatarImageView.image != nil { return }
-    avatarLoadTask?.cancel()
-    avatarLoadTask = nil
-    lastAvatarURLString = cacheKey
-
-    if let cached = ChatAvatarImageStore.cached(for: cacheKey) {
-      avatarImageView.image = cached
-      showAvatarFallback(false)
-      return
-    }
-
-    // Keep the gradient+initials tile up while the mosaic renders.
-    avatarImageView.image = nil
-    showAvatarFallback(true)
-    let token = UUID().uuidString
-    avatarToken = token
-    let side: CGFloat = 60
-
-    let task = Task { [weak self] in
-      var images: [String: UIImage] = [:]
-      await withTaskGroup(of: (String, UIImage?).self) { group in
-        for slot in usable {
-          guard let url = slot.url else { continue }
-          group.addTask { (slot.id, await ChatAvatarImageStore.load(from: url)) }
-        }
-        for await (id, image) in group {
-          if let image { images[id] = image }
-        }
-      }
-      guard !Task.isCancelled else { return }
-      let composite = GroupCompositeAvatar.render(
-        slots: usable, images: images, side: side, isDark: isDark)
-      ChatAvatarImageStore.cache(composite, for: cacheKey)
-      await MainActor.run {
-        guard let self, token == self.avatarToken else { return }
-        self.avatarLoadTask = nil
-        self.avatarImageView.image = composite
-        self.showAvatarFallback(false)
-      }
-    }
-    avatarLoadTask = task
-  }
+    context.cgContext.flush()
+  }.withRenderingMode(.alwaysOriginal)
 }
 
 private final class ChatHomeSwipeActionButton: UIButton {

@@ -1,0 +1,37 @@
+[package]
+name = "vibe_core"
+version = "0.1.0"
+description = "Deterministic, host-only timeline core for Vibe: canonical DTOs, ordering/dedup/window reduction, and a strict envelope codec. No FFI, no SQLite, no network."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Frame parsing only. Public egress is strongly typed; serde_json::Value never
+# escapes this crate (see src/canonical.rs).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+subtle = "2"
+getrandom = "0.3"
+
+# Mature, widely deployed RustCrypto AEAD. No primitive is implemented in this
+# crate. Optional so the deny-by-default crypto provider can be exercised alone.
+aes-gcm = { version = "0.10", optional = true, default-features = false, features = [
+    "aes",
+    "alloc",
+] }
+
+[dev-dependencies]
+proptest = "1"
+
+[features]
+default = ["aead-aes-gcm"]
+# Enables the AES-256-GCM provider. With the feature off, the only provider is
+# `VibeDenyAllAead`, which fails closed.
+aead-aes-gcm = ["dep:aes-gcm"]

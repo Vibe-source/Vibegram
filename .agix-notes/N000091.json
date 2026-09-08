@@ -1,0 +1,18 @@
+{
+  "id": 91,
+  "status": "open",
+  "priority": 1,
+  "kind": "finding",
+  "body": "Pull-to-expand after compact failed because expandGestureArmed required offset >= 0; collapse often settles at ~-6 and the next sample is already <-60, so the gesture never re-armed. Fix: arm on collapse start, set armed before clearing heroMorphInFlight, re-arm at offset > -24.",
+  "selector": "ios/ChatModule/ChatProfileMainView.swift::ChatProfileSwiftUIRootView.offsetReader",
+  "path": "ios/ChatModule/ChatProfileMainView.swift",
+  "fqn": "ChatProfileSwiftUIRootView.offsetReader",
+  "line": 1947,
+  "anchor_hash": "85632318bd05328fb935358dcab6bd4c47c62565728fc8907f97b60f72b38798",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787835436,
+  "updated_at": 1787835436
+}

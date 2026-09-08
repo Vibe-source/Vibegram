@@ -1,0 +1,17 @@
+{
+  "id": 4,
+  "status": "open",
+  "priority": 2,
+  "kind": "warning",
+  "body": "Reaction pill is unioned into ChatListCell.bubbleSnapshotView's captureRect, so it renders inside the context menu's bubble snapshot. ChatContextMenuOverlay.gestureRecognizerShouldBegin vetoes every tap inside bubbleSnapshot.frame, which made the pill untappable. Fix: openContextMenu passes the strip rect in SNAPSHOT coords (layoutMenus shifts the bubble in Y and animateIn transforms it, so window coords are wrong) and pointHitsBubbleReaction tests it before the bubble veto.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "core/timeline-p4",
+  "commit": "55313ddbe0caf6ab5cfd6f3ad89323e50231f276",
+  "agent": "",
+  "created_at": 1786304088,
+  "updated_at": 1786304088
+}

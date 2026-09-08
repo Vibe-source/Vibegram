@@ -12,6 +12,7 @@ defmodule Vibe.Accounts.User do
     field :device_id, :string
     field :login_token, :string
     field :token_expires_at, :utc_datetime  # SECURITY: Token expiration
+    field :token_issued_at, :utc_datetime  # SECURITY: absolute lifetime anchor (sliding expiry cannot move this)
     field :secure_id, :string
     field :profile_image, :string
     field :push_token, :string
@@ -21,13 +22,11 @@ defmodule Vibe.Accounts.User do
     field :phone_number, :string
     field :name, :string
 
-    # PreKeys
     field :signed_pre_key_id, :integer
     field :signed_pre_key, :string
     field :signed_pre_key_signature, :string
     field :supports_advanced, :boolean, default: false
 
-    # Subscription & Business fields
     field :tier, :string, default: "free"
     field :referral_code, :string
     field :referral_count, :integer, default: 0
@@ -54,10 +53,6 @@ defmodule Vibe.Accounts.User do
     has_many :badges, Vibe.Badges.Badge
     has_one :subscription, Vibe.Subscriptions.UserSubscription
 
-    # We will handle blocks via a separate schema/context helper for now to avoid circular dependency complexity unless needed
-    # but good to have the association if possible.
-    # has_many :blocked_relationships, Vibe.Accounts.UserBlock, foreign_key: :user_id
-    # has_many :blocked_users, through: [:blocked_relationships, :blocked_user]
 
     timestamps()
   end
@@ -66,7 +61,7 @@ defmodule Vibe.Accounts.User do
     user
     |> cast(attrs, [
       :id, :username, :name, :password_hash, :public_key, :identity_key,
-      :encrypted_private_key, :device_id, :login_token, :token_expires_at, :secure_id,
+      :encrypted_private_key, :device_id, :login_token, :token_expires_at, :token_issued_at, :secure_id,
       :profile_image, :push_token, :is_agent, :signed_pre_key_id, :signed_pre_key, :signed_pre_key_signature,
       :supports_advanced, :phone_number, :tier, :referral_code, :referral_count,
       :business_profile_enabled, :auto_reply_enabled, :auto_reply_message,
@@ -91,5 +86,42 @@ defmodule Vibe.Accounts.User do
     |> unique_constraint(:username)
     |> unique_constraint(:phone_number)
     |> unique_constraint(:referral_code)
+  end
+
+  @profile_fields [
+    :name,
+    :bio,
+    :profile_image,
+    :show_last_seen,
+    :show_online_status,
+    :auto_delete_timer,
+    :privacy_forward,
+    :privacy_calls,
+    :privacy_phone_number,
+    :privacy_profile_photos,
+    :privacy_bio,
+    :privacy_gifts,
+    :privacy_birthday,
+    :privacy_saved_music,
+    :date_of_birth,
+    :business_profile_enabled,
+    :auto_reply_enabled,
+    :auto_reply_message,
+    :business_hours_start,
+    :business_hours_end
+  ]
+
+  # SECURITY:
+  def profile_changeset(user, attrs) do
+    user
+    |> cast(attrs, @profile_fields)
+    |> validate_inclusion(:privacy_forward, ["everybody", "contacts", "nobody"])
+    |> validate_inclusion(:privacy_calls, ["everybody", "contacts", "nobody"])
+    |> validate_inclusion(:privacy_phone_number, ["everybody", "contacts", "nobody"])
+    |> validate_inclusion(:privacy_profile_photos, ["everybody", "contacts", "nobody"])
+    |> validate_inclusion(:privacy_bio, ["everybody", "contacts", "nobody"])
+    |> validate_inclusion(:privacy_gifts, ["everybody", "contacts", "nobody"])
+    |> validate_inclusion(:privacy_birthday, ["everybody", "contacts", "nobody"])
+    |> validate_inclusion(:privacy_saved_music, ["everybody", "contacts", "nobody"])
   end
 end

@@ -1,0 +1,18 @@
+{
+  "id": 29,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Video-note expand grew downward into the composer then a 150ms bottom-drift re-pin jumped it. Expand/collapse now adds the height delta to contentOffset in the same spring (0.44s, damping 0.78) so the note stays above the input and older rows move up. Expanded side 248→320. Skip verifyBottomIntegrity while the morph is in flight.",
+  "selector": "ios/ChatModule/ChatListView.swift::ChatListView.reloadAgentTurnStateRow",
+  "path": "ios/ChatModule/ChatListView.swift",
+  "fqn": "ChatListView.reloadAgentTurnStateRow",
+  "line": 14452,
+  "anchor_hash": "c50e2408e0b41265ca83df69398fd7325c56626dc9e70e08bad9151adc298551",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787749288,
+  "updated_at": 1787749288
+}

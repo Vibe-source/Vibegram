@@ -1,0 +1,18 @@
+{
+  "id": 70,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "RTL/text reactions ride the timestamp row whenever there is no link preview or inline attachment. Measure drops the extra meta line; layout places meta on the strip.",
+  "selector": "ios/ChatModule/ChatListViewCells.swift::measureMessageBubbleLayout",
+  "path": "ios/ChatModule/ChatListViewCells.swift",
+  "fqn": "measureMessageBubbleLayout",
+  "line": 5213,
+  "anchor_hash": "ae40d9b3f0bb66e5850ed89afc2620ee895130baa83c6b9e4d608c9ee4c8808a",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787764511,
+  "updated_at": 1787764511
+}

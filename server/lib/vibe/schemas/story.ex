@@ -14,22 +14,16 @@ defmodule Vibe.Stories.Story do
     field :caption, :string
     field :duration, :integer, default: 5  # seconds to display
 
-    # Original image (before AI edit)
     field :original_media_url, :string
 
-    # Visibility: "everyone", "contacts", "close_friends", "custom"
     field :visibility, :string, default: "everyone"
 
-    # For custom visibility - list of user IDs who can see
     field :visible_to, {:array, :string}, default: []
 
-    # For hiding from specific users
     field :hidden_from, {:array, :string}, default: []
 
-    # Viewers tracking
     field :view_count, :integer, default: 0
 
-    # Expiry - 24 hours from creation
     field :expires_at, :utc_datetime
 
     belongs_to :user, Vibe.Accounts.User, type: :binary_id
@@ -53,7 +47,6 @@ defmodule Vibe.Stories.Story do
     if get_field(changeset, :expires_at) do
       changeset
     else
-      # Set expiry to 24 hours from now
       expires_at = DateTime.utc_now() |> DateTime.add(24 * 60 * 60, :second) |> DateTime.truncate(:second)
       put_change(changeset, :expires_at, expires_at)
     end

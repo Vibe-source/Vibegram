@@ -7,7 +7,8 @@ defmodule Vibe.Stories do
   import Ecto.Query
   alias Vibe.Repo
   alias Vibe.Stories.{Story, StoryView}
-  alias Vibe.Accounts.User
+  alias Vibe.Accounts
+  alias Vibe.Accounts.{User, UserBlock}
 
   @doc """
   Creates a new story for a user.
@@ -46,17 +47,29 @@ defmodule Vibe.Stories do
   def get_stories_feed(viewer_id) do
     now = DateTime.utc_now()
 
-    # Get all active stories with user preloaded (single query)
+    blocked_authors =
+      from(ub in UserBlock,
+        where: ub.user_id == ^viewer_id,
+        select: ub.blocked_user_id
+      )
+
+    blocking_authors =
+      from(ub in UserBlock,
+        where: ub.blocked_user_id == ^viewer_id,
+        select: ub.user_id
+      )
+
     stories = from(s in Story,
       where: s.expires_at > ^now,
       where: s.user_id != ^viewer_id,
+      where: s.user_id not in subquery(blocked_authors),
+      where: s.user_id not in subquery(blocking_authors),
       order_by: [desc: s.inserted_at],
       preload: [:user]
     )
     |> Repo.all()
     |> Enum.filter(fn story -> can_view_story?(story, viewer_id) end)
 
-    # Batch-fetch viewed story IDs for this viewer (single query instead of N)
     all_story_ids = Enum.map(stories, & &1.id)
     viewed_story_ids =
       from(sv in StoryView,
@@ -67,7 +80,6 @@ defmodule Vibe.Stories do
       |> Repo.all()
       |> MapSet.new()
 
-    # Group by user - user is already preloaded, no extra queries needed
     stories
     |> Enum.group_by(& &1.user_id)
     |> Enum.map(fn {user_id, user_stories} ->
@@ -98,7 +110,6 @@ defmodule Vibe.Stories do
     )
     |> Repo.all()
 
-    # Batch-fetch view counts in a single query instead of N
     story_ids = Enum.map(stories, & &1.id)
     view_counts =
       from(sv in StoryView,
@@ -119,24 +130,21 @@ defmodule Vibe.Stories do
   """
   def can_view_story?(story, viewer_id) do
     cond do
-      # Hidden from this user
+      Accounts.blocked?(story.user_id, viewer_id) or Accounts.blocked?(viewer_id, story.user_id) ->
+        false
+
       viewer_id in (story.hidden_from || []) ->
         false
 
-      # Everyone can see
       story.visibility == "everyone" ->
         true
 
-      # Custom list
       story.visibility == "custom" ->
         viewer_id in (story.visible_to || [])
 
-      # Contacts only - would need contacts list implementation
       story.visibility == "contacts" ->
-        # For now, allow all (implement contacts check later)
         true
 
-      # Close friends
       story.visibility == "close_friends" ->
         viewer_id in (story.visible_to || [])
 
@@ -149,7 +157,6 @@ defmodule Vibe.Stories do
   Records that a user has viewed a story.
   """
   def mark_story_viewed(story_id, viewer_id) do
-    # Check if already viewed
     existing = Repo.get_by(StoryView, story_id: story_id, viewer_id: viewer_id)
 
     if existing do
@@ -160,7 +167,6 @@ defmodule Vibe.Stories do
       |> Repo.insert()
       |> case do
         {:ok, view} ->
-          # Increment view count on story
           from(s in Story, where: s.id == ^story_id)
           |> Repo.update_all(inc: [view_count: 1])
           {:ok, view}
@@ -260,14 +266,12 @@ defmodule Vibe.Stories do
   def cleanup_expired_stories do
     now = DateTime.utc_now()
 
-    # Delete views for expired stories first
     expired_story_ids = from(s in Story, where: s.expires_at < ^now, select: s.id)
     |> Repo.all()
 
     from(sv in StoryView, where: sv.story_id in ^expired_story_ids)
     |> Repo.delete_all()
 
-    # Delete expired stories
     from(s in Story, where: s.expires_at < ^now)
     |> Repo.delete_all()
   end

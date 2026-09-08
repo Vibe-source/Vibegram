@@ -1,0 +1,18 @@
+{
+  "id": 18,
+  "status": "open",
+  "priority": 2,
+  "kind": "warning",
+  "body": "Nothing in the UI reads message['decryptionFailed'] — only ChatEngine writes it and homePreviewTextLocked reads it. That is why a failed row draws as a blank bubble instead of a cannot-decrypt state, and why Home and the transcript disagree. The render fix belongs in ChatListViewCells.swift, which agent 01a03dd9 (grok, video-note UI) currently owns.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787744551,
+  "updated_at": 1787744551
+}

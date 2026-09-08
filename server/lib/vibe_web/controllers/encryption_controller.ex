@@ -3,7 +3,6 @@ defmodule VibeWeb.EncryptionController do
   # alias Vibe.Encryption
 
   def get_bundle(conn, %{"id" => id}) do
-    # Logic to get keys
     json(conn, %{
       identityKey: "placeholder",
       signedPreKey: "placeholder",

@@ -1,0 +1,18 @@
+{
+  "id": 63,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Cross-device reactions ARE wired end to end, so the bug is not a missing hop: VibeWeb.ChatChannel.handle_in('react-message') (server/lib/vibe_web/channels/chat_channel.ex:555) broadcast!s 'message-reaction-updated' with counts only (no isSelected, that is per-caller), ChatEngine.handleNativeSocketFrame (:9407) re-derives isSelected from the local snapshot and calls applyMessageEngagementLocked, and ChatConversationController.handleChatEngineChanged (ios/Sources/App/AppHomeView.swift:13328) refreshRows on chatMessageReactionChanged. Note applyMessageEngagementLocked (:11535) returns changed=false when the message is in neither the live payload nor historyRowsByChat[chatId] — and on changed=false NOTHING is posted, so no refresh happens. That silent-drop path is the first place to look for 'the other device only sees the reaction after I close and reopen the chat'.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787760804,
+  "updated_at": 1787760804
+}

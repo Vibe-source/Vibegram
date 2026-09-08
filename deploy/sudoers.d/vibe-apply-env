@@ -1,0 +1,3 @@
+# Sealed env files are encrypted with the root-only host key, so the rootless
+# stack user needs exactly this one script as root to merge a new key in.
+vibe ALL=(root) NOPASSWD: /opt/vibe/deploy/scripts/apply-env.sh

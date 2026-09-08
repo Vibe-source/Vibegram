@@ -42,8 +42,13 @@ public final class VibeNativeCallStore {
       var result: [String: Any] = [
         "platform": "ios"
       ]
-      result["voip"] = defaults.string(forKey: Keys.voipToken) as Any
-      result["apns"] = defaults.string(forKey: Keys.apnsToken) as Any
+      // Insert only when present. `defaults.string(forKey:)` returns String?,
+      // and `as Any` boxes the Optional rather than unwrapping it — so the
+      // value survived as Optional("…") and String(describing:) later rendered
+      // it literally, producing a 76-character "token" APNs rejected as
+      // BadDeviceToken. A missing key is unambiguous; a wrapped one is not.
+      if let voip = defaults.string(forKey: Keys.voipToken) { result["voip"] = voip }
+      if let apns = defaults.string(forKey: Keys.apnsToken) { result["apns"] = apns }
       return result
     }
   }

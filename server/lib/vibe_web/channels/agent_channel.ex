@@ -1,8 +1,6 @@
 defmodule VibeWeb.AgentChannel do
   @moduledoc """
   Phoenix Channel for real-time AI Agent communication.
-  Supports streaming responses with tool progress updates.
-  Now with database-backed conversation history for business use.
   """
 
   use Phoenix.Channel
@@ -11,13 +9,14 @@ defmodule VibeWeb.AgentChannel do
   alias Vibe.AI.Agent
   alias Vibe.AI.AgentBuilder
   alias Vibe.AI.AgenticEventShape
+  alias Vibe.AI.ModelRegistry
+  alias Vibe.AI.StandaloneAgent
   alias Vibe.AgentConversation
 
   @doc """
   Join the agent channel for a user.
   """
   def join("agent:" <> user_id, params, socket) do
-    # Verify user matches socket assigns
     if socket.assigns[:user_id] == user_id do
       conversation_id = params["conversation_id"]
 
@@ -37,71 +36,16 @@ defmodule VibeWeb.AgentChannel do
   Handle incoming messages to the AI agent.
   """
   def handle_in("message", %{"text" => text} = params, socket) do
-    images = params["images"] || []
-    conversation_id = params["conversation_id"] || socket.assigns[:active_conversation_id]
-    user_id = socket.assigns[:user_id]
-    truncate_id = params["truncate_at_id"]
+    case ModelRegistry.resolve_selection(params) do
+      {:ok, model_selection} ->
+        handle_message(text, params, model_selection, socket)
 
-    # Handle truncation if requested (for regeneration)
-    if truncate_id && conversation_id do
-      AgentConversation.truncate_history(conversation_id, user_id, truncate_id)
+      {:error, :invalid_thinking_level} ->
+        {:reply, {:error, %{reason: "invalid_thinking_level"}}, socket}
+
+      {:error, _reason} ->
+        {:reply, {:error, %{reason: "invalid_model_selection"}}, socket}
     end
-
-    # Get or create conversation
-    {conv_id, history} = get_or_create_conversation(user_id, conversation_id, text)
-
-    # Store conversation ID in socket
-    socket =
-      socket
-      |> assign(:active_conversation_id, conv_id)
-      |> reset_stream_ui_state()
-
-    # Acknowledge receipt with conversation ID
-    push(socket, "ack", %{status: "processing", conversation_id: conv_id})
-
-    # Add user message to database
-    AgentConversation.add_message(conv_id, %{
-      "role" => "user",
-      "content" => text,
-      "images" => images
-    })
-
-    # Start async task for AI response
-    channel_pid = self()
-
-    Task.start(fn ->
-      # Create placeholder assistant message
-      {:ok, _conv} =
-        AgentConversation.add_message(conv_id, %{
-          "role" => "assistant",
-          "content" => "",
-          "isStreaming" => true
-        })
-
-      callback = streaming_callback(channel_pid, conv_id)
-
-      case Agent.stream_response(text, callback,
-             history: history,
-             images: images,
-             user_id: user_id
-           ) do
-        {:ok, full_response, _runtime_state} ->
-          # Update the assistant message in database
-          send(channel_pid, {:finalize_message, conv_id, full_response})
-          send(channel_pid, {:push, "done", %{success: true, conversation_id: conv_id}})
-
-        {:ok, full_response} ->
-          # Update the assistant message in database
-          send(channel_pid, {:finalize_message, conv_id, full_response})
-          send(channel_pid, {:push, "done", %{success: true, conversation_id: conv_id}})
-
-        {:error, reason} ->
-          Logger.error("Agent error: #{inspect(reason)}")
-          send(channel_pid, {:push, "error", %{message: to_string(reason)}})
-      end
-    end)
-
-    {:noreply, socket}
   end
 
   def handle_in("builder_ui_response", %{"ui_response" => ui_response} = params, socket)
@@ -248,12 +192,13 @@ defmodule VibeWeb.AgentChannel do
 
   # Handle push messages from the async task
   def handle_info({:push, "chunk", payload}, socket) do
-    push(socket, "chunk", payload)
-
     text =
       payload[:text] ||
         payload["text"] ||
         ""
+
+    socket = append_text_node(socket, text)
+    push(socket, "chunk", with_turn_nodes(payload, socket))
 
     socket =
       if is_binary(text) and text != "" and not (socket.assigns[:has_streamed_text] || false) do
@@ -262,6 +207,58 @@ defmodule VibeWeb.AgentChannel do
         |> flush_pending_agent_cards()
       else
         socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:push, "progress", payload}, socket) do
+    socket =
+      payload
+      |> incoming_nodes()
+      |> Enum.reduce(socket, &upsert_tool_node(&2, &1))
+
+    push(socket, "progress", with_turn_nodes(payload, socket))
+    {:noreply, socket}
+  end
+
+  def handle_info({:push, "tool_result", payload}, socket) do
+    push(socket, "tool_result", with_turn_nodes(payload, socket))
+    {:noreply, socket}
+  end
+
+  # Reasoning stream → a `kind:
+  def handle_info({:push, "thinking", payload}, socket) do
+    started_at = socket.assigns[:thinking_started_at] || System.monotonic_time(:millisecond)
+    running? = to_string(payload[:status] || "running") != "done"
+    duration_ms = System.monotonic_time(:millisecond) - started_at
+
+    node = %{
+      id: "thinking-#{socket.assigns[:thinking_index] || 0}",
+      label: "Thinking",
+      status: if(running?, do: "running", else: "done"),
+      depth: 0,
+      kind: "thinking",
+      itemType: "thinking",
+      tokens: payload[:tokens],
+      durationMs: duration_ms,
+      thinkingText: payload[:text]
+    }
+
+    socket =
+      socket
+      |> assign(:thinking_started_at, started_at)
+      |> upsert_tool_node(node)
+
+    push(socket, "thinking", with_turn_nodes(Map.delete(payload, :text), socket))
+
+    socket =
+      if running? do
+        socket
+      else
+        socket
+        |> assign(:thinking_index, (socket.assigns[:thinking_index] || 0) + 1)
+        |> assign(:thinking_started_at, nil)
       end
 
     {:noreply, socket}
@@ -278,8 +275,16 @@ defmodule VibeWeb.AgentChannel do
   end
 
   def handle_info({:push, "error", payload}, socket) do
-    push(socket, "error", payload)
+    enriched = "error" |> AgenticEventShape.enrich(payload) |> with_turn_nodes(socket)
+    push(socket, "error", enriched)
+    socket = persist_partial_turn(socket)
     {:noreply, reset_stream_ui_state(socket)}
+  end
+
+  def handle_info({:push, "done", payload}, socket) do
+    enriched = "done" |> AgenticEventShape.enrich(payload) |> with_turn_nodes(socket)
+    push(socket, "done", enriched)
+    {:noreply, socket}
   end
 
   def handle_info({:push, event, payload}, socket) do
@@ -300,58 +305,247 @@ defmodule VibeWeb.AgentChannel do
   def handle_info({:finalize_message, conv_id, full_response}, socket) do
     socket = flush_pending_agent_cards(socket)
     tool_results = socket.assigns[:tool_results] || []
+    final_text = StandaloneAgent.final_text_with_tool_fallback(full_response, tool_results)
 
-    # Update the last message in the database
+    if final_text != "" and normalize_optional_string(full_response) == nil do
+      push(
+        socket,
+        "chunk",
+        AgenticEventShape.enrich("chunk", %{text: final_text, conversation_id: conv_id})
+      )
+    end
+
+    rich_outputs =
+      StandaloneAgent.finalized_rich_outputs(tool_results, final_text,
+        agent_turn_id: Ecto.UUID.generate(),
+        base_timestamp: :os.system_time(:millisecond)
+      )
+
+    if rich_outputs != [] do
+      push(socket, "rich_outputs", %{
+        conversation_id: conv_id,
+        outputs: rich_outputs
+      })
+    end
+
     AgentConversation.update_last_message(conv_id, %{
-      "content" => full_response,
+      "content" => final_text,
       "isStreaming" => false,
-      "toolResults" => tool_results
+      "toolResults" => tool_results,
+      "richOutputs" => rich_outputs,
+      "progressNodes" => sealed_turn_nodes(socket),
+      "toolDigest" => tool_digest(tool_results)
     })
 
-    # Reset streaming state
     socket = reset_stream_ui_state(socket)
 
     {:noreply, socket}
   end
 
   def handle_info({:update_history, history}, socket) do
-    # Keep only last 20 messages to manage token usage
     trimmed = Enum.take(history, -20)
     {:noreply, assign(socket, :conversation_history, trimmed)}
   end
 
-  # Private helpers
+
+  defp handle_message(text, params, model_selection, socket) do
+    images = params["images"] || []
+    conversation_id = params["conversation_id"] || socket.assigns[:active_conversation_id]
+    user_id = socket.assigns[:user_id]
+    truncate_id = params["truncate_at_id"]
+
+    if truncate_id && conversation_id do
+      AgentConversation.truncate_history(conversation_id, user_id, truncate_id)
+    end
+
+    {conv_id, history, turn_memory} =
+      get_or_create_conversation(user_id, conversation_id, text)
+
+    socket =
+      socket
+      |> assign(:active_conversation_id, conv_id)
+      |> reset_stream_ui_state()
+
+    push(socket, "ack", %{status: "processing", conversation_id: conv_id})
+
+    AgentConversation.add_message(conv_id, %{
+      "role" => "user",
+      "content" => text,
+      "images" => images
+    })
+
+    channel_pid = self()
+
+    Task.start(fn ->
+      {:ok, _conv} =
+        AgentConversation.add_message(conv_id, %{
+          "role" => "assistant",
+          "content" => "",
+          "isStreaming" => true
+        })
+
+      callback = streaming_callback(channel_pid, conv_id)
+
+      case Agent.stream_response(text, callback,
+             history: history,
+             turn_memory: turn_memory,
+             images: images,
+             user_id: user_id,
+             requester_user_id: user_id,
+             model_provider: model_selection.provider,
+             model_id: model_selection.model_id,
+             thinking_level: model_selection.thinking_level
+           ) do
+        {:ok, full_response, runtime_state} ->
+          send(channel_pid, {:finalize_message, conv_id, full_response})
+
+          send(
+            channel_pid,
+            {:push, "done",
+             %{
+               success: true,
+               conversation_id: conv_id,
+               status: Map.get(runtime_state, :terminal_status, "completed")
+             }}
+          )
+
+        {:ok, full_response} ->
+          send(channel_pid, {:finalize_message, conv_id, full_response})
+          send(channel_pid, {:push, "done", %{success: true, conversation_id: conv_id}})
+
+        {:error, reason} ->
+          Logger.error("Agent error: #{inspect(reason)}")
+          send(channel_pid, {:push, "error", %{message: to_string(reason)}})
+      end
+    end)
+
+    {:noreply, socket}
+  end
 
   defp get_or_create_conversation(user_id, nil, first_message) do
-    # Create new conversation with placeholder title
     {:ok, conv} = AgentConversation.create(user_id, "New Chat")
 
-    # Generate title asynchronously using AI
     Task.start(fn -> generate_title_async(conv.id, first_message) end)
 
-    {conv.id, []}
+    {conv.id, [], []}
   end
 
   defp get_or_create_conversation(user_id, conv_id, _first_message) do
     case AgentConversation.get_for_user(conv_id, user_id) do
       nil ->
-        # Conversation not found, create new
         {:ok, conv} = AgentConversation.create(user_id, "New Chat")
-        {conv.id, []}
+        {conv.id, [], []}
 
       conv ->
-        # Convert stored messages to history format for Claude
-        history =
-          Enum.map(conv.messages, fn msg ->
-            %{role: msg["role"], content: msg["content"] || ""}
-          end)
-          |> Enum.filter(fn msg -> msg.content != "" end)
-          # Keep last 20 for token limit
-          |> Enum.take(-20)
-
-        {conv.id, history}
+        {conv.id, history_from_messages(conv.messages), turn_memory_from_messages(conv.messages)}
     end
   end
+
+  defp history_from_messages(messages) do
+    messages
+    |> List.wrap()
+    |> Enum.map(fn msg -> %{role: msg["role"], content: msg["content"] || ""} end)
+    |> Enum.filter(fn msg -> msg.content != "" end)
+    |> Enum.take(-20)
+  end
+
+  defp turn_memory_from_messages(messages) do
+    messages
+    |> List.wrap()
+    |> Enum.filter(&(&1["role"] == "assistant"))
+    |> Enum.map(fn msg -> msg["toolDigest"] || tool_digest(msg["toolResults"]) end)
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.take(-6)
+  end
+
+  @doc false
+  def tool_digest(tool_results) do
+    tool_results
+    |> List.wrap()
+    |> StandaloneAgent.select_music_tool_results()
+    |> Enum.map(&digest_entry/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.join("; ")
+  end
+
+  defp digest_entry(item) when is_map(item) do
+    tool = item[:tool] || item["tool"]
+    result = item[:result] || item["result"]
+
+    case {to_string(tool || ""), result} do
+      {"", _} ->
+        nil
+
+      {"search_music", %{} = result} ->
+        case music_digest(result) do
+          nil -> "search_music → no track"
+          detail -> "search_music → #{detail}"
+        end
+
+      {name, %{} = result} ->
+        if error_result?(result), do: "#{name} → failed", else: "#{name} → ok"
+
+      {name, _} ->
+        "#{name} → ok"
+    end
+  end
+
+  defp digest_entry(_item), do: nil
+
+  defp music_digest(result) do
+    (result[:tracks] || result["tracks"] || [])
+    |> List.wrap()
+    |> Enum.map(fn track ->
+      title = track[:title] || track["title"]
+      id = track[:video_id] || track["video_id"] || track[:videoId] || track["videoId"]
+
+      cond do
+        is_binary(title) and is_binary(id) -> ~s(sent "#{String.slice(title, 0, 70)}" [#{id}])
+        is_binary(title) -> ~s(sent "#{String.slice(title, 0, 70)}")
+        true -> nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      entries -> Enum.join(entries, ", ")
+    end
+  end
+
+  defp error_result?(result) when is_map(result) do
+    case result[:error] || result["error"] do
+      value when is_binary(value) -> true
+      %{} -> true
+      _ -> (result[:ok] || result["ok"]) == false
+    end
+  end
+
+  defp error_result?(_), do: false
+
+  defp sealed_turn_nodes(socket) do
+    (socket.assigns[:turn_nodes] || [])
+    |> Enum.map(fn node ->
+      %{
+        "id" => node[:id] || node["id"],
+        "label" => node[:label] || node["label"],
+        "status" => seal_status(node[:status] || node["status"]),
+        "depth" => node[:depth] || node["depth"] || 0,
+        "kind" => node[:kind] || node["kind"],
+        "itemType" => node[:itemType] || node["itemType"],
+        "tool" => node[:tool] || node["tool"],
+        "tokens" => node[:tokens] || node["tokens"],
+        "durationMs" => node[:durationMs] || node["durationMs"],
+        "thinkingText" => node[:thinkingText] || node["thinkingText"]
+      }
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.new()
+    end)
+  end
+
+  defp seal_status("running"), do: "done"
+  defp seal_status(nil), do: "done"
+  defp seal_status(status), do: to_string(status)
 
   defp streaming_callback(channel_pid, conversation_id) do
     fn
@@ -375,6 +569,19 @@ defmodule VibeWeb.AgentChannel do
              status: payload[:status] || "running",
              conversation_id: conversation_id
            })}
+        )
+
+      %{type: :thinking} = payload ->
+        send(
+          channel_pid,
+          {:push, "thinking",
+           %{
+             status: payload[:status] || "running",
+             content: payload[:content],
+             text: payload[:text],
+             tokens: payload[:tokens],
+             conversation_id: conversation_id
+           }}
         )
 
       %{type: :subagent} = payload ->
@@ -482,6 +689,96 @@ defmodule VibeWeb.AgentChannel do
     |> assign(:tool_results, [])
     |> assign(:pending_agent_cards, [])
     |> assign(:has_streamed_text, false)
+    |> assign(:turn_nodes, [])
+    |> assign(:thinking_index, 0)
+    |> assign(:thinking_started_at, nil)
+  end
+
+
+  @text_node_limit 4000
+
+  defp append_text_node(socket, chunk) when is_binary(chunk) do
+    nodes = socket.assigns[:turn_nodes] || []
+
+    case List.last(nodes) do
+      %{kind: "text", label: label} = last ->
+        merged = %{last | label: String.slice(label <> chunk, 0, @text_node_limit)}
+        assign(socket, :turn_nodes, List.replace_at(nodes, -1, merged))
+
+      _ ->
+        node = %{
+          id: "text-#{length(nodes)}",
+          label: String.slice(chunk, 0, @text_node_limit),
+          status: "done",
+          depth: 0,
+          kind: "text",
+          itemType: "text"
+        }
+
+        assign(socket, :turn_nodes, nodes ++ [node])
+    end
+  end
+
+  defp append_text_node(socket, _chunk), do: socket
+
+  defp upsert_tool_node(socket, node) when is_map(node) do
+    nodes = socket.assigns[:turn_nodes] || []
+    id = node[:id] || node["id"]
+
+    case Enum.find_index(nodes, fn existing -> (existing[:id] || existing["id"]) == id end) do
+      nil -> assign(socket, :turn_nodes, nodes ++ [node])
+      index -> assign(socket, :turn_nodes, List.replace_at(nodes, index, node))
+    end
+  end
+
+  defp upsert_tool_node(socket, _node), do: socket
+
+  defp persist_partial_turn(socket) do
+    conv_id = socket.assigns[:active_conversation_id]
+    tool_results = socket.assigns[:tool_results] || []
+    partial_text = socket.assigns[:streaming_content] || ""
+    nodes = sealed_turn_nodes(socket)
+
+    if is_binary(conv_id) and (tool_results != [] or String.trim(partial_text) != "") do
+      rich_outputs =
+        StandaloneAgent.finalized_rich_outputs(tool_results, partial_text,
+          agent_turn_id: Ecto.UUID.generate(),
+          base_timestamp: :os.system_time(:millisecond)
+        )
+
+      if rich_outputs != [] do
+        push(socket, "rich_outputs", %{conversation_id: conv_id, outputs: rich_outputs})
+      end
+
+      AgentConversation.update_last_message(conv_id, %{
+        "content" => partial_text,
+        "isStreaming" => false,
+        "toolResults" => tool_results,
+        "richOutputs" => rich_outputs,
+        "progressNodes" => nodes,
+        "toolDigest" => tool_digest(tool_results),
+        "failed" => true
+      })
+    end
+
+    socket
+  end
+
+  defp incoming_nodes(payload) when is_map(payload) do
+    (payload[:progressNodes] || payload["progressNodes"] || payload[:progress_nodes] ||
+       payload["progress_nodes"] || [])
+    |> List.wrap()
+    |> Enum.filter(&is_map/1)
+  end
+
+  defp incoming_nodes(_payload), do: []
+
+  defp with_turn_nodes(payload, socket) do
+    nodes = socket.assigns[:turn_nodes] || []
+
+    payload
+    |> Map.put(:progressNodes, nodes)
+    |> Map.put(:progress_nodes, nodes)
   end
 
   defp flush_pending_agent_cards(socket) do
@@ -494,7 +791,6 @@ defmodule VibeWeb.AgentChannel do
     assign(socket, :pending_agent_cards, [])
   end
 
-  # Generate a short, descriptive title using AI
   defp generate_title_async(conv_id, message) do
     prompt = """
     Generate a very short title (3-5 words max) for a conversation that starts with this message:
@@ -520,7 +816,6 @@ defmodule VibeWeb.AgentChannel do
         AgentConversation.update_title(conv_id, clean_title)
         Logger.info("Generated title for #{conv_id}: #{clean_title}")
 
-        # Broadcast title update to client
         VibeWeb.Endpoint.broadcast("agent:*", "title_updated", %{
           conversation_id: conv_id,
           title: clean_title
@@ -528,7 +823,6 @@ defmodule VibeWeb.AgentChannel do
 
       {:error, reason} ->
         Logger.warn("Failed to generate title: #{inspect(reason)}")
-        # Fall back to first 30 chars
         fallback = String.slice(message, 0..30)
         AgentConversation.update_title(conv_id, fallback)
     end

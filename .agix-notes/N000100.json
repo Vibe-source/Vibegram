@@ -1,0 +1,18 @@
+{
+  "id": 100,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Profile identity shift fix: profile name and username now use one stable leading layout with continuous centered-to-hero interpolation; username line remains reserved when late/empty, and resolved username participates in the render signature so handle updates do not reuse stale SwiftUI content.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787849983,
+  "updated_at": 1787849983
+}

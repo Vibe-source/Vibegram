@@ -1,0 +1,54 @@
+{
+  "session": "01a03e60-2681-75e1-9a76-66225c61772d",
+  "task": "please fix the handle send cell and rtl text cu…",
+  "steps": [
+    {
+      "what": "Map current attach editor, TTL, and attachment menu",
+      "id": "1",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Attach composer overlay: header, caption, send, TTL, HD/SD, multi-pick",
+      "id": "2",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Wire TTL/view-once through engine/server/core if missing",
+      "id": "3",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Attachment menu: icons, glass tab transition, File sheet layout",
+      "id": "4",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Build + install",
+      "id": "5",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787769541
+}

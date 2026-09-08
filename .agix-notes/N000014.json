@@ -1,0 +1,18 @@
+{
+  "id": 14,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Video-note chrome moved OUT of the circular clip: the note bubble is now one meta line taller than its circle (measureMessageBubbleLayout adds metaTopSpacing+bubbleMetaHeight for .videoNote), mediaFrame is the top square, and time+status (metaContainerView, back in contentView) sit bottom-right on that line with the duration label bottom-left. Only the mute pill stays inside the circle. Tap-scale (1.24x) removed, playback ring 3.5->2.0, size/byte label suppressed for notes. Verified by a generic-iOS build; NOT yet installed on device (xcodebuild could not see the phone).",
+  "selector": "docs/contributing.md::Contributing Guide > Coding Standards > Swift",
+  "path": "docs/contributing.md",
+  "fqn": "Contributing Guide > Coding Standards > Swift",
+  "line": 202,
+  "anchor_hash": "ac489313ae960469ab900b3c01928370b36920c79efea1c1161ed15703617ea6",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787743512,
+  "updated_at": 1787743512
+}

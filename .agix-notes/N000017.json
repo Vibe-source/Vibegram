@@ -1,0 +1,18 @@
+{
+  "id": 17,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Crypto diagnostics contract: every decrypt line goes through VibeLog category 'crypto' with truncated ids (chat=prefix12, msg=suffix12), gated by ChatEngine.cryptoLogOnce(event:messageId:) so reparses cannot flood, and NEVER carries key material or plaintext — only byte/char lengths, slot letters k/s/g, and field NAMES. NSLog does not reach the in-app export, so diagnostics must not use it. Never name a metadata key privateKey/session/token/email/phone: VibeLogRedactor scrubs values by key fragment (it was turning present/MISSING into an identical 7-char placeholder).",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787744551,
+  "updated_at": 1787744551
+}

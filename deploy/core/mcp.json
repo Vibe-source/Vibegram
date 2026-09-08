@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "vibe-computer": {
+      "type": "http",
+      "url": "${VIBE_TEAM_COMPUTER_URL:-http://127.0.0.1:4000/internal/team-computer/mcp}",
+      "headers": {
+        "Authorization": "Bearer ${VIBE_TEAM_COMPUTER_TOKEN}"
+      }
+    }
+  }
+}

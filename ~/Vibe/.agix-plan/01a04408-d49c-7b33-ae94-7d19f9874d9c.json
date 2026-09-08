@@ -1,0 +1,63 @@
+{
+  "session": "01a04408-d49c-7b33-ae94-7d19f9874d9c",
+  "task": "Please take a look at the, uh, audio. Profile v…",
+  "steps": [
+    {
+      "what": "Map profile, settings, chat search, mute, QR, and shared-content flows",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Fix hero/title morph, stable actions, and fallback-avatar expansion gating",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Redesign username/contact rows and add copy toast plus QR panel",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Wire profile search, mute, block, and remove appearance row",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Build media/music/links segmented previews and reuse existing viewers",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Audit behavior, run final build, and record the shipped work",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    }
+  ],
+  "state": "draft",
+  "by": "",
+  "at": 1787853765
+}

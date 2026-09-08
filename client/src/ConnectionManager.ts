@@ -262,7 +262,7 @@ class ConnectionManager {
         }
 
         console.log(`[CONN] Connecting to Phoenix at: ${socketUrl}`);
-        console.log(`[CONN] Using Auth Token (len=${this.authToken.length}): ${this.authToken.substring(0, 10)}...`);
+        console.log(`[CONN] Using Auth Token (hasToken=true, len=${this.authToken.length})`);
 
         this.socket = new Socket(socketUrl, {
             params: { token: this.authToken }

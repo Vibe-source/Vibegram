@@ -1,0 +1,18 @@
+{
+  "id": 85,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — assist\nGOAL: WHAT WE HAVE BEEN DOING HERE Written by earlier threads in this repository, so you are not meeting this work for the first time. It is a record of what was done and decided — not a list of things to do now, and not current evidence. Re-check anything you are about to rely on. SETTLED HERE, STILL TR…\nNEXT: Patch ChatEngine.applyNativeChatMutationEventLocked so mediaExpired/service.kind=view_once_expired edits do not merge existing mediaUrl/mediaKey/thumbnail, force type system; message-deleted reason=view_once tombstones instead of markLiveMessageDeletedLocked. Then verify expire_view_once_and_broadcast uses Ecto.Changeset.change not Message.changeset empty encrypted_content. Then agix build iOS; rebuild Rust only if…\nDID: todo_write()\nFILES: /Users/mohammadshayani/Vibe/.vibe/memory.md, /Users/mohammadshayani/Vibe/server/lib/vibe/chat.ex, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatEngine.swift, /Users/mohammadshayani/Vibe/ios/Sources/App/MetalKeyMaskView.swift, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatVideoEditViewController.swift, /Users/mohammadshayani/Vibe/ios/ChatModule/ChatVideoEditModule.swift (+2)",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "grok",
+  "author": "Vibe Team",
+  "created_at": 1787830813,
+  "updated_at": 1787841720
+}

@@ -1,0 +1,18 @@
+{
+  "id": 72,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "Input chrome: trash glyph in front of glass with hinged lid; video-note pause keeps overlay and toggles play; cancel still discards. Voice/video morphs via translate, camera.circle.fill. GIF 40pt gray.",
+  "selector": "ios/ChatModule/ChatInputBar.swift::ChatInputBar.cancelRecording",
+  "path": "ios/ChatModule/ChatInputBar.swift",
+  "fqn": "ChatInputBar.cancelRecording",
+  "line": 5301,
+  "anchor_hash": "a308bae9d940a1488918fc05a2a76b88b8f050b9e5eda1b609d308315cb43310",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787768374,
+  "updated_at": 1787768374
+}

@@ -9,14 +9,11 @@ defmodule VibeWeb.ChatController do
   def create(conn, %{"friendId" => friend_id}) do
     my_id = conn.assigns.current_user.id
 
-    # Validate friend exists to avoid foreign key errors.
     case Accounts.get_user(friend_id) do
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "User not found"})
 
       %{is_agent: true} ->
-        # Published standalone agents OR the reserved computer-bridge workers
-        # (Claude/Codex — agent users with no Agent record) can be DM'd.
         if Agents.published_agent_user?(friend_id) or
              LocalAgentWorker.resolve_by_agent_user_id(friend_id) != nil do
           do_create_chat(conn, my_id, friend_id)
@@ -85,11 +82,21 @@ defmodule VibeWeb.ChatController do
 
     case Chat.delete_message(chat_id, message_id, user_id, for_everyone) do
       {:ok, _message} ->
-        VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "message-deleted", %{
+        mutation_payload = %{
+          chatId: chat_id,
           messageId: message_id,
           deletedBy: user_id,
           forEveryone: for_everyone
-        })
+        }
+
+        VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "message-deleted", mutation_payload)
+
+        Chat.broadcast_user_chat_event(
+          chat_id,
+          "message-deleted",
+          mutation_payload,
+          if(for_everyone, do: nil, else: [user_id])
+        )
 
         json(conn, %{success: true, messageId: message_id, forEveryone: for_everyone})
 
@@ -98,6 +105,80 @@ defmodule VibeWeb.ChatController do
 
       {:error, :forbidden} ->
         conn |> put_status(:forbidden) |> json(%{error: "Not allowed"})
+
+      {:error, :not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "Message not found"})
+
+      {:error, reason} ->
+        conn |> put_status(:bad_request) |> json(%{error: inspect(reason)})
+    end
+  end
+
+  def message_reactions(conn, %{"chat_id" => chat_id, "message_id" => message_id}) do
+    user_id = conn.assigns.current_user.id
+
+    case Chat.message_reaction_detail(chat_id, message_id, user_id) do
+      {:ok, groups} ->
+        json(conn, %{
+          chatId: chat_id,
+          messageId: message_id,
+          total: Enum.reduce(groups, 0, &(&1.count + &2)),
+          reactions: groups
+        })
+
+      {:error, :invalid_id} ->
+        conn |> put_status(:bad_request) |> json(%{error: "Invalid message id"})
+
+      {:error, :forbidden} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Not a participant"})
+
+      {:error, :not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "Message not found"})
+
+      {:error, reason} ->
+        conn |> put_status(:bad_request) |> json(%{error: inspect(reason)})
+    end
+  end
+
+  def report_message(conn, %{"chat_id" => chat_id, "message_id" => message_id} = params) do
+    user_id = conn.assigns.current_user.id
+
+    case Chat.report_message(chat_id, message_id, user_id, params) do
+      {:ok, %{report: report, blocked: blocked}} ->
+        json(conn, %{
+          success: true,
+          blocked: blocked,
+          report: %{
+            id: report.id,
+            chatId: report.chat_id,
+            messageId: report.source_message_id,
+            reason: report.reason,
+            details: report.details,
+            status: report.status,
+            reportedUserId: report.reported_user_id,
+            createdAt: report.inserted_at
+          }
+        })
+
+      {:error, :invalid_id} ->
+        conn |> put_status(:bad_request) |> json(%{error: "Invalid message id"})
+
+      {:error, :invalid_reason} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Invalid reason", reasons: Chat.report_reasons()})
+
+      {:error, :details_too_long} ->
+        conn |> put_status(:bad_request) |> json(%{error: "Details too long"})
+
+      {:error, :invalid_details} ->
+        conn |> put_status(:bad_request) |> json(%{error: "Invalid details"})
+
+      {:error, :invalid_target} ->
+        conn |> put_status(:bad_request) |> json(%{error: "Cannot report this message"})
+
+      {:error, :forbidden} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Not a participant"})
 
       {:error, :not_found} ->
         conn |> put_status(:not_found) |> json(%{error: "Message not found"})
@@ -253,8 +334,32 @@ defmodule VibeWeb.ChatController do
     end
   end
 
+  @doc """
+  Clear this user's copy of a chat's messages. The chat, its membership and its
+  encryption survive — `delete/2` is the destructive one.
+  """
+  def clear_messages(conn, %{"chat_id" => chat_id}) do
+    user_id = conn.assigns.current_user.id
+
+    case Chat.clear_messages(chat_id, user_id) do
+      {:ok, result} ->
+        Chat.broadcast_user_chat_event(
+          chat_id,
+          "chat-cleared",
+          %{chatId: chat_id, clearedAt: result.cleared_at},
+          [user_id]
+        )
+
+        json(conn, %{success: true, chatId: chat_id, clearedAt: result.cleared_at})
+
+      {:error, reason} ->
+        conn |> put_status(400) |> json(%{error: reason})
+    end
+  end
+
   def delete(conn, %{"chat_id" => chat_id} = params) do
     user_id = conn.assigns.current_user.id
+
     delete_for_everyone =
       truthy?(
         params["deleteForEveryone"] || params["delete_for_everyone"] || params["forEveryone"] ||
@@ -264,13 +369,25 @@ defmodule VibeWeb.ChatController do
     if Chat.is_participant?(chat_id, user_id) do
       case Chat.delete_chat(chat_id, user_id, delete_for_everyone: delete_for_everyone) do
         {:ok, result} ->
+          Chat.broadcast_user_chat_event(
+            chat_id,
+            "chat-deleted",
+            %{
+              chatId: chat_id,
+              deletedBy: user_id,
+              forEveryone: result.for_everyone
+            },
+            result.target_user_ids
+          )
+
           json(conn, %{
             success: true,
             deleteForEveryone: result.for_everyone,
             deletedCount: result.deleted_count
           })
 
-        {:error, reason} -> conn |> put_status(400) |> json(%{error: reason})
+        {:error, reason} ->
+          conn |> put_status(400) |> json(%{error: reason})
       end
     else
       conn |> put_status(:forbidden) |> json(%{error: "Not a participant"})

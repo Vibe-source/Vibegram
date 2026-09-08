@@ -1,0 +1,18 @@
+{
+  "id": 118,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "MLS audit item 1: the hybrid DM downgrade is closed by PINNING the peer RSA key (VibeSecureTrust.evaluateTransport, fail-closed in ChatEngine.sendMessage/editMessage), not by refusing to seal hybrid. Android publishes no MLS KeyPackages, so refusing would stop every iOS<->Android DM; pinning leaves the same first-contact-only residual risk the MLS path already accepts.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787921586,
+  "updated_at": 1787921586
+}

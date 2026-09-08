@@ -1,0 +1,18 @@
+{
+  "id": 1,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Build clean: Vibe iOS scheme compiled cleanly on iPhone 16 Pro Max target (Debug-iphoneos).",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "55313ddbe0caf6ab5cfd6f3ad89323e50231f276",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1786445185,
+  "updated_at": 1786445185
+}

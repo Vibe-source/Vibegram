@@ -1,0 +1,18 @@
+{
+  "id": 16,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Empty chat cell + Home 'Encrypted message' for one delivered message: the core recognised MLS/legacy-RSA/agent-sealed envelopes in canonical.rs prepare() but left Prepared.envelope=None, so build_snapshot's failure test (envelope.is_some() && payload.is_none()) never fired — the row rendered blank AND unflagged, which is indistinguishable from a genuinely empty message. Fixed: Prepared.sealed_elsewhere, set in that match arm, and DECRYPTION_FAILED inserted only when text+caption+media are all absent (a host-projected plaintext must not be flagged, or decryptFailed inflates with working rows). 20 canonical tests pass incl. 2 new ones.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787744551,
+  "updated_at": 1787744551
+}

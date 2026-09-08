@@ -34,6 +34,16 @@ final class AgentConnectModel: ObservableObject {
   var onConnected: (() -> Void)?
 
   private var pollTask: Task<Void, Never>?
+  /// Live `bridge-status` pushes off the socket — the primary signal; the timer below
+  /// is only a fallback.
+  private var statusObserver: NSObjectProtocol?
+  /// Fallback cadence for a wedged socket. Deliberately slow: the push arrives in
+  /// milliseconds, so this only has to catch a transport that has stopped delivering.
+  private static let statusFallbackInterval: TimeInterval = 20
+  /// Guards the one-shot "Connected ✓ → auto-close" transition so a repeated status
+  /// can't re-schedule it, and lets us time a soft "computer still offline" hint.
+  private var didConfirmConnected = false
+  private var authorizedAt: Date?
 
   init(provider: String, displayName: String) {
     self.provider = provider
@@ -48,15 +58,31 @@ final class AgentConnectModel: ObservableObject {
     stopPolling()
   }
 
-  /// Polls bridge status every couple of seconds while the panel is on screen so
-  /// it flips to "connected" the moment the daemon claims its token and joins.
+  /// Watches bridge status while the panel is up, so it flips to "connected" the
+  /// moment the daemon claims its token and joins.
+  ///
+  /// This used to be a 2.5s `while` loop hitting `/api/agent-bridge/status`, which
+  /// never stopped while the model was alive — in production it was a permanent
+  /// wall of requests, one every ~3s for the whole foreground session, and each one
+  /// cost real server time. The server now pushes `bridge-status` over the socket
+  /// the phone is already joined to, which is both free and *faster* than polling:
+  /// the push fires on the Presence change itself rather than up to 2.5s later.
+  ///
+  /// The timer that remains is only a safety net for a wedged socket, at a cadence
+  /// where it costs nothing, and it goes through `statusCoalesced` so overlapping
+  /// surfaces share one round trip.
   func startPolling() {
+    observeStatusPushes()
     guard pollTask == nil else { return }
     pollTask = Task { [weak self] in
       while !Task.isCancelled {
-        await self?.refreshStatusOnce()
+        // Trust a fresh snapshot (socket push or another surface's fetch) and skip
+        // the request entirely; only reach for the network when nothing is current.
+        if !AgentPairingService.statusIsFresh(maxAge: Self.statusFallbackInterval) {
+          await self?.refreshStatusOnce()
+        }
         if Task.isCancelled { return }
-        try? await Task.sleep(nanoseconds: 2_500_000_000)
+        try? await Task.sleep(nanoseconds: UInt64(Self.statusFallbackInterval * 1_000_000_000))
       }
     }
   }
@@ -64,19 +90,36 @@ final class AgentConnectModel: ObservableObject {
   func stopPolling() {
     pollTask?.cancel()
     pollTask = nil
+    if let statusObserver {
+      NotificationCenter.default.removeObserver(statusObserver)
+      self.statusObserver = nil
+    }
+  }
+
+  /// Apply every published bridge status — socket push, LAN snapshot, or another
+  /// surface's fetch — so the panel reacts without a request of its own.
+  private func observeStatusPushes() {
+    guard statusObserver == nil else { return }
+    statusObserver = NotificationCenter.default.addObserver(
+      forName: AgentPairingService.statusDidChangeNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] note in
+      guard let status = (note.object as? AgentBridgeStatus)
+        ?? AgentPairingService.lastStatusSnapshot
+      else { return }
+      Task { @MainActor [weak self] in
+        self?.applyStatus(status)
+      }
+    }
   }
 
   func refreshStatusOnce() async {
     guard let config = AppSessionConfig.current else { return }
     do {
-      let next = try await AgentPairingService.status(config: config)
-      status = next
-      selectedRepository = AgentBridgeSelectionStore.ensureValidSelection(from: next.repositories)
-      if next.connected {
-        isScanning = false
-        stopPolling()
-        onConnected?()
-      }
+      // Coalesced: Home and any open agent profile want the same snapshot, and each
+      // uncoalesced call is a full round trip of server time.
+      applyStatus(try await AgentPairingService.statusCoalesced(config: config))
     } catch {
       // A 401 here means the whole session token died, not just the bridge — kick
       // off a silent session refresh so the panel stops spinning on a dead token.
@@ -87,9 +130,48 @@ final class AgentConnectModel: ObservableObject {
     }
   }
 
+  /// Single place the panel reacts to a bridge status, whichever transport carried
+  /// it. Safe to call repeatedly with the same snapshot.
+  private func applyStatus(_ next: AgentBridgeStatus) {
+    status = next
+    selectedRepository = AgentBridgeSelectionStore.ensureValidSelection(from: next.repositories)
+    if next.connected {
+      stopPolling()
+      if isScanning && didAuthorize {
+        // Confirm inside the scanner ("Connected") for a beat, then close it — so the
+        // user gets a clear "it worked" signal instead of the sheet vanishing silently.
+        if !didConfirmConnected {
+          didConfirmConnected = true
+          showScannerMessage("Connected", style: .success, canRetry: false)
+          Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            guard let self else { return }
+            self.isScanning = false
+            self.onConnected?()
+          }
+        }
+      } else {
+        isScanning = false
+        onConnected?()
+      }
+    } else if isScanning, didAuthorize, let authorizedAt,
+      Date().timeIntervalSince(authorizedAt) > 18
+    {
+      // Authorized, but the computer never came online — surface it instead of an
+      // endless "Connecting…" spinner, and let the user retry.
+      showScannerMessage(
+        "Your computer hasn't come online. Make sure the bridge is running on your Mac, then scan again.",
+        style: .error,
+        canRetry: true
+      )
+    }
+  }
+
   func beginScan() {
     errorMessage = nil
     didAuthorize = false
+    didConfirmConnected = false
+    authorizedAt = nil
     scannerMessage = nil
     scannerStatusStyle = .idle
     scannerCanRetry = false
@@ -104,6 +186,8 @@ final class AgentConnectModel: ObservableObject {
   func retryScan() {
     errorMessage = nil
     didAuthorize = false
+    didConfirmConnected = false
+    authorizedAt = nil
     isAuthorizing = false
     scannerMessage = nil
     scannerStatusStyle = .idle
@@ -132,11 +216,16 @@ final class AgentConnectModel: ObservableObject {
         "[KeySync] storeKey=\(stored) keyB64Len=\(key.count) hasKeyNow=\(AgentRuntimeCrypto.hasKey) account=\(AgentRuntimeCrypto.debugActiveAccountTail())"
       )
       if stored {
-        showScannerMessage(
-          "Encryption key synced. This QR only syncs encrypted file changes; scan the pairing QR too if this computer is still offline.",
-          style: .success,
-          canRetry: true
-        )
+        // The key just landed — (re)arm the direct-LAN link now instead of leaving it
+        // stuck in `.unavailable` until the next relaunch/foreground.
+        LanBridgeService.shared.start(userId: AppSessionConfig.current?.userID)
+        // The key-sync QR's job is done the moment the key stores — show a brief
+        // confirmation and close, rather than parking on a wall of explanatory text.
+        showScannerMessage("Encryption key synced", style: .success, canRetry: false)
+        Task { [weak self] in
+          try? await Task.sleep(nanoseconds: 1_100_000_000)
+          self?.isScanning = false
+        }
       } else {
         showScannerMessage("That key QR could not be read. Show a fresh key QR and scan again.", style: .error)
       }
@@ -150,26 +239,52 @@ final class AgentConnectModel: ObservableObject {
       showScannerMessage(AgentPairingError.noSession.localizedDescription, style: .error, canRetry: false)
       return
     }
+    // The pairing QR carries the E2E key in its `#` fragment; `requestId(fromScanned:)`
+    // just stored it. (Re)arm the direct-LAN link right here — this is the missing step
+    // that left "local" stuck as unavailable right after a fresh scan.
+    LanBridgeService.shared.start(userId: AppSessionConfig.current?.userID)
     isAuthorizing = true
-    showScannerMessage("Authorizing this computer...", style: .progress, canRetry: false)
+    showScannerMessage("Connecting…", style: .progress, canRetry: false)
     Task { [weak self] in
       guard let self else { return }
       defer { self.isAuthorizing = false }
       do {
         try await self.authorizeWithCurrentSession(requestId: requestId)
         self.didAuthorize = true
-        self.showScannerMessage(
-          "Authorized. Waiting for your computer to come online...",
-          style: .success,
-          canRetry: false
-        )
+        self.authorizedAt = Date()
+        // Stay on a single smooth "Connecting…" until the computer actually comes
+        // online (then `refreshStatusOnce` flips it to "Connected" and closes the sheet).
+        self.showScannerMessage("Connecting…", style: .progress, canRetry: false)
         await self.refreshStatusOnce()
         self.startPolling()
       } catch {
         self.didAuthorize = false
-        self.showScannerMessage(error.localizedDescription, style: .error)
+        self.showScannerMessage(
+          self.friendlyConnectError(error),
+          style: .error
+        )
       }
     }
+  }
+
+  /// Turns a raw pairing/network error into a short, human "there's a connection problem"
+  /// line rather than a stack-flavoured localizedDescription.
+  private func friendlyConnectError(_ error: Error) -> String {
+    if let pairingError = error as? AgentPairingError {
+      switch pairingError {
+      case .noSession:
+        return "You're signed out. Sign in again, then scan to connect."
+      case .http(let code, _) where code == 404 || code == 410:
+        return "That pairing QR expired. Show a fresh QR on your computer and scan again."
+      default:
+        break
+      }
+    }
+    let ns = error as NSError
+    if ns.domain == NSURLErrorDomain {
+      return "Couldn't reach the server. Check your connection and scan again."
+    }
+    return "Couldn't connect. Show a fresh QR on your computer and scan again."
   }
 
   private func authorizeWithCurrentSession(requestId: String) async throws {
@@ -430,7 +545,7 @@ struct AgentBridgeRepositoryPickerView: View {
             .listRowBackground(palette.card)
 
             Section {
-              ForEach(status.repositories) { repo in
+              ForEach(status.repositories, id: \.selectionIdentity) { repo in
                 Button {
                   AgentBridgeSelectionStore.select(
                     repo, chatId: chatId.isEmpty ? nil : chatId)
@@ -447,13 +562,22 @@ struct AgentBridgeRepositoryPickerView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(palette.text)
                         .lineLimit(1)
-                      Text(repo.path)
+                      Text(
+                        [repo.computerLabel, repo.path]
+                          .compactMap { value in
+                            guard let value, !value.isEmpty else { return nil }
+                            return value
+                          }
+                          .joined(separator: " · ")
+                      )
                         .font(.system(size: 12))
                         .foregroundStyle(palette.secondaryText)
                         .lineLimit(1)
                     }
                     Spacer(minLength: 0)
-                    if selected?.id == repo.id || selected?.cwd == repo.cwd {
+                    if (selected?.id == repo.id || selected?.cwd == repo.cwd)
+                      && (selected?.computerId == nil || selected?.computerId == repo.computerId)
+                    {
                       Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(palette.accent)
@@ -462,6 +586,12 @@ struct AgentBridgeRepositoryPickerView: View {
                   .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+              }
+            } header: {
+              Text(status.devices.count > 1 ? "Computer and repository" : "Repository")
+            } footer: {
+              if status.devices.count > 1 {
+                Text("Each repository is tied to its computer. Your team runs only on the computer you select here.")
               }
             }
             .listRowBackground(palette.card)
@@ -562,7 +692,10 @@ struct AgentBridgeRepositoryPickerView: View {
   private func applyCachedHistory() {
     guard
       !chatId.isEmpty,
-      let payload = ChatEngine.shared.latestAgentBridgeHistory(chatId: chatId),
+      let payload = ChatEngine.shared.latestAgentBridgeHistoryList(
+        chatId: chatId,
+        provider: provider
+      ),
       (payload["mode"] as? String ?? "list") == "list"
     else { return }
     let raw = payload["sessions"] as? [[String: Any]] ?? []
@@ -660,6 +793,7 @@ final class AgentQRScannerController: UIViewController, AVCaptureMetadataOutputO
   /// key finished syncing) it should dismiss the scanner rather than re-arm the
   /// camera — otherwise a finished flow looks like it still wants another scan.
   private var actionDismisses = false
+  private let titleLabel = UILabel()
   private let messageLabel = UILabel()
   private let retryButton = UIButton(type: .system)
   private let activityIndicator = UIActivityIndicatorView(style: .large)
@@ -828,14 +962,13 @@ final class AgentQRScannerController: UIViewController, AVCaptureMetadataOutputO
     close.addTarget(self, action: #selector(handleClose), for: .touchUpInside)
     view.addSubview(close)
 
-    let title = UILabel()
-    title.text = instruction
-    title.textColor = .white
-    title.font = .systemFont(ofSize: 16, weight: .semibold)
-    title.textAlignment = .center
-    title.numberOfLines = 0
-    title.translatesAutoresizingMaskIntoConstraints = false
-    view.addSubview(title)
+    titleLabel.text = instruction
+    titleLabel.textColor = .white
+    titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+    titleLabel.textAlignment = .center
+    titleLabel.numberOfLines = 0
+    titleLabel.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(titleLabel)
 
     messageLabel.textColor = .white
     messageLabel.font = .systemFont(ofSize: 15, weight: .medium)
@@ -868,9 +1001,9 @@ final class AgentQRScannerController: UIViewController, AVCaptureMetadataOutputO
       close.widthAnchor.constraint(equalToConstant: 32),
       close.heightAnchor.constraint(equalToConstant: 32),
 
-      title.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
-      title.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 56),
-      title.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -56),
+      titleLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
+      titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 56),
+      titleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -56),
 
       activityIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
       activityIndicator.bottomAnchor.constraint(equalTo: messageLabel.topAnchor, constant: -14),
@@ -896,11 +1029,15 @@ final class AgentQRScannerController: UIViewController, AVCaptureMetadataOutputO
     canRetry: Bool
   ) {
     loadViewIfNeeded()
-    if let message, !message.isEmpty {
+    let hasStatus = (message?.isEmpty == false)
+    if let message, hasStatus {
       showMessage(message)
     } else {
       hideMessage()
     }
+    // While a live status is on screen (Connecting / Connected / error) the top
+    // instruction is just noise — hide it so the panel reads as one clear state.
+    titleLabel.isHidden = hasStatus && style != .idle
     switch style {
     case .idle, .progress:
       messageLabel.textColor = .white
@@ -937,6 +1074,7 @@ final class AgentQRScannerController: UIViewController, AVCaptureMetadataOutputO
 
   private func resetScan() {
     hasEmitted = false
+    titleLabel.isHidden = false
     hideMessage()
     startRunning()
   }

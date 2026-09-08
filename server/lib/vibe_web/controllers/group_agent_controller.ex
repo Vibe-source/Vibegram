@@ -11,7 +11,6 @@ defmodule VibeWeb.GroupAgentController do
 
     case authorize_admin(chat_id, user_id) do
       :ok ->
-        # Check if agent already exists
         case GroupAgent.get_by_chat(chat_id, acting_user_id: user_id) do
           nil ->
             attrs = %{
@@ -123,7 +122,6 @@ defmodule VibeWeb.GroupAgentController do
     end
   end
 
-  # DELETE /api/group/:id/agent — Remove agent (owner/admin only)
   def delete(conn, %{"id" => chat_id}) do
     user_id = conn.assigns.current_user.id
 
@@ -136,7 +134,6 @@ defmodule VibeWeb.GroupAgentController do
           agent ->
             case GroupAgent.delete(agent, acting_user_id: user_id) do
               {:ok, _} ->
-                # Also clear the agent's memory
                 Vibe.Chat.GroupAgentMemory.delete_by_chat(chat_id, acting_user_id: user_id)
                 Vibe.Chat.GroupAgentDocument.clear_by_chat(chat_id)
                 json(conn, %{success: true})
@@ -151,7 +148,6 @@ defmodule VibeWeb.GroupAgentController do
     end
   end
 
-  # POST /api/group/:id/agent/generate_prompt — Generate system prompt text from short admin input
   def generate_prompt(conn, %{"id" => chat_id} = params) do
     user_id = conn.assigns.current_user.id
 
@@ -186,16 +182,6 @@ defmodule VibeWeb.GroupAgentController do
     end
   end
 
-  # POST /api/group/:id/agent/chat/sync — Send a direct message to the group agent via HTTP
-  # Body:
-  # {
-  #   "message": "text",
-  #   "metadata": {
-  #     "image_urls": ["..."],
-  #     "document_urls": ["..."],
-  #     "reply_to_id": "..."
-  #   }
-  # }
   def chat_sync(conn, %{"id" => chat_id, "message" => message} = params) do
     user_id = conn.assigns.current_user.id
 
@@ -223,7 +209,6 @@ defmodule VibeWeb.GroupAgentController do
     end
   end
 
-  # GET /api/agent/document/:key(/:name) — Download/preview generated agent document
   def download_document(conn, %{"key" => blob_key}) do
     user_id = conn.assigns.current_user.id
 
@@ -240,7 +225,6 @@ defmodule VibeWeb.GroupAgentController do
     end
   end
 
-  # GET /uploads/agent-docs/:name — Legacy URL compatibility for previously stored agent links
   def download_legacy_document(conn, %{"name" => file_name}) do
     user_id = conn.assigns.current_user.id
 
@@ -258,7 +242,6 @@ defmodule VibeWeb.GroupAgentController do
     end
   end
 
-  # ── Helpers ──
 
   defp authorize_admin(chat_id, user_id) do
     settings = Chat.get_participant_settings(chat_id, user_id)

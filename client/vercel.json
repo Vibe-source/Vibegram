@@ -3,6 +3,23 @@
     "framework": "vite",
     "rewrites": [
         {
+            "comment": "Share links live on the Phoenix app. Forward them so vibegram.io/<handle>, /r/<slug> and /j/<token> open the real preview + deep link instead of the SPA shell. Keep the negative list in sync with Vibe.Links.reserved_handles.",
+            "source": "/r/(.*)",
+            "destination": "https://api.vibegram.io/r/$1"
+        },
+        {
+            "source": "/j/(.*)",
+            "destination": "https://api.vibegram.io/j/$1"
+        },
+        {
+            "source": "/.well-known/(.*)",
+            "destination": "https://api.vibegram.io/.well-known/$1"
+        },
+        {
+            "source": "/((?!app$|docs$|docs/|settings$|settings/|assets/|fonts/|images/|uploads/|api/|logo\\.png$|favicon\\.ico$|robots\\.txt$|sw\\.js$|manifest\\.json$|registerSW\\.js$|index\\.html$)[a-z0-9_]{3,30})$",
+            "destination": "https://api.vibegram.io/$1"
+        },
+        {
             "source": "/(.*)",
             "destination": "/index.html"
         }

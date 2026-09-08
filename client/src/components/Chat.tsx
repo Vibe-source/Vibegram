@@ -90,6 +90,7 @@ const normalizeMessage = (m: any): Message => {
     plaintext: m.plaintext || m._senderPlaintext || m.sender_plaintext,
     status: m.status || 'sent',
     mediaUrl: m.mediaUrl || m.media_url,
+    metadata: m.metadata,
     replyToId: m.replyToId || m.reply_to_id,
     readBy: m.readBy || m.read_by || []
   };

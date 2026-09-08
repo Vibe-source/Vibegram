@@ -1,0 +1,42 @@
+# Egress DENYLIST for sandbox-net (tinyproxy.conf: FilterDefaultDeny No, FilterExtended On).
+# A sandboxed agent browses the open web like a person would, so public hosts are allowed by
+# default; every line here is a POSIX extended regex matched against the request host and a
+# match is BLOCKED. The goal: nothing on the compose networks or any private range is
+# reachable from a sandbox. Only ports 80/443 leave at all (ConnectPort in tinyproxy.conf).
+#
+# To go back to a strict allowlist: set FilterDefaultDeny Yes and list the allowed hosts here.
+
+# Single-label names: localhost and every compose service (core, postgres, pgbouncer, valkey,
+# agent-runtime, sandbox-gateway, doc-renderer, egress-proxy, caddy, prometheus, grafana ...).
+^[^.]+$
+
+# Internal / special-use suffixes.
+^(.*\.)?(localhost|local|internal|intranet|lan|home|corp|arpa|test|invalid|example)$
+
+# IPv6 literals (bracketed or bare), and IPv4-mapped forms.
+^\[?[0-9a-f]*:[0-9a-f:.]*\]?$
+
+# Private, loopback, link-local, CGNAT, "this network", multicast and reserved IPv4 ranges.
+^(0|10|127)\.[0-9]+\.[0-9]+\.[0-9]+$
+^169\.254\.[0-9]+\.[0-9]+$
+^172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+$
+^192\.168\.[0-9]+\.[0-9]+$
+^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+$
+^(22[4-9]|2[3-5][0-9])\.[0-9]+\.[0-9]+\.[0-9]+$
+
+# Non-dotted IP spellings (decimal, hex, octal) that resolve to the ranges above.
+^[0-9]+$
+^0x[0-9a-f]+$
+^0[0-7]+(\.[0-7]+)*$
+
+# Cloud metadata endpoints.
+^metadata\.google\.internal$
+^metadata$
+^instance-data$
+# Legacy IPv4 spellings inet_aton still accepts, which the 4-octet rules above all miss.
+^[0-9]+\.[0-9]+$
+^[0-9]+\.[0-9]+\.[0-9]+$
+(^|\.)0x[0-9a-f]
+(^|\.)0[0-9]{1,2}(\.|$)
+
+# --- Add project-specific blocked hosts below this line. One POSIX extended regex per line. ---

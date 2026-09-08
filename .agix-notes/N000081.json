@@ -1,0 +1,18 @@
+{
+  "id": 81,
+  "status": "open",
+  "priority": 1,
+  "kind": "finding",
+  "body": "Receiver media unreadable is MLS open against the wrong DM group, not a failed HTTP download. mediaKey is only in the sealed payload; wire URL is ciphertext. Open now rebinds to the envelope group; dual-create DMs are stopped (lower UUID creates, no ACK of skipped Welcomes).",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "976f6743c48673d437c1888db94b2627a35089b5",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787826562,
+  "updated_at": 1787826562
+}

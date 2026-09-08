@@ -1,0 +1,18 @@
+{
+  "id": 15,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — provider switched from claude to grok mid-task\nGOAL: WHAT WE HAVE BEEN DOING HERE Written by earlier threads in this repository, so you are not meeting this work for the first time. It is a record of what was done and decided — not a list of things to do now, and not current evidence. Re-check anything you are about to rely on. WHERE PAST SESSIONS ST…\nDID: Bash(agix note add \"Video-note chrome moved OUT of the circular clip: the note bubble is now one meta line taller than its circle (measureM…",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "claude",
+  "author": "Vibe Team",
+  "created_at": 1787743840,
+  "updated_at": 1787745941
+}

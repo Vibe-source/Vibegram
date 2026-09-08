@@ -1,0 +1,18 @@
+{
+  "id": 93,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "Profile hero melts into the page via in-morph image blur + page-color wash. Action chips LTR call/video/search/mute, 52pt, theme-accent ink. Expand decays captured overscroll as morphLaunchOffset so the circle does not snap to rest first.",
+  "selector": "ios/ChatModule/ChatProfileMainView.swift::ChatProfileSwiftUIRootView",
+  "path": "ios/ChatModule/ChatProfileMainView.swift",
+  "fqn": "ChatProfileSwiftUIRootView",
+  "line": 1228,
+  "anchor_hash": "24e3928051dfd70bb32b17e493c539ce1bc4dba43b0a88acea37027fcd0629b7",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787836796,
+  "updated_at": 1787836796
+}

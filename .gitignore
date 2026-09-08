@@ -10,6 +10,11 @@ build/
 *.aab
 *.apks
 *.jar
+# Rust core build output. `Cargo.lock` IS committed (this is a binary crate
+# graph shipped into the app), only the target dirs are ignored. The glob
+# matters: the standalone crates under core/ each carry their own target/.
+core/target/
+core/**/target/
 
 # Build info and cache
 *.tsbuildinfo
@@ -133,7 +138,6 @@ xctest_output/
 # Elixir build outputs and compiled files
 server/_build/
 server/.mix/
-server/mix.lock
 *.beam
 *.erl
 
@@ -168,3 +172,67 @@ docs/MESH_NETWORKING.md
 !server/Dockerfile
 !server/start.sh
 !server/.dockerignore
+
+# Team-run scratch (boards + briefs) — temporary by contract, cleaned after each run
+.vibe/team/
+
+# Rust core build output (regenerate: scripts/build-core-xcframework.sh)
+core/target/
+core/**/target/
+ios/Vendor/VibeCore/
+core/vibe_core_ffi/generated/
+
+# The only way to regenerate the XCFramework ignored above. The blanket `*.sh`
+# rule was silently swallowing it, which left the branch unbuildable from a
+# fresh clone: no binary in git, and no script to rebuild one.
+!scripts/build-core-xcframework.sh
+
+# Packet engine archives (~240 MB). Built from the packet repo, not from this one:
+# `packet-ios/scripts/build-rust-ios.sh` then `scripts/copy-vibe-artifacts.sh`.
+# See docs/packet-proxy-engine.md.
+ios/Vendor/Packet/**/*.a
+
+# Diagnostics exports shared off the device for triage — per-run, often >250 KB,
+# and already redacted copies of a log that lives on the phone.
+vibe-diagnostics-*.txt
+
+# BEAM crash dumps. Local boot artifacts (~3 MB), never useful to another checkout.
+erl_crash.dump
+**/erl_crash.dump
+
+# Local Agix state and generated iOS delivery artifacts
+.agix-notes/
+.agix-plan/
+*.mobileprovision
+*.cer
+*.dSYM.zip
+ios/fastlane/report.xml
+outline.txt
+
+# Agent Platform v1 (docs/agent-platform-v1.md): the runtime, contracts, sandbox gateway and the
+# VPS deploy stack are source. Re-include what the broad *.sh / Dockerfile / *.env.example rules eat.
+!deploy/**/*.sh
+!deploy/**/Dockerfile
+!deploy/**/*.env.example
+!deploy/compose.yml
+!agent-runtime/Dockerfile
+!agent-runtime/start.sh
+!sandbox-gateway/Dockerfile
+!scripts/*.sh
+deploy/env/*.env
+agent-runtime/_build/
+agent-runtime/deps/
+contracts/_build/
+contracts/deps/
+sandbox-gateway/target/
+
+# Load-test fixtures/output (contain throwaway user tokens + local metrics)
+scripts/loadtest/results/
+scripts/loadtest/*.wav
+scripts/*/out/
+scripts/voice-probe/*.wav
+scripts/voice-probe/*.aiff
+
+# Vendored sandbox binaries: large, rebuilt from the agix dist tree.
+deploy/sandbox/vendor/*.tar.gz
+deploy/sandbox/vendor/*.zip

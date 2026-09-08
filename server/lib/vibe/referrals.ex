@@ -11,9 +11,7 @@ defmodule Vibe.Referrals do
 
   @bronze_threshold 4000
 
-  # ============================================
   # Referral Code Management
-  # ============================================
 
   @doc """
   Generate a unique referral code for a user.
@@ -60,9 +58,7 @@ defmodule Vibe.Referrals do
     end
   end
 
-  # ============================================
   # Referral Tracking
-  # ============================================
 
   @doc """
   Track a new referral when a user signs up with a referral code.
@@ -97,19 +93,16 @@ defmodule Vibe.Referrals do
 
     if referral do
       Repo.transaction(fn ->
-        # Update referral status
         {:ok, _} =
           referral
           |> Referral.changeset(%{status: "verified", verified_at: DateTime.utc_now()})
           |> Repo.update()
 
-        # Increment referrer's count
         Repo.update_all(
           from(u in Accounts.User, where: u.id == ^referral.referrer_id),
           inc: [referral_count: 1]
         )
 
-        # Check if referrer qualifies for Bronze badge
         check_and_award_bronze(referral.referrer_id)
       end)
     else
@@ -126,9 +119,7 @@ defmodule Vibe.Referrals do
     end
   end
 
-  # ============================================
   # Stats & Queries
-  # ============================================
 
   @doc """
   Get referral statistics for a user.

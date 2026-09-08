@@ -2,73 +2,89 @@ defmodule VibeWeb.UserSocket do
   use Phoenix.Socket
 
   # A Socket handler
-  #
-  # It's possible to control the websocket connection and
-  # assign values that can be accessed by your channel topics.
 
-  ## Channels
-  channel "user:*", VibeWeb.UserChannel # Personal channel for calls/notifications
-  channel "chat:*", VibeWeb.ChatChannel # Chat rooms
-  channel "agent:*", VibeWeb.AgentChannel # AI Agent streaming
-  channel "relay:*", VibeWeb.RelayChannel # VibeNet peer relay network
+  # # Channels Personal channel for calls/notifications
+  channel("user:*", VibeWeb.UserChannel)
+  # Chat rooms
+  channel("chat:*", VibeWeb.ChatChannel)
+  # AI Agent streaming
+  channel("agent:*", VibeWeb.AgentChannel)
+  # Owner-only live view of an agent's browser
+  channel("computer:*", VibeWeb.ComputerChannel)
+  # VibeNet peer relay network
+  channel("relay:*", VibeWeb.RelayChannel)
 
-  # Socket params are passed from the client and can
-  # be used to verify and authenticate a user. After
-  # verification, you can put default assigns into
-  # the socket that will be set for all channels, ie
-  #
-  #     {:ok, assign(socket, :user_id, verified_user_id)}
-  #
-  # To deny connection, return `:error` or `{:error, term}`.
+  # Socket params are passed from the client and can be used to verify and.
   @impl true
-  def connect(%{"token" => "undefined"}, _socket, _connect_info) do
-    # Client hasn't logged in yet, refuse cleanly
-    :error
-  end
   def connect(params, socket, connect_info) do
-    # Priority: Authorization header (mobile clients) > query param (web client).
-    # Mobile clients send the token as a Bearer header to avoid leaking it in
-    # URL query strings (visible in logs, proxies, referer headers, etc.).
-    token =
-      case extract_bearer_from_connect_info(connect_info) do
-        nil -> params["token"]
-        header_token -> header_token
-      end
-
-    case token do
+    case extract_connect_token(params, connect_info) do
       nil ->
         :error
+
       t when is_binary(t) and t != "" ->
         case Vibe.Accounts.get_user_by_token(t) do
           {:ok, user} ->
             {:ok, assign(socket, :user_id, user.id)}
+
           _ ->
             :error
         end
+
       _ ->
         :error
     end
   end
 
-  # Extract the Bearer token from the x_headers forwarded via connect_info.
-  defp extract_bearer_from_connect_info(%{x_headers: headers}) when is_list(headers) do
+  @doc """
+  Resolves the login token for a WebSocket connect.
+  """
+  def extract_connect_token(params, connect_info) do
+    case header_token(connect_info) do
+      nil -> query_token(params)
+      token -> token
+    end
+  end
+
+  defp header_token(%{x_headers: headers}) when is_list(headers) do
     Enum.find_value(headers, fn
-      {"authorization", "Bearer " <> token} -> String.trim(token)
+      {"x-vibe-auth", value} when is_binary(value) -> parse_auth_header_value(value)
       _ -> nil
     end)
   end
-  defp extract_bearer_from_connect_info(_), do: nil
 
-  # Socket id's are topics that allow you to identify all sockets for a given user:
-  #
-  #     def id(socket), do: "user_socket:#{socket.assigns.user_id}"
-  #
-  # Would allow you to broadcast a "disconnect" event and terminate
-  # all active sockets and channels for a given user:
-  #
-  #     Elixir.VibeWeb.Endpoint.broadcast("user_socket:#{user.id}", "disconnect", %{})
-  #
-  # Returning `nil` makes this socket anonymous.
+  defp header_token(_), do: nil
+
+  defp query_token(%{"token" => token}) when is_binary(token) do
+    case String.trim(token) do
+      "" -> nil
+      "undefined" -> nil
+      t -> t
+    end
+  end
+
+  defp query_token(_), do: nil
+
+  @doc false
+  def parse_auth_header_value(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    case Regex.run(~r/^Bearer\s+(.+)$/i, trimmed) do
+      [_, token] ->
+        case String.trim(token) do
+          "" -> nil
+          "undefined" -> nil
+          t -> t
+        end
+
+      nil ->
+        if trimmed == "" or trimmed == "undefined" or String.downcase(trimmed) == "bearer",
+          do: nil,
+          else: trimmed
+    end
+  end
+
+  def parse_auth_header_value(_), do: nil
+
   @impl true
   def id(socket), do: "user_socket:#{socket.assigns.user_id}"
 end

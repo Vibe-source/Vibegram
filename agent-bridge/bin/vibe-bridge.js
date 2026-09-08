@@ -24,7 +24,7 @@ const path = require("path");
 const crypto = require("crypto");
 const readline = require("readline");
 const net = require("net");
-const { spawn, execFileSync } = require("child_process");
+const { spawn, execFileSync, spawnSync } = require("child_process");
 const agySupport = require("./agy-support");
 
 let WebSocket, Phoenix;
@@ -42,6 +42,18 @@ try {
 
 const CONFIG_DIR = path.join(os.homedir(), ".vibe");
 const CONFIG_FILE = path.join(CONFIG_DIR, "bridge.json");
+// Exclusive lock so only ONE bridge daemon holds the socket for a machine.
+// Dual bridges both receive run_task and post duplicate agent replies (e.g. two Grok bubbles).
+const SINGLETON_LOCK_FILE = path.join(CONFIG_DIR, "bridge.singleton.lock");
+const SINGLETON_PID_FILE = path.join(CONFIG_DIR, "bridge.pid");
+// Liveness stamp: the running bridge writes {pid, ts, active} here every few seconds so a
+// NEWLY-started bridge can tell a healthy, BUSY daemon (mid team-run) from a dead/idle one.
+// Killing a busy bridge takes its child worker CLIs (claude/grok/codex) down with it
+// (exit 143/130) — the "team gets cut down mid-flight" bug. A new bridge yields to a busy
+// holder and only replaces an idle/stale one (so relaunching for new code still works).
+const SINGLETON_HEARTBEAT_FILE = path.join(CONFIG_DIR, "bridge.heartbeat.json");
+const SINGLETON_HEARTBEAT_MS = 5000;
+const SINGLETON_HEARTBEAT_STALE_MS = 30000;
 const MAX_PROGRESS_LINES = 400; // safety cap on streamed events per task
 const MAX_LINE_BYTES = 8 * 1024;
 // During long silent stretches (Opus extended thinking emits the whole reasoning
@@ -57,13 +69,15 @@ const KEEPALIVE_MS = 10 * 1000;
 // waiting on the Phoenix channel join state, so it catches a zombie connection well before
 // the app heartbeat's 2-miss threshold would.
 //
-// TUNING (2026-07-05): the old 10s / 1-miss setting terminated the transport after a single
-// late pong — on a jittery mobile/QUIC-edge path one delayed pong is NOT a dead socket, and
-// this self-inflicted terminate() was a prime suspect for the ~50s reconnect flapping
-// (137 drops / 2h observed). Widened to 15s / 2-miss so only a socket that is genuinely
-// silent for ~45s is killed; the Phoenix 15s heartbeat + app-heartbeat remain as backstops.
-const WS_PING_INTERVAL_MS = 15 * 1000;
-const WS_PING_MAX_MISSES = 2;
+// TUNING (2026-07-11): Cloudflare/edge still delays pongs. Logs showed miss#1 → 1006 →
+// reconnect ~3s in a loop, which batched progress frames (recv→push 7–15s). Raw ws-ping
+// terminate was self-inflicting flaps; it is now OBSERVE-ONLY. Application heartbeat
+// (channel push "heartbeat") is the sole reconnect authority, with a higher miss budget.
+const WS_PING_INTERVAL_MS = 20 * 1000;
+const WS_PING_MAX_MISSES = 4; // log-only past this; never terminate from ws ping alone
+const APP_HEARTBEAT_INTERVAL_MS = 30 * 1000;
+const APP_HEARTBEAT_PUSH_TIMEOUT_MS = 15 * 1000;
+const APP_HEARTBEAT_MAX_MISSES = 3; // ~90s of silence before force reconnect
 const MAX_DIFF_BYTES = 90 * 1024;
 const MAX_DIFF_FILES = 24;
 const MAX_UNTRACKED_FILE_BYTES = 220 * 1024;
@@ -104,6 +118,38 @@ These rules apply to AI agents working through Vibe, including Claude and Codex.
 - Prefer the repo's existing dev-server/test scripts, then verify with browser automation: open the page, inspect visible UI, check console/runtime errors, click the important controls, and capture screenshots when useful.
 - Report the URL, what was verified, and any browser/tool blocker in the final result.
 
+## Terminal, Files, and Approvals
+
+These runs are headless. Nobody is sitting at a terminal to answer a permission prompt,
+so a command that needs approval does not pause and wait — it fails. Work inside the
+rules below and you will never be blocked.
+
+- Read and edit through your file tools, never through the shell. Open a file with the
+  file-read tool; change it with the edit tool. Do NOT use cat, sed, awk, or echo
+  redirects to read or rewrite source.
+- Never create scratch or helper files. Do not write a script, a path dump, a directory
+  listing, or a notes file to work out where something lives — use the search/glob tools
+  and read the file directly. A temp file in the repo is a defect, not a workflow.
+- When a tool and a shell command would both work, use the tool.
+
+Runs without approval — use these freely:
+ls, cat, head, tail, wc, file, stat, pwd, which, echo, tree, du, diff, realpath,
+basename, dirname, sed -n; grep, rg, find; git status, git diff, git log, git show,
+git branch, git ls-files, git blame, git rev-parse, git remote -v; npm run
+build/test/lint/typecheck, npm test, npm ci, npm install, yarn/pnpm build/test, mix test,
+mix compile, mix format, mix deps.get, xcodebuild, xcrun, swift build, swift test,
+swiftformat, pytest, cargo build/test, make.
+
+Denied — these fail and cannot be approved from inside a run:
+git push, git reset, git checkout, git clean, rm -rf, sudo, chmod -R, chown -R, killall,
+security, defaults write, and any publish or deploy command.
+
+- NEVER push or deploy. Shipping is the user's decision, not a verification step. Do not
+  put "commit and push" or "deploy" in a plan, a handoff, or a task list. If your work is
+  complete and would normally be pushed, stop and say so in your result.
+- If you genuinely need a denied command, report it as a blocker with the exact command
+  and why you need it. Do not attempt a workaround.
+
 ## Safety
 
 - Start with read-only inspection when the risk is unclear.
@@ -119,6 +165,79 @@ These rules apply to AI agents working through Vibe, including Claude and Codex.
 - For server work, preserve auth boundaries, group ownership, and per-user bridge routing.
 - For bridge work, keep repo selection, work mode, provider, command status, and task metadata visible.
 
+## New-Project Build Standard
+
+Applies ONLY when the user asks to create a new product, site, app, or service from
+scratch (or the selected repo is empty). For maintenance work in an existing codebase,
+the Implementation Standard above wins and this section does not apply.
+
+- Plan the architecture BEFORE writing code: pages/routes, components, backend API
+  endpoints, database schema and migrations, data flow, styling system, and how the
+  project builds/deploys. Record the plan in the team handoff file when in a team run.
+- Production grade means: every planned page/route implemented with real content and
+  working navigation; backend endpoints wired to real handlers and the database when the
+  project needs data; responsive and accessible UI; SEO/meta where it is a website; and
+  the project build passing (npm run build or the stack's equivalent). Run tests if the
+  project has them.
+- No placeholder stubs, no TODO screens, no single-page demo for a multi-page request.
+- Finish your entire assigned file list. If you cannot, list exactly what is missing and
+  why in the handoff — never silently stop early.
+
+## Premium UI/UX Production Standard (websites & app frontends)
+
+The default "AI-generated" look is unacceptable. When the task is a website, landing
+page, marketing site, dashboard, or any user-facing frontend, the result must read as a
+hand-crafted, premium product (think Linear, Vercel, Stripe, OpenAI, Anthropic,
+ElevenLabs) — NOT a template. For any UI/frontend/website slice, READ
+\`.vibe/instructions/skills/premium-web-ui.md\` before writing components and follow it.
+
+Non-negotiables:
+- No generic scaffold: never ship the "big centered hero + three equal feature cards +
+  generic footer" template. Design an intentional layout with a clear focal hierarchy,
+  purposeful asymmetry, and real sections that serve the product's actual story.
+- Real content and copy: no lorem ipsum, no "Feature one / Feature two", no dead
+  buttons. Every nav item, link, and CTA resolves to a real destination.
+- A signature visual element: at least one crafted moment — a WebGL/shader/canvas hero,
+  a Spline or three.js/R3F scene, an animated gradient/grain field, or a bespoke SVG
+  system — so the page has a point of view. Use GSAP + ScrollTrigger for motion; keep it
+  tasteful and 60fps. Honor prefers-reduced-motion.
+- Design tokens and rhythm: define a type scale, spacing scale, color system (with dark
+  mode), and radius/shadow tokens up front and use them everywhere — no arbitrary
+  per-component pixel values.
+- Header and footer must earn their place: real navigation and a real footer (site map,
+  legal, social), never a lone "© 2026" line.
+- Responsive and accessible: mobile-first, correct 320px→ultrawide; semantic HTML,
+  visible keyboard focus, alt text, AA contrast.
+- Performance: optimized/lazy images, subset/preloaded fonts, no layout shift, GPU-
+  friendly motion.
+
+Team routing: the model strongest at UI (Gemini/Agy, then Grok) owns the visual
+components and page layout — WITH an exact file list — while a runtime-strong model
+(Codex/Claude) owns architecture, data, and integration. The lead attaches this standard
+to every UI-owning worker's focus.
+
+## Supervisor Team Runs (lead duties)
+
+When you are the LEAD of a team run whose task is real build work:
+
+1. Classify first: trivial chat gets a short direct answer and no teammates.
+2. For a new-project build, write the architecture plan (pages, backend, database,
+   components) to the handoff file before spawning anyone.
+3. Turn the plan into a task table: one row per teammate, each row an explicit,
+   disjoint list of file paths to implement. No two workers may own the same file.
+   Shared files (package.json, lockfiles, root layout/nav, DB schema) belong to the
+   lead only — integrate teammate work there yourself.
+4. Consult the available advisor (Fable; Sol as fallback) on the split when the task is
+   complex. Best-effort: if the advisor is unavailable, proceed with your own split.
+5. Spawn ALL teammates for build work, and give each an exact file-scoped focus.
+   Vague focuses like "UI polish" or "review risks" are not acceptable for build
+   tasks — name the files/pages. Gemini/Agy in particular must always receive a
+   precise file list, or it drifts off-task.
+6. After teammates finish, verify against the plan: every planned page/endpoint/schema
+   exists, the build passes, and nothing is a stub. Respawn workers with a gap-focused
+   task list if anything is missing. Iterate until the plan is fully implemented.
+7. Only then write the final user summary.
+
 ## Done Criteria
 
 - State what changed.
@@ -131,6 +250,7 @@ These rules apply to AI agents working through Vibe, including Claude and Codex.
 Follow AGENTS.md first. These additions are specific to Claude.
 
 - Use planning and code review strengths to identify risks, architecture boundaries, and missing verification.
+- In a team BUILD run you are a builder first: implement your assigned backend/frontend file list completely (see New-Project Build Standard in AGENTS.md); review and risk notes come after your slice is done.
 - When paired with Codex, avoid doing the same implementation slice unless the user asks for a second opinion.
 - Write concise handoff notes in .vibe/team/<team_run_id>.md so Codex can continue without rereading everything.
 - If the task is not safe to edit yet, explain the blocker and the exact inspection or approval needed.
@@ -141,11 +261,207 @@ Follow AGENTS.md first. These additions are specific to Claude.
 Follow AGENTS.md first. These additions are specific to Codex.
 
 - Use implementation and verification strengths to make focused patches and run the relevant checks.
+- As team lead, follow "Supervisor Team Runs (lead duties)" in AGENTS.md: architecture plan → advisor-checked per-worker file-scoped task table → spawn all teammates → verify build and completeness → iterate on gaps.
 - When paired with Claude, read Claude's handoff before editing and take the next non-overlapping implementation slice.
 - Keep command output and patch summaries structured enough for Vibe to render progress, files changed, and verification.
 - If a command or edit is risky, stop and ask for explicit approval through Vibe.
 `,
+  "skills/premium-web-ui.md": `# Skill: Premium Web UI/UX Production
+
+Purpose: build websites and app frontends that read as hand-crafted, premium products —
+the caliber of Linear, Vercel, Stripe, OpenAI, Anthropic, ElevenLabs — and never as an
+AI-generated template. Read this before writing any UI/frontend/website slice; AGENTS.md
+"Premium UI/UX Production Standard" is the summary, this is the working reference.
+
+## 1. Kill the "AI look" (the most common failure)
+
+These are instant tells that a page was generated, not designed. Do not ship them:
+
+- The scaffold: full-width centered hero headline + subhead + two buttons, then a row of
+  three identical feature cards, then a thin generic footer. This is the #1 tell. Replace
+  with an intentional composition: a distinct hero treatment, sections of varying rhythm
+  and width, editorial asymmetry, and a real narrative order (problem -> product ->
+  proof -> deeper capability -> call to action).
+- Placeholder everything: lorem ipsum, "Feature one/two/three", emoji-as-icon, dead
+  "#" links, buttons that do nothing. Write real product copy and wire every control.
+- Flat sameness: one font size for everything, even 16px gray text, evenly spaced boxes,
+  no depth, no motion. Premium pages have a strong type scale, deliberate whitespace, and
+  a few crafted moments of depth and movement.
+- Default component-library skins left untouched (raw Bootstrap/MUI). Theme them into a
+  bespoke system with your own tokens.
+
+## 2. Design system first (tokens before components)
+
+Define these once, use them everywhere. No arbitrary per-component pixel values.
+
+- Type scale: a modular scale (e.g. 1.25 ratio) with 5-7 steps; one display face for
+  headings, one clean face for body; set tracking/leading intentionally on large type.
+- Spacing scale: 4px base (4/8/12/16/24/32/48/64/96/128); layout rhythm comes from it.
+- Color system: a real palette with semantic tokens (bg, surface, text, muted, accent,
+  border) and a full dark mode. Prefer OKLCH for consistent perceived brightness.
+- Radius + shadow + border tokens; elevation as a small ladder, not random blurs.
+- Motion tokens: standard durations (120/200/320/500ms) and easings (a signature ease).
+
+Implement as CSS custom properties or a Tailwind theme; expose dark mode via
+prefers-color-scheme AND a manual toggle.
+
+## 3. A signature visual element (give the page a point of view)
+
+At least one crafted, memorable moment. Pick what fits the brand; do not overdo it:
+
+- WebGL / shaders: a GLSL fragment-shader gradient/grain/aurora hero, or a three.js /
+  React Three Fiber scene (particles, displaced mesh, product model). Lazy-load it,
+  cap DPR, pause when offscreen, and always ship a static fallback.
+- Spline: fastest path to a premium interactive 3D hero — embed a Spline scene and drive
+  camera/state on scroll. Good when you want 3D without hand-writing shaders.
+- Canvas 2D / SVG: animated line systems, morphing blobs, generative patterns — cheaper
+  than WebGL and often enough.
+- Motion: GSAP is the standard. Use ScrollTrigger for scroll-linked reveals, pinning,
+  and scrubbed sequences; SplitText for headline reveals; Flip for layout transitions.
+
+GSAP patterns (register once, respect reduced motion):
+
+    import gsap from "gsap";
+    import { ScrollTrigger } from "gsap/ScrollTrigger";
+    gsap.registerPlugin(ScrollTrigger);
+
+    // Reveal-on-scroll (batched, performant)
+    ScrollTrigger.batch("[data-reveal]", {
+      start: "top 85%",
+      onEnter: (els) =>
+        gsap.to(els, { y: 0, opacity: 1, duration: 0.6, stagger: 0.08,
+          ease: "power3.out", overwrite: true }),
+    });
+
+    // Pinned, scrubbed section
+    gsap.timeline({ scrollTrigger: {
+      trigger: ".panel", start: "top top", end: "+=1200", scrub: true, pin: true }})
+      .from(".panel__art", { scale: 1.15, opacity: 0 })
+      .from(".panel__copy", { y: 40, opacity: 0 }, "<0.1");
+
+Wrap all of it so it no-ops under prefers-reduced-motion:
+
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduce) { /* run animations */ }
+
+## 4. Layout and composition
+
+- Establish a real grid (12-col or a custom track grid); vary section widths — full-bleed,
+  contained, and narrow reading measure (~65ch for prose).
+- Strong focal hierarchy per section: one clear primary element, supporting elements
+  subordinate. Use scale, weight, and color, not just position.
+- Generous, uneven whitespace. Align to the spacing scale.
+- Real header: logo, primary nav, secondary action, mobile menu that actually works and
+  traps focus. Real footer: grouped site map, legal, social, newsletter — earn the space.
+
+## 5. Component architecture
+
+- Componentize by real UI unit; keep components pure and prop-driven; colocate styles.
+- No magic values — read tokens. One source of truth for spacing/color/type.
+- Server components / static generation where the framework supports it (Next.js App
+  Router, Astro, SvelteKit); ship minimal client JS; hydrate only the interactive islands.
+- Accessibility is part of "done": semantic landmarks, labelled controls, visible focus
+  rings, alt text, AA contrast, keyboard paths for every interaction.
+
+## 6. Content and copy
+
+- Write concrete, confident product copy — what it is, who it's for, why it's better.
+- Real names, real numbers, real testimonials-shaped content (clearly illustrative if the
+  product is new). Never dead filler.
+- Every CTA states a real next step and links to a real route.
+
+## 7. Performance budget
+
+- Images: modern formats, correct sizes, lazy below the fold, no CLS (set dimensions).
+- Fonts: subset, preload the display face, font-display: swap.
+- WebGL/3D: dynamic-import, cap devicePixelRatio (<= 2), pause rAF when tab/section
+  hidden, dispose on unmount, static poster fallback.
+- Target: fast LCP, no long tasks from animation, smooth 60fps scroll.
+
+## 8. Recommended stack
+
+- Framework: Next.js (App Router) or Astro for content sites; SvelteKit is great too.
+- Styling: Tailwind with a bespoke theme, or CSS Modules + custom properties.
+- Motion: GSAP (+ ScrollTrigger, SplitText, Flip). Framer Motion for React micro-interactions.
+- 3D: React Three Fiber + drei, or Spline for authored scenes; raw three.js for custom shaders.
+- Smooth scroll: Lenis (modern) over heavier libs.
+
+## 9. Deeper skill packs (optional, for richer patterns)
+
+These GitHub Agent-Skill packs encode best-practice patterns for the tools above and can
+be installed into a Claude Code environment for auto-activation. Reference them for
+correct APIs; you do not need them to satisfy this standard:
+
+- greensock/gsap-skills — official GSAP skills (core, timeline, ScrollTrigger, plugins).
+- freshtechbro/claudedesignskills — Three.js/WebGL, R3F, Spline, Rive, Lenis/Locomotive.
+- dgreenheck/webgpu-claude-skill — WebGPU + three.js TSL shaders.
+
+## Definition of done for a UI slice
+
+Intentional layout (not the scaffold) · design tokens used throughout · at least one
+signature crafted moment · real copy and wired links · responsive 320px→wide · a11y pass
+· dark mode · performance budget met · build passes.
+`,
 };
+
+// Embedded team-lead guide (generated from agent-bridge/instructions/team-lead.md —
+// edit THAT file, then re-run the embed one-liner in that file's header note).
+const TEAM_LEAD_GUIDE_FALLBACK = "# Team lead operating guide\n\nYou are the **team lead**: architect and integrator for one `@team` run on the user's\nmachine. Workers are **CLI subprocesses you spawn**, not separate phone-driven\nsessions. The bridge preloaded this guide; treat it as binding. In group `@team`\nruns the server routes the LEAD role to claude by default — if you are reading this\nas the lead, you are usually the claude CLI.\n\n## Role\n\n- You own diagnosis, planning, dispatch, diff review, integration, and final verify.\n- Workers own only the files you assign them. They do not commit, push, build, or\n  launch.\n- You are the only process that should touch shared wiring (routers, app entry,\n  host views, migrations) unless you explicitly assign a slice.\n- You are the advisor. Workers must not call Fable or any external advisor MCP.\n\n## The loop\n\nDo this in order. Do not skip review.\n\n### 1. Diagnose\n\nRead `.vibe/memory.md` (shared team memory) first if it exists — it records what\nprevious runs shipped, which contracts are frozen product-wide, and the traps they\nhit. Then read the **real** code. Grep and open the implicated files. Find the\n**root cause** or the real product shape — not only the wording of the user message.\nTargeted reads beat exhaustive crawls; publish a best-current plan if you hit a hard\nceiling.\n\n### 2. Distill\n\n**The task is the product. The patch is a commodity.**\n\nWrite one brief per worker that **carries your understanding**. A worker should need\nnothing but its brief + its files. Each brief includes:\n\n- objective and acceptance checks\n- root cause / mechanism (why this change)\n- exact owned files (disjoint)\n- do-not-touch list\n- frozen contract names (types, fields, routes, JSON keys)\n- hard rules (below)\n- **forbid Fable / advisor tools**\n\nSave briefs under `.vibe/team/<run-id>-task-<worker>.md` — the run id **must** be in\nthe filename: the bridge sweeps `.vibe/team/*<run-id>*` after the run settles.\n\n### 3. Board (before any worker starts)\n\nCreate `.vibe/team/<run-id>-board.md` **before dispatch**. Minimum sections:\n\n1. **Goal** — one short paragraph\n2. **Frozen contract** — exact names everyone codes against\n3. **Ownership table** — one owner per file; you as integrator for wiring\n4. **Hard rules** — the worker rules below\n5. **Dispatch status** — brief path + status\n6. **Handoff** — empty section workers append to\n\nEvidence of boards that worked:\n`.vibe/team/appearance-0716-board.md`, `.vibe/team/settings-0716-1424-board.md`.\n\n### 4. Snapshot baselines\n\nBefore launch, note the pre-change state of every target file (git status / content\nsnapshot). You will review **diffs against this baseline**, not handoff prose.\n\n### 5. Dispatch\n\nLaunch workers as **background subprocesses** with disjoint ownership and auto-edit\npermissions. Wait on process exit (shell-level — cheap). Re-engage only when a\nworker finishes or fails to start.\n\n### 6. Diff-review (mandatory)\n\n**Never trust a worker's handoff text.**\n\nFor each worker:\n\n1. Read the actual diff vs baseline.\n2. Check: owned files only? frozen names? additive? acceptance met?\n3. Check **integration semantics, not just the diff text**: how does the new code\n   interact with the *running* system — existing connections, channels, caches,\n   subscriptions, lifecycles? (Real miss: a worker joined a Phoenix topic the app\n   already held; the duplicate join closed the live channel and the open chat went\n   silent. The diff alone looked clean.)\n4. Fix contract/scope violations yourself or re-dispatch once with the failed diff\n   attached. Cap retries at one blind re-run, then you finish the slice.\n\nagy **over-reports success**. Always treat its handoff as unverified until the diff\nand a build prove otherwise.\n\n### 7. Integrate\n\nWire shared surfaces workers were forbidden to touch. Keep public APIs stable.\n\n### 8. Verify once\n\nOne compile/build/test pass at the end (platform-appropriate: `mix compile`, web\nbuild, `xcodebuild`, etc.). Workers do not build or launch the app. Fix failures;\ndo not ship a broken tree.\n\n### 9. Complete\n\n- Update the board: status, what shipped, what deferred, open risks.\n- **Append one entry to `.vibe/memory.md`** (shared team memory — see that section)\n  so future runs know what this run shipped and learned.\n- Write a short settled summary for the user (shipped vs deferred).\n- Do **not** `git push` or deploy unless the user explicitly ordered it for this run.\n- **Clean up the run's working files.** The board and briefs under\n  `.vibe/team/<run>*` are scratch, not documentation: after the settled summary,\n  move anything durably valuable into real docs (or the final summary), then delete\n  this run's board and brief files. Do not leave dead run files accumulating.\n\n## Worker rules (put these in every brief)\n\n- Edit **only** owned files. Do not touch another worker's files, or integrator-owned\n  wiring, unless the brief says so.\n- Do **not** `git commit`, `push`, `checkout`, `reset`, or `stash`.\n- Do **not** run full product builds or launch apps (integrator verifies once).\n- **Additive only** — do not rename or remove existing public names.\n- Code against the **frozen contract names** exactly.\n- Do **not** call Fable / advisor tools; the lead is the reviewer.\n- No secrets or real keys in code or examples (placeholders only).\n\n## Routing\n\n| Worker | Assign | Never assign |\n|---|---|---|\n| **agy** | UI / low-risk / mechanical | auth, security, payments, migrations, shared server logic |\n| **grok** | production UI + documentation | — (still diff-verify) |\n| **codex** | production server, security-sensitive, multi-file Elixir | — |\n| **claude** | last resort only, when codex is rate-limited/unavailable | anything codex can take — the claude CLI burns the user's paid Claude usage |\n\nEscalate the hardest reasoning to the strongest model available **on the lead** (or\na single high-capability worker for one critical slice). Do not put high blast-radius\nwork on agy to save cost.\n\n## Shared team memory\n\n`.vibe/memory.md` at the repo root is the append-only journal every run reads and\nwrites — it is how all agents know what has already been done. The bridge points\nevery task at it and seeds it when missing.\n\n- **Read it during diagnosis.** It is prior-run ground truth: shipped features,\n  product-wide frozen contracts, traps other runs already paid for.\n- **Append exactly one entry at completion** (before deleting scratch), newest last:\n\n  ```markdown\n  ## <YYYY-MM-DD> · <run-id> · <one-line goal>\n  - Shipped: <files / contracts / behavior>\n  - Learned: <traps, platform semantics, review misses — the things a diff can't show>\n  - Open: <deferred items, known risks>\n  ```\n\n- Keep entries ≤ 10 lines. Never rewrite or delete existing entries. If the file\n  exceeds ~400 lines, fold the oldest entries into real docs first, then trim them.\n\n## Live worker status (VIBE_TEAM_STATUS)\n\nEvery time you **spawn**, run, or finish a worker subprocess, print **one status marker\nline to your own stdout** (not into a file). The bridge relays these lines; the server\nturns them into the live per-worker board the user sees on the phone (avatar + a live\nelapsed clock, \"Calling… · 0m 07s\" → \"editing X · 4m 12s\" → \"done · 4m 30s\"). No marker\n= a silent cell for the whole run.\n\nPrint the `spawn` line **immediately before you launch the CLI** — it stamps the\nworker's start so the phone's clock ticks from the real call moment, not from the first\ntool event:\n\n```\nVIBE_TEAM_STATUS {\"worker\":\"grok\",\"state\":\"spawn\",\"label\":\"call grok — premium UI polish\"}\nVIBE_TEAM_STATUS {\"worker\":\"grok\",\"state\":\"running\",\"label\":\"web: chat header\"}\nVIBE_TEAM_STATUS {\"worker\":\"grok\",\"state\":\"done\",\"label\":\"header + 3 files\"}\n```\n\nUse `\"state\":\"failed\"` when a worker errors or times out.\n\n**Rules:**\n\n- Exact prefix `VIBE_TEAM_STATUS ` (trailing space) + single-line valid JSON\n- One line per transition (spawn → `spawn`; working → `running`; exit → `done`/`failed`)\n- Print `spawn` right before the CLI launches; `running` once it is doing real work\n- `worker` = CLI handle: `codex` / `grok` / `agy` / `claude`\n- `label` ≤ 60 chars (what the slice is doing / what it shipped)\n\n## Safety\n\n- Destructive commands are blocked by the **bridge permission layer**, not by prompt\n  discipline alone. Still: never instruct workers to force-push, reset hard, or\n  deploy.\n- Never `git push` / production deploy as lead unless the user explicitly asked in\n  this run.\n- Never bake project-external product vocabulary into Vibe core types or public APIs.\n- Prefer existing architecture, names, and UI patterns.\n\n## Worker CLI forms\n\nUse these exact forms (fill repo path, effort, brief content):\n\n### codex\n\n```bash\ncodex exec --json \\\n  -c sandbox_mode=\"workspace-write\" \\\n  -c approval_policy=\"never\" \\\n  -c model_reasoning_effort=\"<e>\" \\\n  --cd <repo> \\\n  --skip-git-repo-check \\\n  \"<prompt>\"\n```\n\nPrefer putting the full brief in the prompt (or a file the prompt tells codex to\nread). Effort: `low` / `medium` / `high` by risk.\n\n### grok\n\n```bash\n~/.grok/bin/grok \\\n  --prompt-file <brief> \\\n  --always-approve \\\n  --max-turns 80 \\\n  --output-format plain \\\n  --cwd <repo>\n```\n\nTwo verified headless failure modes — both exit 0 with **no files written**:\n`--permission-mode acceptEdits` is silently ignored headless (grok narrates the write\nbut drops the tool call), so `--always-approve` is required; and the default\n`--max-turns` is low enough that workers get cut off after recon, so always pass it\nexplicitly. If a grok run exits without a diff, probe first: ask it to write one\ntrivial file and check the file exists — trust the filesystem, not the narration or\nexit code.\n\n### agy\n\n```bash\n~/.local/bin/agy -p \"Read and execute the brief at <brief path>. Work from <repo>.\" \\\n  --mode accept-edits \\\n  --dangerously-skip-permissions \\\n  --print-timeout 30m\n```\n\nUI / low-risk briefs only (see Routing). Same ownership and no-commit/no-build rules\nas other workers. Run it with the repo as working directory.\n\n## Simple work\n\nIf the request does not need multi-agent coordination, do not force a team. A single\nworker (or you alone) is correct. The bridge may also dispatch simple work without\nspawning a lead — respect that when you are not on a team run.\n\n## Completion checklist\n\n- [ ] Board exists with frozen contract + ownership before dispatch\n- [ ] Every worker brief has disjoint files + hard rules + no-Fable\n- [ ] Every worker diff reviewed against baseline\n- [ ] Integrator wiring done\n- [ ] One verify pass green (or failures fixed)\n- [ ] Board updated; settled summary written\n- [ ] One entry appended to `.vibe/memory.md` (shipped / learned / open)\n- [ ] Run's board + brief files cleaned up (durable learnings moved to docs first)\n- [ ] VIBE_TEAM_STATUS printed for every worker spawn/start/finish\n- [ ] No unauthorized push/deploy\n";
+
+// Agent-native team orchestration: the team-lead operating guide is EMBEDDED below
+// (TEAM_LEAD_GUIDE_FALLBACK) so every bridge install ships the team feature — no
+// machine-local files required. The repo copy (agent-bridge/instructions/team-lead.md)
+// is the editable source of truth and overrides the embedded copy when present;
+// regenerate the embed after editing it (see scripts note beside the constant).
+try {
+  const teamLeadGuidePath = path.join(__dirname, "..", "instructions", "team-lead.md");
+  BRIDGE_INSTRUCTION_FILES["team-lead.md"] = fs.existsSync(teamLeadGuidePath)
+    ? fs.readFileSync(teamLeadGuidePath, "utf8")
+    : TEAM_LEAD_GUIDE_FALLBACK;
+} catch (_) {
+  BRIDGE_INSTRUCTION_FILES["team-lead.md"] = TEAM_LEAD_GUIDE_FALLBACK;
+}
+
+// Seed for the per-repo shared agent memory (.vibe/memory.md): an append-only
+// journal every run reads before diagnosing and appends to when it settles, so
+// all agents working a repo know what has already been done.
+const TEAM_MEMORY_SEED = `# Shared agent memory (append-only journal)
+
+One entry per settled run, newest last — what shipped, what was learned, what's open:
+
+    ## <YYYY-MM-DD> · <run-id> · <one-line goal>
+    - Shipped: …
+    - Learned: …
+    - Open: …
+
+Read this before diagnosing. Append when you finish real work. Never rewrite or
+delete existing entries. Keep entries ≤ 10 lines; when the file exceeds ~400 lines,
+fold the oldest entries into real docs and trim them.
+`;
+
+// ~/.vibe/agent-config.toml → team_orchestration = "agent_native" switches @team runs
+// to the agent-native lead (the lead CLI spawns worker CLIs itself, per
+// docs/team-architecture.md); anything else keeps the legacy server-side fan-out.
+// Read per call so config edits apply without a bridge restart.
+function agentNativeTeamOrchestration() {
+  try {
+    const cfg = fs.readFileSync(path.join(os.homedir(), ".vibe", "agent-config.toml"), "utf8");
+    const m = cfg.match(/^\s*team_orchestration\s*=\s*"([^"]+)"/m);
+    return !!m && m[1].trim().toLowerCase() === "agent_native";
+  } catch (_) {
+    return false;
+  }
+}
+
+function isTeamLeadTask(task) {
+  if (!task) return false;
+  if (!(task.teamRunId || task.team_run_id)) return false;
+  const role = String(task.teamRole || task.team_role || "").toLowerCase();
+  if (role && role !== "lead") return false;
+  const mode = task.teamMode || task.team_mode;
+  if (mode && mode !== "supervisor" && mode !== "group_supervisor") return false;
+  return true;
+}
 
 function parseArgs(argv) {
   const out = { repos: [], repoRoots: [] };
@@ -378,8 +694,12 @@ function addRepository(map, dir, source) {
   });
 }
 
-function bridgeInstructionRelativeFiles(provider) {
+function bridgeInstructionRelativeFiles(provider, task) {
   const files = [path.join(BRIDGE_INSTRUCTION_DIR, "AGENTS.md")];
+  // Agent-native team runs: the lead also loads the team-lead operating guide.
+  if (task && isTeamLeadTask(task) && agentNativeTeamOrchestration()) {
+    files.push(path.join(BRIDGE_INSTRUCTION_DIR, "team-lead.md"));
+  }
   if (provider === "claude") files.push(path.join(BRIDGE_INSTRUCTION_DIR, "CLAUDE.md"));
   else if (provider === "codex") files.push(path.join(BRIDGE_INSTRUCTION_DIR, "CODEX.md"));
   else if (provider === "grok") files.push(path.join(BRIDGE_INSTRUCTION_DIR, "AGENTS.md"));
@@ -404,6 +724,8 @@ function ensureBridgeInstructionFiles(repo) {
 
     for (const [name, content] of Object.entries(BRIDGE_INSTRUCTION_FILES)) {
       const absolutePath = path.join(dir, name);
+      // `name` may carry a subpath (e.g. "skills/premium-web-ui.md") — ensure its parent.
+      fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
       if (!fs.existsSync(absolutePath) || fs.readFileSync(absolutePath, "utf8") !== content) {
         fs.writeFileSync(absolutePath, content, "utf8");
       }
@@ -413,6 +735,14 @@ function ensureBridgeInstructionFiles(repo) {
         absolutePath,
       });
     }
+
+    // Shared team memory: seed once, never overwrite — runs append entries to it
+    // (see team-lead.md "Shared team memory"). Git-excluded like instructions.
+    const memoryPath = path.join(root, ".vibe", "memory.md");
+    if (!fs.existsSync(memoryPath)) {
+      fs.writeFileSync(memoryPath, TEAM_MEMORY_SEED, "utf8");
+    }
+    ensureVibeGitExclude(root, ".vibe/memory.md");
 
     repo.instructionFiles = written;
     repo.instructionsReady = true;
@@ -454,6 +784,13 @@ function ensureBridgeInstructionsForRepositories(repositories) {
 // agent/team. A plain DM message gets just the user's prompt.
 function taskWantsBridgeInstructions(task, prompt) {
   if (task) {
+    // A `chat` team role is a conversation turn: read-only by construction and
+    // told by the server prompt to never narrate instruction files. Prepending
+    // "read and follow .vibe/instructions/AGENTS.md" here contradicted that
+    // (agents replied "I'm reading AGENTS.md…") and wasted tokens on turns that
+    // cannot act anyway.
+    const teamRole = String(task.teamRole || task.team_role || "").toLowerCase();
+    if (teamRole === "chat") return false;
     if (task.teamMode || task.team_mode || task.teamRunId || task.team_run_id) return true;
     if (Array.isArray(task.teamWorkers) && task.teamWorkers.length) return true;
     if (Array.isArray(task.teamWorker) && task.teamWorker.length) return true;
@@ -461,16 +798,21 @@ function taskWantsBridgeInstructions(task, prompt) {
   return /(^|\s)@(codex|claude|grok|agy|antigravity|team|vibe)\b/i.test(String(prompt || ""));
 }
 
-function taskPromptWithBridgeInstructions(provider, prompt, repo) {
+function taskPromptWithBridgeInstructions(provider, prompt, repo, task) {
   const cleaned = stripReservedMention(prompt, provider);
   const ready = ensureBridgeInstructionFiles(repo);
   const readyNames = new Set(ready.map((file) => file.path));
-  const fileLines = bridgeInstructionRelativeFiles(provider)
+  const fileLines = bridgeInstructionRelativeFiles(provider, task)
     .map((file) => `- ${file}${readyNames.has(file) ? "" : " (write failed; follow inline rules instead)"}`)
     .join("\n");
+  const memoryRoot = repo && (repo.cwd || repo.path);
+  const memoryLine =
+    memoryRoot && fs.existsSync(path.join(memoryRoot, ".vibe", "memory.md"))
+      ? `\n- ${path.join(".vibe", "memory.md")} (shared memory: what previous runs shipped and learned — read it before diagnosing; append one settled entry when you finish real work)`
+      : "";
 
   return `Vibe bridge startup prepared these instruction files for this project:
-${fileLines}
+${fileLines}${memoryLine}
 
 Before acting, read and follow those files when available. If they are unavailable, follow the same rules from the Vibe bridge prompt: inspect first, keep changes scoped, avoid duplicate teammate work, ask before risky commands, report files changed, verification, blockers, and remaining risk.
 
@@ -669,6 +1011,74 @@ async function scanToPair(server, label) {
 const sessionByChat = new Map(); // chatId -> claude session_id
 // taskKey -> { child, provider, chatId, taskId, startedAt, frameSeq, lastAckedSeq, frameLog, lastProgress }
 const runningTasks = new Map();
+
+// Admission control (docs/team-architecture-v2.md §4 review amendments): one Mac
+// executes every CLI run, and a team burst (lead + workers + a second group run)
+// must queue instead of fork-bombing the machine. Queued tasks emit a periodic
+// progress frame so the server-side run watchdog reads them as alive ("queued"),
+// never as stalled — its stall timer only applies to genuinely running slices.
+const MAX_CONCURRENT_CLI_TASKS = Math.max(
+  1,
+  Number(process.env.VIBE_MAX_CONCURRENT_TASKS || 6) || 6
+);
+const pendingTaskQueue = [];
+let pendingTaskTimer = null;
+
+function enqueuePendingTask(channel, task) {
+  // Re-entry marker: the dedupe reservation was already taken on first delivery,
+  // so the requeued pass must skip both the duplicate guard and admission.
+  task.__requeued = true;
+  pendingTaskQueue.push({ channel, task, queuedAt: Date.now() });
+  console.log(
+    `[vibe-bridge] task queued (${runningTasks.size} active, ${pendingTaskQueue.length} waiting) ` +
+      `provider=${task.provider} task=${taskIdFor(task)}`
+  );
+  pushQueuedTaskHeartbeat({ channel, task });
+  if (!pendingTaskTimer) {
+    pendingTaskTimer = setInterval(() => {
+      for (const entry of pendingTaskQueue) pushQueuedTaskHeartbeat(entry);
+      drainPendingTasks();
+    }, 45 * 1000);
+  }
+}
+
+function pushQueuedTaskHeartbeat(entry) {
+  const { channel, task } = entry;
+  try {
+    channel.push("progress", {
+      ...computerFields(),
+      ...teamFieldsForTask(task),
+      provider: task.provider,
+      chatId: task.chatId,
+      taskId: taskIdFor(task),
+      // Tagged so the server watchdog tracks queue age separately instead of
+      // treating these frames as normal liveness forever (wedged-queue guard).
+      queuedHeartbeat: true,
+      line: JSON.stringify({
+        type: "text",
+        data: `Queued — waiting for a free agent slot (${runningTasks.size} running)`,
+      }),
+    });
+  } catch (_) {}
+}
+
+function drainPendingTasks() {
+  // Count released-but-not-yet-registered tasks against the cap: runningTasks
+  // isn't populated until after the pre-run git snapshot, so a naive loop on
+  // runningTasks.size alone would release the whole queue at once.
+  let slots = MAX_CONCURRENT_CLI_TASKS - runningTasks.size;
+  while (pendingTaskQueue.length && slots > 0) {
+    slots--;
+    const entry = pendingTaskQueue.shift();
+    Promise.resolve(runTask(entry.channel, entry.task)).catch((err) =>
+      console.warn("[vibe-bridge] queued task failed to start:", err && err.message)
+    );
+  }
+  if (!pendingTaskQueue.length && pendingTaskTimer) {
+    clearInterval(pendingTaskTimer);
+    pendingTaskTimer = null;
+  }
+}
 const finishedTasks = new Map(); // taskKey -> { provider, chatId, taskId, repo, runtime, finishedAt, resultPayload }
 // Duplicate-delivery guard. The SAME run_task can reach runTask() more than once —
 // it arrives on both the cloud channel and the LAN transport, and reconnect-recovery
@@ -682,6 +1092,10 @@ const finishedTasks = new Map(); // taskKey -> { provider, chatId, taskId, repo,
 // re-run / edit carries a fresh taskId) — deduping on it is safe.
 const recentRunTaskKeys = new Map(); // taskKey -> lastSeenMs
 const RUN_TASK_DEDUP_TTL_MS = Number(process.env.VIBE_RUN_TASK_DEDUP_TTL_MS || 30 * 60 * 1000);
+// Last structured subscription/rate-limit snapshot per provider (Codex primary/secondary
+// windows from token_count events; Claude is still fetched live via OAuth). Used by
+// buildUsageReport so the phone's usage banner works for every agent, not only Claude.
+const lastRateLimitsByProvider = new Map(); // provider -> { at, buckets: [{label, utilization, resetsAt}] }
 // Cap on unacked progress frames retained per running task for replay-on-reconnect.
 // The server's own live-card reconstruction only ever looks at its last @max_stream_lines
 // (160) lines, so keeping more than that here can never recover anything the server would
@@ -853,6 +1267,15 @@ function stripReservedMention(prompt, provider) {
 // message ran propose-only ("always plan mode" bug). Plan is now an explicit,
 // deliberately-chosen mode (see `plan` below) surfaced with a badge on the phone.
 function workModeFor(task) {
+  // HARD RULE, not overridable by the phone's work-mode setting: a `chat` turn is
+  // the user TALKING, not commissioning work, so it runs with writes stripped
+  // (codex → `read-only` sandbox; claude → Edit/Write/MultiEdit/NotebookEdit/Bash
+  // disallowed). This is a control, not a request: prompt wording already proved
+  // worthless — a worker asked "can you see this image?" read AGENTS.md, patched
+  // page.tsx/globals.css and ran a full build. Enforcement lives HERE.
+  const teamRole = task && (task.teamRole || task.team_role);
+  if (String(teamRole || "").toLowerCase() === "chat") return "read_only";
+
   const raw = String(
     (task && (task.workMode || task.agentBridgeWorkMode || task.mode)) || "ask_auto"
   )
@@ -975,6 +1398,11 @@ function grokPermissionMode(task) {
       return "acceptEdits";
     case "plan":
       return "plan";
+    case "read_only":
+      // Grok has no separate read-only sandbox; plan mode is its hard no-writes
+      // gate. Without this case a `read_only` task (e.g. team role `chat`) fell
+      // to "default" and Grok could still edit files.
+      return "plan";
     case "ask":
       // No phone permission-prompt tool for Grok yet — default mode.
       return "default";
@@ -1022,6 +1450,55 @@ function claudeDisallowedTools(task) {
   return base;
 }
 
+// Commands a worker may run without an approval round-trip. A bridge run is
+// headless: there is no TTY to answer a permission prompt, so anything NOT
+// pre-approved here is effectively dead in `acceptEdits`/`auto` mode — which is
+// why Claude workers kept stalling on tests and greps while Grok (auto) and
+// Codex (sandbox, approval_policy=never) ran clean.
+//
+// The list is deliberately inspection + verification only. Nothing that mutates
+// git history, escalates privilege, publishes, or deploys belongs here; those
+// stay denied by DEFAULT_CLAUDE_MOBILE_DISALLOWED_TOOLS (deny wins over allow).
+const SAFE_BASH_ALLOWLIST = [
+  // Inspect
+  "Bash(ls *)", "Bash(cat *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)",
+  "Bash(file *)", "Bash(stat *)", "Bash(pwd)", "Bash(which *)", "Bash(echo *)",
+  "Bash(tree *)", "Bash(du *)", "Bash(diff *)", "Bash(realpath *)",
+  "Bash(basename *)", "Bash(dirname *)", "Bash(sed -n *)",
+  // Search
+  "Bash(grep *)", "Bash(rg *)", "Bash(find *)",
+  // Git — read-only subcommands only (push/reset/checkout/clean stay denied)
+  "Bash(git status*)", "Bash(git diff*)", "Bash(git log*)", "Bash(git show*)",
+  "Bash(git branch*)", "Bash(git ls-files*)", "Bash(git blame*)",
+  "Bash(git rev-parse*)", "Bash(git remote -v)",
+  // Verify: build / test / lint / format
+  "Bash(npm run build*)", "Bash(npm run test*)", "Bash(npm run lint*)",
+  "Bash(npm run typecheck*)", "Bash(npm test*)", "Bash(npm ci)", "Bash(npm install*)",
+  "Bash(yarn build*)", "Bash(yarn test*)", "Bash(pnpm build*)", "Bash(pnpm test*)",
+  "Bash(mix test*)", "Bash(mix compile*)", "Bash(mix format*)", "Bash(mix deps.get)",
+  "Bash(xcodebuild *)", "Bash(xcrun *)", "Bash(swift build*)", "Bash(swift test*)",
+  "Bash(swiftformat *)", "Bash(pytest*)", "Bash(cargo build*)", "Bash(cargo test*)",
+  "Bash(make *)", "Bash(node --check *)",
+];
+
+// Core file tools. Reading and editing must go through these, never through the
+// terminal — see the "Terminal, Files, and Approvals" rules in AGENTS.md.
+const SAFE_FILE_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "LS", "TodoWrite"];
+
+function claudeAllowedTools(task) {
+  const mode = workModeFor(task);
+  // read_only/plan deny Bash+writes outright; pre-approving them here would be
+  // at best redundant and at worst a hole in the chat-turn write-strip.
+  if (mode === "read_only" || mode === "plan") return [];
+  const allowed = [...SAFE_BASH_ALLOWLIST, ...SAFE_FILE_TOOLS];
+  if (mode === "ask") {
+    // Live-approval mode still routes the interesting stuff to the phone; the
+    // allow-list only spares the user an Approve sheet for `ls`.
+    return allowed.filter((t) => !SAFE_FILE_TOOLS.includes(t));
+  }
+  return allowed;
+}
+
 function appendToolListArg(args, flag, values) {
   const list = compactStringList(values || [], 80);
   if (!list.length) return;
@@ -1033,29 +1510,360 @@ function normalizeModel(provider, value) {
   if (!raw) return null;
   const normalized = raw.toLowerCase().replace(/_/g, "-");
   if (provider === "claude") {
-    if (normalized.includes("fable")) return "fable";
-    if (normalized.includes("haiku")) return "haiku";
-    if (normalized.includes("sonnet")) return "sonnet";
-    if (normalized.includes("opus")) return "opus";
+    // Production: pass exact Anthropic model ids through unchanged so picker
+    // selections (claude-fable-5, tomorrow's alpha, …) reach `claude --model`.
+    if (normalized.startsWith("claude-")) return raw;
+    // Legacy short aliases still accepted from older phone builds / env defaults.
+    if (normalized === "fable" || normalized.includes("fable")) return "claude-fable-5";
+    if (normalized === "haiku" || normalized.includes("haiku-4-5")) return "claude-haiku-4-5-20251001";
+    if (normalized === "sonnet" || (normalized.includes("sonnet-5") && !normalized.includes("sonnet-4"))) {
+      return "claude-sonnet-5";
+    }
+    if (normalized === "opus" || normalized.includes("opus-4-8")) return "claude-opus-4-8";
+    if (normalized.includes("sonnet")) return "claude-sonnet-5";
+    if (normalized.includes("opus")) return "claude-opus-4-8";
     return raw;
   }
-  if (normalized === "gpt-5.3-codex" || normalized === "gpt-5-3-codex") return "gpt-5.5";
-  if (["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.2", "gpt-5"].includes(normalized)) {
-    return normalized;
+  if (provider === "codex" || provider === "gpt") {
+    // The installed headless Codex CLI cannot execute the 5.6 family yet. It
+    // returns a terminal 400 instead of falling back, which left mobile turns
+    // with a failed tool card and no answer. Keep the mobile bridge on the
+    // newest model this CLI accepts until its binary is updated.
+    if (normalized === "gpt-5.6-sol" || normalized === "gpt-5-6-sol" || normalized === "gpt-5.6" || normalized === "gpt-5-6") {
+      return "gpt-5.5";
+    }
+    if (normalized === "gpt-5.3-codex" || normalized === "gpt-5-3-codex") return "gpt-5.5";
+    return raw;
   }
+  // Grok / Agy: exact CLI selector strings (Agy effort is part of the name).
   return raw;
 }
 
+// ── Live model catalog (per provider) ────────────────────────────────
+// Phone model pickers used to ship hardcoded lists that went stale (missing
+// Claude Fable 5, old Codex ids, etc.). The bridge discovers models from the
+// provider CLI / API on this machine and advertises them in bridge status so
+// iOS/web refresh without an app release.
+let providerModelsCache = { at: 0, models: null };
+const PROVIDER_MODELS_TTL_MS = 5 * 60 * 1000;
+
+// Seed catalogs are LAST RESORT only (offline / discovery failure). Live
+// discovery is the production source of truth so new models (e.g. Fable 5,
+// tomorrow's "alpha") appear without an app release.
+const CLAUDE_EFFORTS_DEFAULT = ["low", "medium", "high", "xhigh", "max"];
+const CODEX_EFFORTS_DEFAULT = ["low", "medium", "high", "xhigh"];
+const GROK_EFFORTS_DEFAULT = ["low", "medium", "high"];
+
+function fallbackProviderModels() {
+  return {
+    claude: [
+      {
+        id: "claude-haiku-4-5-20251001",
+        title: "Claude Haiku 4.5",
+        subtitle: "Seed fallback",
+        isDefault: false,
+        efforts: [],
+        defaultEffort: null,
+        source: "seed",
+      },
+      {
+        id: "claude-sonnet-5",
+        title: "Claude Sonnet 5",
+        subtitle: "Seed fallback",
+        isDefault: true,
+        efforts: CLAUDE_EFFORTS_DEFAULT.slice(),
+        defaultEffort: "high",
+        source: "seed",
+      },
+      {
+        id: "claude-opus-4-8",
+        title: "Claude Opus 4.8",
+        subtitle: "Seed fallback",
+        isDefault: false,
+        efforts: CLAUDE_EFFORTS_DEFAULT.slice(),
+        defaultEffort: "high",
+        source: "seed",
+      },
+      {
+        id: "claude-fable-5",
+        title: "Claude Fable 5",
+        subtitle: "Seed fallback",
+        isDefault: false,
+        efforts: CLAUDE_EFFORTS_DEFAULT.slice(),
+        defaultEffort: "high",
+        source: "seed",
+      },
+    ],
+    codex: [
+      { id: "gpt-5.5", title: "GPT-5.5", subtitle: "Compatible with this Codex CLI", isDefault: true, efforts: CODEX_EFFORTS_DEFAULT.slice(), defaultEffort: "medium", source: "seed" },
+      { id: "gpt-5.5-pro", title: "GPT-5.5 Pro", subtitle: "Seed fallback", isDefault: false, efforts: CODEX_EFFORTS_DEFAULT.slice(), defaultEffort: "high", source: "seed" },
+      { id: "gpt-5.4", title: "GPT-5.4", subtitle: "Seed fallback", isDefault: false, efforts: CODEX_EFFORTS_DEFAULT.slice(), defaultEffort: "medium", source: "seed" },
+      { id: "gpt-5.2", title: "GPT-5.2", subtitle: "Seed fallback", isDefault: false, efforts: CODEX_EFFORTS_DEFAULT.slice(), defaultEffort: "medium", source: "seed" },
+      { id: "gpt-5", title: "GPT-5", subtitle: "Seed fallback", isDefault: false, efforts: CODEX_EFFORTS_DEFAULT.slice(), defaultEffort: "medium", source: "seed" },
+    ],
+    grok: [
+      { id: "grok-4.5", title: "Grok 4.5", subtitle: "Seed fallback", isDefault: true, efforts: GROK_EFFORTS_DEFAULT.slice(), defaultEffort: "medium", source: "seed" },
+      { id: "grok-composer-2.5-fast", title: "Composer 2.5 Fast", subtitle: "Seed fallback", isDefault: false, efforts: GROK_EFFORTS_DEFAULT.slice(), defaultEffort: "low", source: "seed" },
+    ],
+    agy: [
+      // Agy bakes effort into the model label (High/Medium/Low); do not split.
+      { id: "Gemini 3.1 Pro (High)", title: "Gemini 3.1 Pro (High)", subtitle: "Seed fallback", isDefault: true, efforts: [], defaultEffort: null, source: "seed" },
+      { id: "Gemini 3.1 Pro (Low)", title: "Gemini 3.1 Pro (Low)", subtitle: "Seed fallback", isDefault: false, efforts: [], defaultEffort: null, source: "seed" },
+      { id: "Gemini 3.5 Flash (High)", title: "Gemini 3.5 Flash (High)", subtitle: "Seed fallback", isDefault: false, efforts: [], defaultEffort: null, source: "seed" },
+      { id: "Gemini 3.5 Flash (Medium)", title: "Gemini 3.5 Flash (Medium)", subtitle: "Seed fallback", isDefault: false, efforts: [], defaultEffort: null, source: "seed" },
+      { id: "Gemini 3.5 Flash (Low)", title: "Gemini 3.5 Flash (Low)", subtitle: "Seed fallback", isDefault: false, efforts: [], defaultEffort: null, source: "seed" },
+      { id: "Claude Sonnet 4.6 (Thinking)", title: "Claude Sonnet 4.6 (Thinking)", subtitle: "Seed fallback", isDefault: false, efforts: [], defaultEffort: null, source: "seed" },
+      { id: "Claude Opus 4.6 (Thinking)", title: "Claude Opus 4.6 (Thinking)", subtitle: "Seed fallback", isDefault: false, efforts: [], defaultEffort: null, source: "seed" },
+      { id: "GPT-OSS 120B (Medium)", title: "GPT-OSS 120B (Medium)", subtitle: "Seed fallback", isDefault: false, efforts: [], defaultEffort: null, source: "seed" },
+    ],
+  };
+}
+
+function effortLevelsFromClaudeCapabilities(caps) {
+  const effort = caps && caps.effort;
+  if (!effort || effort.supported === false) return [];
+  const order = ["low", "medium", "high", "xhigh", "max"];
+  const out = [];
+  for (const key of order) {
+    const row = effort[key];
+    if (row && row.supported === true) out.push(key);
+  }
+  // If API only says effort.supported without per-level flags, expose full ladder.
+  if (!out.length && effort.supported === true) return CLAUDE_EFFORTS_DEFAULT.slice();
+  return out;
+}
+
+async function fetchClaudeModelsLive() {
+  let token = null;
+  try {
+    const raw = execFileSync(
+      "security",
+      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+      { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }
+    );
+    const parsed = JSON.parse(raw);
+    token = parsed && parsed.claudeAiOauth && parsed.claudeAiOauth.accessToken;
+  } catch (_) {
+    token = null;
+  }
+  if (!token) return null;
+  try {
+    // Anthropic Models API — production source of truth (id + display_name + effort caps).
+    // https://platform.claude.com/docs/en/api/models/list
+    const res = await fetch("https://api.anthropic.com/v1/models?limit=1000", {
+      headers: {
+        Authorization: "Bearer " + token,
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "oauth-2025-04-20",
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const rows = Array.isArray(data && data.data) ? data.data : [];
+    if (!rows.length) return null;
+    // Newest first (API already roughly newest-first). Pass EVERY model through —
+    // filtering would hide tomorrow's "alpha" the same way hardcoding did.
+    return rows
+      .map((m, i) => {
+        const apiId = String((m && m.id) || "").trim();
+        if (!apiId) return null;
+        const title = String((m && m.display_name) || apiId).trim() || apiId;
+        const efforts = effortLevelsFromClaudeCapabilities(m && m.capabilities);
+        const isSonnet5 = apiId === "claude-sonnet-5" || /^claude-sonnet-5($|-)/.test(apiId);
+        return {
+          // EXACT provider id for --model / run_task — never invent short aliases here.
+          id: apiId,
+          title,
+          subtitle: null,
+          isDefault: isSonnet5 || (i === 0 && !rows.some((x) => String(x.id || "") === "claude-sonnet-5")),
+          apiId,
+          efforts,
+          defaultEffort: efforts.includes("high")
+            ? "high"
+            : efforts.includes("medium")
+              ? "medium"
+              : efforts[0] || null,
+          source: "live",
+        };
+      })
+      .filter(Boolean);
+  } catch (_) {
+    return null;
+  }
+}
+
+function fetchGrokModelsLive() {
+  try {
+    const out = execFileSync(process.env.VIBE_GROK_COMMAND || "grok", ["models"], {
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const lines = String(out || "").split("\n");
+    const models = [];
+    let defaultId = null;
+    for (const line of lines) {
+      const star = line.match(/^\s*\*\s+(\S+)/);
+      const dash = line.match(/^\s*-\s+(\S+)/);
+      const m = star || dash;
+      if (!m) continue;
+      const id = m[1];
+      if (star) defaultId = id;
+      models.push({
+        id,
+        title: id,
+        subtitle: star ? "Default" : null,
+        isDefault: !!star,
+        efforts: GROK_EFFORTS_DEFAULT.slice(),
+        defaultEffort: "medium",
+        source: "live",
+      });
+    }
+    if (defaultId) {
+      for (const m of models) m.isDefault = m.id === defaultId;
+    }
+    return models.length ? models : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function fetchAgyModelsLive() {
+  try {
+    // `agy models` prints the exact selector strings the CLI accepts (effort is
+    // part of the label: "Gemini 3.1 Pro (High)"). Keep id === full line.
+    const out = execFileSync(process.env.VIBE_AGY_COMMAND || "agy", ["models"], {
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const models = String(out || "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((id, i) => ({
+        id,
+        title: id,
+        subtitle: null,
+        isDefault: i === 0 || /3\.1 Pro \(High\)/i.test(id),
+        // Effort is baked into the model name — do not expose a separate ladder.
+        efforts: [],
+        defaultEffort: null,
+        source: "live",
+      }));
+    if (models.length) {
+      const pref = models.find((m) => /3\.1 Pro \(High\)/i.test(m.id));
+      if (pref) {
+        for (const m of models) m.isDefault = m.id === pref.id;
+      }
+    }
+    return models.length ? models : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function fetchCodexModelsLive() {
+  // No stable headless `codex models` yet. Prefer config.toml model + family seed;
+  // always surface the machine's configured model first so local defaults win.
+  const fallback = fallbackProviderModels().codex.map((row) => ({ ...row }));
+  try {
+    const cfgPath = path.join(os.homedir(), ".codex", "config.toml");
+    if (!fs.existsSync(cfgPath)) return fallback;
+    const text = fs.readFileSync(cfgPath, "utf8");
+    const m = text.match(/^\s*model\s*=\s*"([^"]+)"/m);
+    const effortMatch = text.match(/^\s*model_reasoning_effort\s*=\s*"([^"]+)"/m);
+    const defaultEffort = (effortMatch && effortMatch[1].trim()) || "medium";
+    if (!m) return fallback;
+    const configured = m[1].trim();
+    const current = normalizeModel("codex", configured);
+    if (!current) return fallback;
+    const list = fallback.slice();
+    for (const row of list) {
+      row.efforts = CODEX_EFFORTS_DEFAULT.slice();
+      row.defaultEffort = defaultEffort;
+      row.source = "live";
+    }
+    if (!list.some((x) => x.id === current)) {
+      list.unshift({
+        id: current,
+        title: current,
+        subtitle: "From Codex config",
+        isDefault: true,
+        efforts: CODEX_EFFORTS_DEFAULT.slice(),
+        defaultEffort,
+        source: "live",
+      });
+      for (let i = 1; i < list.length; i++) list[i].isDefault = false;
+    } else {
+      for (const row of list) row.isDefault = row.id === current;
+    }
+    return list;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function preferLiveOrLastGood(live, seed, lastGood) {
+  if (live && live.length) return live;
+  if (lastGood && lastGood.length) {
+    return lastGood.map((row) => ({ ...row, source: row.source === "live" ? "cache" : row.source || "cache" }));
+  }
+  return seed;
+}
+
+async function discoverProviderModels(force) {
+  if (
+    !force &&
+    providerModelsCache.models &&
+    Date.now() - providerModelsCache.at < PROVIDER_MODELS_TTL_MS
+  ) {
+    return providerModelsCache.models;
+  }
+  const base = fallbackProviderModels();
+  const prev = (providerModelsCache && providerModelsCache.models) || null;
+  try {
+    const [claude, grok, agy] = await Promise.all([
+      fetchClaudeModelsLive(),
+      Promise.resolve(fetchGrokModelsLive()),
+      Promise.resolve(fetchAgyModelsLive()),
+    ]);
+    const models = {
+      claude: preferLiveOrLastGood(claude, base.claude, prev && prev.claude),
+      codex: preferLiveOrLastGood(fetchCodexModelsLive(), base.codex, prev && prev.codex),
+      grok: preferLiveOrLastGood(grok, base.grok, prev && prev.grok),
+      agy: preferLiveOrLastGood(agy, base.agy, prev && prev.agy),
+    };
+    providerModelsCache = { at: Date.now(), models };
+    return models;
+  } catch (_) {
+    const models = {
+      claude: preferLiveOrLastGood(null, base.claude, prev && prev.claude),
+      codex: preferLiveOrLastGood(null, base.codex, prev && prev.codex),
+      grok: preferLiveOrLastGood(null, base.grok, prev && prev.grok),
+      agy: preferLiveOrLastGood(null, base.agy, prev && prev.agy),
+    };
+    providerModelsCache = { at: Date.now(), models };
+    return models;
+  }
+}
+
 function normalizeAdvisor(provider, value) {
-  if (provider !== "claude") return null;
+  // Claude CLI native advisors; Sol is a Fable-fallback alias (see advisorFor).
+  if (provider !== "claude" && provider !== "codex") return null;
   const raw = value == null ? "" : String(value).trim();
   if (!raw) return null;
   const normalized = raw.toLowerCase().replace(/_/g, "-");
   if (["off", "none", "no", "false", "0", "default", "reset"].includes(normalized)) return null;
   if (normalized.includes("fable")) return "fable";
+  if (normalized.includes("sol") || normalized.includes("gpt")) return "sol";
   if (normalized.includes("opus")) return "opus";
   if (normalized.includes("sonnet")) return "sonnet";
-  return raw;
+  // Gemini UI-only advisor is handled post-run for FE diffs (not a CLI --advisor flag).
+  if (normalized.includes("gemini") || normalized === "agy-ui") return null;
+  if (provider === "claude") return raw;
+  return null;
 }
 
 function modelFor(provider, chatId, task) {
@@ -1077,13 +1885,241 @@ function modelFor(provider, chatId, task) {
 }
 
 function advisorFor(provider, chatId, task) {
-  if (provider !== "claude") return null;
-  const requested = task && (task.advisor || task.agentAdvisor || task.agentBridgeAdvisor);
-  if (requested != null && String(requested).trim()) return normalizeAdvisor(provider, requested);
-  const stored = advisorBySession.get(sessionKey(provider, chatId));
-  if (stored != null && String(stored).trim()) return normalizeAdvisor(provider, stored);
-  const envAdvisor = process.env.VIBE_CLAUDE_ADVISOR || process.env.VIBE_CLAUDE_ADVISOR_MODEL;
-  return envAdvisor && String(envAdvisor).trim() ? normalizeAdvisor(provider, envAdvisor) : null;
+  // Team runs: Claude always prefers Fable; Sol is fallback when Fable is off/failed.
+  const teamMode = task && (task.teamMode || task.team_mode);
+  const isTeam =
+    teamMode === "supervisor" ||
+    teamMode === "group_supervisor" ||
+    !!(task && (task.teamRunId || task.team_run_id));
+
+  if (provider === "claude") {
+    const requested = task && (task.advisor || task.agentAdvisor || task.agentBridgeAdvisor);
+    if (requested != null && String(requested).trim()) {
+      const norm = normalizeAdvisor(provider, requested);
+      if (norm === "sol") return solAdvisorAvailable() ? null /* post-run sol */ : null;
+      return norm;
+    }
+    const stored = advisorBySession.get(sessionKey(provider, chatId));
+    if (stored != null && String(stored).trim()) {
+      return normalizeAdvisor(provider, stored);
+    }
+    const envAdvisor = process.env.VIBE_CLAUDE_ADVISOR || process.env.VIBE_CLAUDE_ADVISOR_MODEL;
+    if (envAdvisor && String(envAdvisor).trim()) {
+      return normalizeAdvisor(provider, envAdvisor);
+    }
+    // Default for team / complex: Fable.
+    if (isTeam || process.env.VIBE_FABLE_ALWAYS === "1") return "fable";
+    return "fable";
+  }
+  return null;
+}
+
+// The GPT (Sol) fallback advisor now defaults to codex/GPT-5.6-Sol, so it is
+// available out of the box (no VIBE_SOL_COMMAND needed) whenever the codex CLI is
+// present. An explicit VIBE_SOL_COMMAND still overrides.
+function solAdvisorAvailable() {
+  return true;
+}
+
+function solAdvisorCommand() {
+  return (
+    process.env.VIBE_SOL_COMMAND ||
+    process.env.VIBE_SOL_ADVISOR_COMMAND ||
+    process.env.VIBE_GPT_ADVISOR_COMMAND ||
+    null
+  );
+}
+
+// Run GPT-5.6-Sol (via codex exec) as an advise-only pass and return its text.
+// Parses codex --json (item.completed / agent_message). Returns "" on failure.
+function runSolCodexAdvice(prompt, cwd) {
+  try {
+    const cmd = process.env.VIBE_CODEX_COMMAND || "codex";
+    const model = process.env.VIBE_ADVISOR_CODEX_MODEL || "gpt-5.6-sol";
+    const effort = process.env.VIBE_ADVISOR_CODEX_EFFORT || "xhigh";
+    const result = spawnSync(
+      cmd,
+      ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check",
+       "-m", model, "-c", `model_reasoning_effort="${effort}"`, prompt],
+      { cwd, encoding: "utf8", timeout: 180000, env: process.env }
+    );
+    let answer = "";
+    for (const ln of String(result.stdout || "").split("\n")) {
+      const t = ln.trim();
+      if (!t) continue;
+      let obj = null;
+      try { obj = JSON.parse(t); } catch (_) { continue; }
+      const item = obj && obj.item ? obj.item : null;
+      if (item && (item.type === "agent_message" || item.type === "assistant_message") &&
+          typeof item.text === "string" && item.text.trim()) {
+        answer = item.text.trim();
+      }
+    }
+    return answer;
+  } catch (_) {
+    return "";
+  }
+}
+
+/** Frontend/JSX/UI paths that should trigger Gemini (Agy) UI-only advice. */
+function looksLikeFrontendDiff(agentRuntime) {
+  const files =
+    (agentRuntime &&
+      agentRuntime.diff &&
+      Array.isArray(agentRuntime.diff.files) &&
+      agentRuntime.diff.files) ||
+    [];
+  const paths = files
+    .map((f) => String((f && (f.path || f.name)) || "").toLowerCase())
+    .filter(Boolean);
+  const patch = String((agentRuntime && agentRuntime.diff && agentRuntime.diff.patch) || "");
+  const joined = paths.join("\n") + "\n" + patch.slice(0, 8000);
+  return (
+    /\.(jsx|tsx|vue|svelte|css|scss|swiftui)\b/i.test(joined) ||
+    /\b(return\s*\(|className=|style=\{\{|View\s*\{|SwiftUI)\b/.test(joined) ||
+    /ios\/.*\.swift/i.test(joined)
+  );
+}
+
+/**
+ * After a worker finishes FE/UI work, run a short Gemini/Agy advise-only pass into the
+ * handoff file. Never posts a chat bubble (advise-only, no tools preferred).
+ */
+async function maybeRunGeminiUiAdvisor(task, agentRuntime, outputText) {
+  try {
+    if (!looksLikeFrontendDiff(agentRuntime) && !/\.(jsx|tsx)\b/i.test(String(outputText || ""))) {
+      return null;
+    }
+    const teamRunId = task.teamRunId || task.team_run_id;
+    if (!teamRunId) return null;
+    const cwd = (task.cwd || task.project || process.cwd()).toString();
+    const handoff = path.join(cwd, ".vibe", "team", `${String(teamRunId).replace(/[^A-Za-z0-9_.-]+/g, "-")}.md`);
+    const prompt =
+      "You are a UI-only advisor (Gemini). Review the frontend/JSX/SwiftUI changes described " +
+      "below. Advise on layout, accessibility, and visual polish only. Do not edit files. " +
+      "Write a short bullet list under ## Gemini UI review.\n\n" +
+      String(outputText || "").slice(0, 6000);
+    const agyCmd = process.env.VIBE_AGY_COMMAND || "agy";
+    const result = spawnSync(agyCmd, ["-p", prompt, "--dangerously-skip-permissions"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 120000,
+      env: process.env,
+    });
+    const advice = String(result.stdout || result.stderr || "").trim().slice(0, 4000);
+    if (!advice) return null;
+    try {
+      const fs = require("fs");
+      fs.mkdirSync(path.dirname(handoff), { recursive: true });
+      fs.appendFileSync(
+        handoff,
+        `\n\n## Gemini UI review (${new Date().toISOString()})\n${advice}\n`,
+        "utf8"
+      );
+    } catch (_) {}
+    return advice;
+  } catch (err) {
+    console.warn("[vibe-bridge] gemini UI advisor failed:", err && err.message);
+    return null;
+  }
+}
+
+/** Fable unavailable → optional Sol (GPT) advise-only pass into handoff. */
+async function maybeRunSolAdvisorFallback(task, reason, contextText) {
+  const cmd = solAdvisorCommand();
+  try {
+    const teamRunId = task.teamRunId || task.team_run_id;
+    const cwd = (task.cwd || task.project || process.cwd()).toString();
+    const handoff = teamRunId
+      ? path.join(cwd, ".vibe", "team", `${String(teamRunId).replace(/[^A-Za-z0-9_.-]+/g, "-")}.md`)
+      : null;
+    const prompt =
+      "You are Sol (GPT-5.6-Sol), fallback advisor after Fable failed. Brief advice only; no file edits.\n" +
+      `Reason Fable unavailable: ${reason || "unknown"}\n\n` +
+      String(contextText || "").slice(0, 5000);
+    let advice = "";
+    if (cmd) {
+      // Explicit override command (plain stdout).
+      const parts = cmd.split(/\s+/).filter(Boolean);
+      const result = spawnSync(parts[0], [...parts.slice(1), prompt], {
+        cwd,
+        encoding: "utf8",
+        timeout: 180000,
+        env: process.env,
+      });
+      advice = String(result.stdout || result.stderr || "").trim().slice(0, 4000);
+    } else {
+      // Default: GPT-5.6-Sol via codex.
+      advice = runSolCodexAdvice(prompt, cwd).slice(0, 4000);
+    }
+    if (advice) {
+      console.log(`[vibe-bridge] Sol (GPT-5.6-Sol) advisor pass complete (${reason || "fable-unavailable"}).`);
+    } else {
+      console.log(`[vibe-bridge] Sol advisor returned nothing (${reason || "fable-unavailable"}); continuing.`);
+    }
+    if (handoff && advice) {
+      try {
+        const fs = require("fs");
+        fs.mkdirSync(path.dirname(handoff), { recursive: true });
+        fs.appendFileSync(
+          handoff,
+          `\n\n## Sol advisor fallback (${new Date().toISOString()})\n${advice}\n`,
+          "utf8"
+        );
+      } catch (_) {}
+    }
+    return advice;
+  } catch (err) {
+    console.warn("[vibe-bridge] Sol advisor failed:", err && err.message);
+    return null;
+  }
+}
+
+function maybeDetectTeamSpawn(channel, task, line) {
+  if (!task || !channel) return;
+  const teamRunId = task.teamRunId || task.team_run_id;
+  const role = task.teamRole || task.team_role;
+  const teamMode = task.teamMode || task.team_mode;
+  if (!teamRunId) return;
+  // Agent-native orchestration: the lead spawns worker CLIs itself (see
+  // .vibe/instructions/team-lead.md). Suppress the legacy server-side fan-out so
+  // workers are never spawned twice for one run.
+  if (agentNativeTeamOrchestration()) return;
+  if (teamMode && teamMode !== "supervisor" && teamMode !== "group_supervisor") return;
+  if (role && role !== "lead") return;
+  const text = String(line || "");
+  if (!/VIBE_TEAM_SPAWN\s*:/i.test(text)) return;
+  const m = text.match(/VIBE_TEAM_SPAWN\s*:\s*([^\n\r]+)/i);
+  if (!m) return;
+  const workers = m[1]
+    .split(/[,;\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => ["claude", "codex", "grok", "agy", "antigravity"].includes(s))
+    .map((s) => (s === "antigravity" ? "agy" : s));
+  if (!workers.length) return;
+  const focus = {};
+  const fm = text.match(/VIBE_TEAM_FOCUS\s*:\s*([^\n\r]+)/i);
+  if (fm) {
+    fm[1].split(/[;|]/).forEach((part) => {
+      const [h, ...rest] = part.split("=");
+      if (h && rest.length) focus[h.trim().toLowerCase()] = rest.join("=").trim();
+    });
+  }
+  try {
+    channel.push("team_spawn", {
+      chatId: task.chatId || task.chat_id,
+      teamRunId,
+      workers,
+      focusByHandle: focus,
+      requesterUserId: task.requesterUserId || task.requester_user_id,
+      leadWorker: task.leadWorker || task.lead_worker,
+    });
+    console.log(
+      `[vibe-bridge] team_spawn run=${teamRunId} workers=${workers.join(",")} chat=${task.chatId}`
+    );
+  } catch (err) {
+    console.warn("[vibe-bridge] team_spawn push failed:", err && err.message);
+  }
 }
 
 function intelligenceFor(task) {
@@ -1158,29 +2194,30 @@ function buildCommand(provider, prompt, chatId, task) {
     // into a throttled `vibe_thinking` progress line (see thinkingState below).
     const args = ["-p", "--output-format", "stream-json", "--include-partial-messages", "--permission-mode", mode, "--effort", effort];
     appendToolListArg(args, "--disallowedTools", claudeDisallowedTools(task));
+    // Pre-approve the safe inspection/verification commands. Without this a headless
+    // run in acceptEdits mode has no way to answer a Bash permission prompt, so every
+    // test/build/grep the task needs to verify itself silently dies.
+    const allowedTools = claudeAllowedTools(task);
     if (ASK_MCP_ENABLED && askMcpConfigPath) {
       // Expose the ask_user + approve_command MCP tools and pre-allow them so the
       // mid-run question and command-approval round-trips never themselves trip a
       // (headless-unanswerable) permission prompt.
-      const allowedMcpTools = [ASK_TOOL_NAME, APPROVE_TOOL_NAME];
-      if (FABLE_MCP_ENABLED) allowedMcpTools.push(FABLE_TOOL_NAME);
-      args.push(
-        "--mcp-config",
-        askMcpConfigPath,
-        "--allowedTools",
-        allowedMcpTools.join(",")
-      );
+      allowedTools.push(ASK_TOOL_NAME, APPROVE_TOOL_NAME);
+      if (FABLE_MCP_ENABLED) allowedTools.push(FABLE_TOOL_NAME);
+      args.push("--mcp-config", askMcpConfigPath);
       // Live "ask" mode: route every other tool's permission request to the phone
       // via the approve_command permission-prompt tool (Approve/Skip/Deny sheet).
       if (workModeFor(task) === "ask") {
         args.push("--permission-prompt-tool", APPROVE_TOOL_NAME);
       }
     }
+    appendToolListArg(args, "--allowedTools", allowedTools);
     const resumeId = resumeIdFor(task);
     if (resumeId) args.push("--resume", resumeId);
     args.push("--verbose");
     if (model) args.push("--model", model);
-    if (advisor) args.push("--advisor", advisor);
+    // Fable is the primary Claude advisor; Sol is not a Claude --advisor flag.
+    if (advisor && advisor !== "sol") args.push("--advisor", advisor);
     args.push("--", cleaned);
     return { cmd: process.env.VIBE_CLAUDE_COMMAND || "claude", args };
   }
@@ -1351,7 +2388,22 @@ function pushProgressFrame(channel, key, payload) {
   try {
     channel.push("progress", framed).receive("ok", () => ackProgressFrame(key, seq));
   } catch (_) {}
+  // Mirror to any authenticated LAN clients so a co-located phone gets frames even when
+  // the cloud socket is flapping. Cloud remains the ack source of truth for frameLog prune.
+  fanoutLanEvent("progress", framed);
   return framed;
+}
+
+/** Fire-and-forget fanout to every authenticated LAN phone socket. */
+function fanoutLanEvent(type, payload, excludedSocket) {
+  if (!lanClients || lanClients.size === 0) return;
+  const raw = JSON.stringify({ type, payload: payload == null ? {} : payload });
+  for (const sock of lanClients) {
+    try {
+      if (excludedSocket && sock === excludedSocket) continue;
+      if (sock.readyState === WebSocket.OPEN) sock.send(raw);
+    } catch (_) {}
+  }
 }
 
 // Server → bridge ack for a delivered progress frame. Prunes every frame up through
@@ -1434,6 +2486,132 @@ function rememberRuntime(provider, chatId, runtime) {
       cliCommands: runtime.cliCommands || [],
     });
   }
+}
+
+/** True when a CLI/error string is a subscription / rate-limit hit (not a code failure). */
+function isUsageLimitText(text) {
+  if (!text || typeof text !== "string") return false;
+  const t = text.toLowerCase();
+  return (
+    /you'?ve hit your (usage|session) limit/.test(t) ||
+    /hit your (usage|session) limit/.test(t) ||
+    /usage limit/.test(t) ||
+    /session limit/.test(t) ||
+    /rate limit/.test(t) ||
+    /quota (exceeded|exhausted)/.test(t) ||
+    /reached your .*limit/.test(t) ||
+    /out of (usage|credits|quota)/.test(t)
+  );
+}
+
+/**
+ * Capture Codex (and similar) rate_limits snapshots from stream lines into
+ * lastRateLimitsByProvider. Codex token_count events carry:
+ *   primary:  { used_percent, window_minutes: 300, resets_at (unix) }
+ *   secondary:{ used_percent, window_minutes: 10080, resets_at }
+ */
+function captureRateLimitsFromLine(provider, line) {
+  if (!provider || !line || typeof line !== "string") return;
+  if (!line.includes("rate_limits") && !line.includes("used_percent")) return;
+  let obj;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return;
+  }
+  // Codex exec/stdout shapes: top-level rate_limits, payload.rate_limits, or
+  // event_msg wrapper with payload.rate_limits.
+  const rl =
+    (obj && obj.rate_limits) ||
+    (obj && obj.payload && obj.payload.rate_limits) ||
+    (obj && obj.type === "token_count" && obj.rate_limits) ||
+    null;
+  if (!rl || typeof rl !== "object") return;
+
+  const buckets = [];
+  const addWindow = (label, win) => {
+    if (!win || typeof win !== "object") return;
+    const util = Number(win.used_percent ?? win.utilization ?? win.usedPercent);
+    if (!Number.isFinite(util)) return;
+    let resetsAt = null;
+    const rawReset = win.resets_at ?? win.resetsAt ?? win.reset_at;
+    if (typeof rawReset === "number" && Number.isFinite(rawReset)) {
+      // Unix seconds → ISO
+      resetsAt = new Date(rawReset * 1000).toISOString();
+    } else if (typeof rawReset === "string" && rawReset) {
+      resetsAt = rawReset;
+    } else if (typeof win.resets_in_seconds === "number") {
+      resetsAt = new Date(Date.now() + win.resets_in_seconds * 1000).toISOString();
+    }
+    // Label from the CLI's ACTUAL window, never a hardcoded assumption. Codex can
+    // change or drop a window (e.g. it removed the 5-hour session) — if it stops
+    // reporting `primary`, addWindow returns early above and no bucket is emitted, so
+    // the phone never shows a window the CLI no longer enforces. The passed `label` is
+    // only a last resort when the CLI omits window_minutes entirely.
+    const minutes = Number(win.window_minutes ?? win.windowMinutes);
+    let resolvedLabel;
+    if (Number.isFinite(minutes) && minutes > 0) {
+      if (minutes === 300) resolvedLabel = "5-hour limit";
+      else if (minutes === 10080) resolvedLabel = "Weekly limit";
+      else if (minutes % 1440 === 0) resolvedLabel = `${minutes / 1440}-day limit`;
+      else if (minutes % 60 === 0) resolvedLabel = `${minutes / 60}-hour limit`;
+      else resolvedLabel = `${minutes}-min limit`;
+    } else {
+      resolvedLabel = label || "Usage";
+    }
+    buckets.push({
+      label: resolvedLabel,
+      utilization: Math.round(util),
+      resetsAt,
+    });
+  };
+
+  // Pass null so the label is derived from each window's REAL window_minutes — see
+  // addWindow. Do not assume primary=5h / secondary=weekly; the CLI is the source of
+  // truth for which windows exist and how long they are.
+  addWindow(null, rl.primary);
+  addWindow(null, rl.secondary);
+  // Some shapes nest under limit windows array
+  if (Array.isArray(rl.windows)) {
+    for (const w of rl.windows) addWindow(null, w);
+  }
+  if (buckets.length === 0) return;
+  lastRateLimitsByProvider.set(provider, { at: Date.now(), buckets });
+}
+
+/** Parse a free-text limit message for a rough resetsAt ISO (e.g. "resets in 3h 12m"). */
+function parseResetHintFromText(text) {
+  if (!text || typeof text !== "string") return null;
+  const m = text.match(/resets?\s+(?:in\s+)?(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?/i);
+  if (!m) return null;
+  const d = Number(m[1] || 0);
+  const h = Number(m[2] || 0);
+  const min = Number(m[3] || 0);
+  if (!d && !h && !min) return null;
+  return new Date(Date.now() + ((d * 24 + h) * 60 + min) * 60 * 1000).toISOString();
+}
+
+/**
+ * When a run fails with a usage/session limit, remember a 100% bucket so the phone
+ * can show the usage banner even without a live rate_limits snapshot.
+ */
+function rememberUsageLimitHit(provider, message) {
+  if (!provider || !isUsageLimitText(message)) return false;
+  const existing = lastRateLimitsByProvider.get(provider);
+  const resetsAt = parseResetHintFromText(message);
+  const buckets =
+    existing && Array.isArray(existing.buckets) && existing.buckets.length
+      ? existing.buckets.map((b) => ({
+          ...b,
+          utilization: Math.max(100, Number(b.utilization) || 0),
+          resetsAt: b.resetsAt || resetsAt,
+        }))
+      // No real window was ever reported — emit a GENERIC limit marker, not a fake
+      // "5-hour" window the CLI never sent. resetsAt stays whatever the limit text
+      // actually parsed (may be null); we never invent a reset time.
+      : [{ label: "Usage limit", utilization: 100, resetsAt }];
+  lastRateLimitsByProvider.set(provider, { at: Date.now(), buckets, hit: true, message: String(message || "").slice(0, 400) });
+  return true;
 }
 
 function runGit(cwd, args, maxBytes = MAX_DIFF_BYTES) {
@@ -1632,6 +2810,66 @@ function decodedOutputEvents(output) {
     } catch (_) {}
   }
   return events;
+}
+
+// Some provider CLIs can exit 0 after emitting a terminal failure frame. In
+// particular Grok has returned `{type:"end", stopReason:"Cancelled"}` on a
+// timed-out turn. Treating that as success advances the team to the next owner
+// with a missing handoff. Normalize those semantic failures before constructing
+// the final bridge result.
+function providerTerminalFailure(provider, output) {
+  const events = decodedOutputEvents(output);
+  const normalizedProvider = String(provider || "").trim().toLowerCase();
+  let codexCompleted = false;
+  let codexItemError = null;
+
+  for (const event of events) {
+    const type = String(event.type || event.event || "").trim().toLowerCase();
+    const subtype = String(event.subtype || "").trim().toLowerCase();
+    const stopReason = String(
+      event.stopReason || event.stop_reason || event.terminal_reason || ""
+    ).trim().toLowerCase();
+    const status = String(event.status || "").trim().toLowerCase();
+
+    if (normalizedProvider === "codex" && type === "turn.completed") {
+      codexCompleted = true;
+    }
+    if (
+      normalizedProvider === "codex" &&
+      type === "item.completed" &&
+      event.item &&
+      String(event.item.type || "").toLowerCase() === "error"
+    ) {
+      codexItemError = String(event.item.message || "codex_item_error");
+    }
+
+    if ([stopReason, status].some((value) =>
+      ["cancel", "cancelled", "canceled", "stopped", "timed_out", "timeout"].includes(value)
+    )) {
+      return { failed: true, canceled: true, reason: stopReason || status };
+    }
+
+    if (
+      type === "turn.failed" ||
+      type === "turn_failed" ||
+      type === "fatal" ||
+      (type === "result" && (event.is_error === true || ["error", "failed"].includes(subtype)))
+    ) {
+      return { failed: true, canceled: false, reason: subtype || type };
+    }
+
+    // Provider-level error frames are terminal. Tool-result errors are nested
+    // under other event types and remain ordinary agent observations.
+    if (type === "error" && normalizedProvider !== "claude") {
+      return { failed: true, canceled: false, reason: "provider_error" };
+    }
+  }
+
+  if (normalizedProvider === "codex" && !codexCompleted && codexItemError) {
+    return { failed: true, canceled: false, reason: codexItemError };
+  }
+
+  return null;
 }
 
 function compactStringList(value, limit = 40) {
@@ -1999,6 +3237,378 @@ function fmtResetIn(iso) {
   return `resets in ${m}m`;
 }
 
+// ── Grok (xAI) subscription usage ────────────────────────────────────
+// Live: GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
+// with Bearer from ~/.grok/auth.json (same token the CLI uses). Fallback:
+// parse the latest "billing: fetched credits config" line from
+// ~/.grok/logs/unified.jsonl. Returns { buckets, tier } or null.
+let grokUtilCache = { at: 0, data: null };
+async function fetchGrokUtilization() {
+  if (grokUtilCache.data && Date.now() - grokUtilCache.at < 45000) return grokUtilCache.data;
+  let token = null;
+  try {
+    const raw = fs.readFileSync(path.join(os.homedir(), ".grok", "auth.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    const entry = parsed && typeof parsed === "object" ? Object.values(parsed)[0] : null;
+    token = entry && (entry.key || entry.access_token || entry.accessToken);
+  } catch (_) {
+    token = null;
+  }
+  if (token) {
+    try {
+      const res = await fetch("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+          "User-Agent": "GrokBuild/0.2.93",
+          "x-grok-client-version": "0.2.93",
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const cfg = (data && data.config) || data || {};
+        const buckets = grokConfigToBuckets(cfg);
+        if (buckets.length) {
+          const out = {
+            buckets,
+            tier: (data && data.ctx && data.ctx.subscriptionTier) || null,
+          };
+          // subscriptionTier is on log lines; API may put it elsewhere
+          if (data && data.subscriptionTier) out.tier = data.subscriptionTier;
+          grokUtilCache = { at: Date.now(), data: out };
+          lastRateLimitsByProvider.set("grok", { at: Date.now(), buckets });
+          return out;
+        }
+      }
+    } catch (_) {
+      /* fall through to log parse */
+    }
+  }
+  const disk = fetchGrokUtilizationFromLog();
+  if (disk) {
+    grokUtilCache = { at: Date.now(), data: disk };
+    lastRateLimitsByProvider.set("grok", { at: Date.now(), buckets: disk.buckets });
+    return disk;
+  }
+  return null;
+}
+
+function grokConfigToBuckets(cfg) {
+  if (!cfg || typeof cfg !== "object") return [];
+  const buckets = [];
+  const period = cfg.currentPeriod || {};
+  const resetsAt = period.end || cfg.billingPeriodEnd || null;
+  const periodType = String(period.type || "").toUpperCase();
+  let periodLabel = "7-day (weekly)";
+  if (periodType.includes("MONTH")) periodLabel = "Monthly";
+  else if (periodType.includes("DAY") && !periodType.includes("WEEK")) periodLabel = "Daily";
+  else if (periodType.includes("HOUR") || periodType.includes("5H")) periodLabel = "5-hour session";
+
+  const pct = Number(cfg.creditUsagePercent);
+  if (Number.isFinite(pct)) {
+    buckets.push({
+      label: periodLabel,
+      utilization: Math.round(pct),
+      resetsAt: typeof resetsAt === "string" ? resetsAt : null,
+    });
+  }
+  // Per-product breakdown when present (e.g. GrokBuild vs Api).
+  if (Array.isArray(cfg.productUsage)) {
+    for (const p of cfg.productUsage) {
+      if (!p || typeof p !== "object") continue;
+      const name = String(p.product || "").trim();
+      const up = Number(p.usagePercent);
+      if (!name || !Number.isFinite(up)) continue;
+      // Skip if same as overall weekly already pushed.
+      if (name.toLowerCase() === "grokbuild" && buckets.length) continue;
+      buckets.push({
+        label: `${name} usage`,
+        utilization: Math.round(up),
+        resetsAt: typeof resetsAt === "string" ? resetsAt : null,
+      });
+    }
+  }
+  return buckets;
+}
+
+function fetchGrokUtilizationFromLog() {
+  try {
+    const logPath = path.join(os.homedir(), ".grok", "logs", "unified.jsonl");
+    if (!fs.existsSync(logPath)) return null;
+    const st = fs.statSync(logPath);
+    const size = Math.min(st.size, 512 * 1024);
+    const fd = fs.openSync(logPath, "r");
+    const buf = Buffer.alloc(size);
+    fs.readSync(fd, buf, 0, size, Math.max(0, st.size - size));
+    fs.closeSync(fd);
+    const lines = buf.toString("utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line || !line.includes("creditUsagePercent")) continue;
+      let obj;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const cfg =
+        (obj && obj.ctx && obj.ctx.config) ||
+        (obj && obj.config) ||
+        null;
+      if (!cfg) continue;
+      const buckets = grokConfigToBuckets(cfg);
+      if (!buckets.length) continue;
+      return {
+        buckets,
+        tier: (obj.ctx && obj.ctx.subscriptionTier) || null,
+      };
+    }
+  } catch (_) {
+    /* */
+  }
+  return null;
+}
+
+// ── Agy / Antigravity (Google Cloud Code) quota ──────────────────────
+// Live: POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary
+// with the consumer OAuth token from macOS Keychain service "gemini" /
+// account "antigravity" (go-keyring-base64 JSON). Summary groups expose
+// "Five Hour Limit" + "Weekly Limit" with remainingFraction + resetTime.
+let agyUtilCache = { at: 0, data: null };
+async function fetchAgyUtilization() {
+  if (agyUtilCache.data && Date.now() - agyUtilCache.at < 45000) return agyUtilCache.data;
+  const token = readAgyAccessToken();
+  if (!token) return null;
+  try {
+    const res = await fetch(
+      "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "User-Agent": "antigravity",
+        },
+        body: "{}",
+        signal: AbortSignal.timeout(12000),
+      }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const buckets = agySummaryToBuckets(data);
+    if (!buckets.length) return null;
+    const out = { buckets };
+    agyUtilCache = { at: Date.now(), data: out };
+    lastRateLimitsByProvider.set("agy", { at: Date.now(), buckets });
+    return out;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readAgyAccessToken() {
+  // 1) Keychain (preferred — live CLI session token)
+  try {
+    const raw = execFileSync(
+      "security",
+      ["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
+      { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }
+    ).trim();
+    let jsonStr = raw;
+    if (raw.startsWith("go-keyring-base64:")) {
+      jsonStr = Buffer.from(raw.slice("go-keyring-base64:".length), "base64").toString("utf8");
+    }
+    const parsed = JSON.parse(jsonStr);
+    const tok = (parsed && parsed.token) || parsed || {};
+    if (tok.access_token) return tok.access_token;
+  } catch (_) {
+    /* */
+  }
+  // 2) ~/.gemini/oauth_creds.json fallback
+  try {
+    const raw = fs.readFileSync(path.join(os.homedir(), ".gemini", "oauth_creds.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.access_token) return parsed.access_token;
+  } catch (_) {
+    /* */
+  }
+  return null;
+}
+
+function agySummaryToBuckets(data) {
+  if (!data || typeof data !== "object") return [];
+  const buckets = [];
+  const seen = new Set();
+  const push = (label, remainingFraction, resetTime) => {
+    const rem = Number(remainingFraction);
+    if (!Number.isFinite(rem)) return;
+    const util = Math.round(Math.max(0, Math.min(100, (1 - rem) * 100)));
+    const key = `${label}|${resetTime || ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    buckets.push({
+      label,
+      utilization: util,
+      resetsAt: typeof resetTime === "string" && resetTime ? resetTime : null,
+    });
+  };
+
+  // Preferred: grouped summary (Gemini Models / 3p models with 5h + weekly).
+  const groups = Array.isArray(data.groups) ? data.groups : [];
+  for (const g of groups) {
+    const groupName = String((g && g.displayName) || "").trim();
+    const list = (g && Array.isArray(g.buckets) && g.buckets) || [];
+    for (const b of list) {
+      if (!b || typeof b !== "object") continue;
+      const display = String(b.displayName || b.bucketId || "").trim();
+      const window = String(b.window || "").toLowerCase();
+      let label = display || "Usage";
+      if (window === "5h" || /five.?hour|5.?hour/i.test(display)) {
+        label = groupName ? `${groupName} · 5-hour` : "5-hour session";
+      } else if (window === "weekly" || /week/i.test(display)) {
+        label = groupName ? `${groupName} · weekly` : "7-day (weekly)";
+      } else if (groupName) {
+        label = `${groupName} · ${display || window || "limit"}`;
+      }
+      push(label, b.remainingFraction ?? b.remaining_fraction, b.resetTime || b.reset_time);
+    }
+  }
+
+  // Fallback: flat buckets from retrieveUserQuota (per-model).
+  if (!buckets.length && Array.isArray(data.buckets)) {
+    for (const b of data.buckets) {
+      if (!b || typeof b !== "object") continue;
+      const model = String(b.modelId || b.model_id || "").trim() || "model";
+      push(model, b.remainingFraction ?? b.remaining_fraction, b.resetTime || b.reset_time);
+    }
+  }
+  return buckets;
+}
+
+// Read the latest Codex rate_limits snapshot from on-disk session logs under
+// ~/.codex/sessions (and archived_sessions). Codex has no headless OAuth usage
+// endpoint like Claude; windows are written into every token_count event.
+// Returns { buckets: [...] } or null. Never throws.
+function fetchCodexUtilizationFromDisk() {
+  try {
+    // Session files outlive the CLI process and even the subscription shape that wrote
+    // them. They are useful as a short handoff cache, not as current account authority.
+    const maxSnapshotAgeMs = 30 * 60 * 1000;
+    const now = Date.now();
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    const roots = [
+      path.join(home, ".codex", "sessions"),
+      path.join(home, ".codex", "archived_sessions"),
+    ];
+    const files = [];
+    const walk = (dir, depth) => {
+      if (depth > 6) return;
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const ent of entries) {
+        const full = path.join(dir, ent.name);
+        if (ent.isDirectory()) walk(full, depth + 1);
+        else if (ent.isFile() && ent.name.endsWith(".jsonl")) {
+          try {
+            files.push({ full, mtime: fs.statSync(full).mtimeMs });
+          } catch {
+            /* */
+          }
+        }
+      }
+    };
+    for (const root of roots) walk(root, 0);
+    // Sort by mtime first — directory walk order is not chronological.
+    files.sort((a, b) => b.mtime - a.mtime);
+    const newest = files
+      .filter((file) => now - file.mtime <= maxSnapshotAgeMs)
+      .slice(0, 20);
+    // Walk newest → oldest; first rate_limits wins.
+    for (const { full } of newest) {
+      let text;
+      try {
+        // Tail-read last ~256KB — rate_limits appear on every token_count near the end.
+        const st = fs.statSync(full);
+        const fd = fs.openSync(full, "r");
+        const size = Math.min(st.size, 256 * 1024);
+        const buf = Buffer.alloc(size);
+        fs.readSync(fd, buf, 0, size, Math.max(0, st.size - size));
+        fs.closeSync(fd);
+        text = buf.toString("utf8");
+      } catch {
+        continue;
+      }
+      const lines = text.split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (!line || !line.includes("rate_limits") || !line.includes("used_percent")) continue;
+        let obj;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const eventTimestamp = Date.parse(
+          String((obj && (obj.timestamp || obj.created_at || obj.createdAt)) || "")
+        );
+        if (Number.isFinite(eventTimestamp) && now - eventTimestamp > maxSnapshotAgeMs) {
+          continue;
+        }
+        const rl =
+          (obj && obj.rate_limits) ||
+          (obj && obj.payload && obj.payload.rate_limits) ||
+          null;
+        if (!rl || typeof rl !== "object") continue;
+        const buckets = [];
+        const add = (label, win) => {
+          if (!win || typeof win !== "object") return;
+          const util = Number(win.used_percent ?? win.utilization ?? win.usedPercent);
+          if (!Number.isFinite(util)) return;
+          let resetsAt = null;
+          const raw = win.resets_at ?? win.resetsAt;
+          if (typeof raw === "number" && Number.isFinite(raw)) {
+            resetsAt = new Date(raw * 1000).toISOString();
+          } else if (typeof raw === "string" && raw) {
+            resetsAt = raw;
+          }
+          buckets.push({
+            label,
+            utilization: Math.round(util),
+            resetsAt,
+            windowMinutes: Number(win.window_minutes ?? win.windowMinutes) || null,
+          });
+        };
+        const windowLabel = (win) => {
+          const minutes = Number(win && (win.window_minutes ?? win.windowMinutes));
+          if (!Number.isFinite(minutes) || minutes <= 0) return "Usage";
+          if (minutes === 300) return "5-hour limit";
+          if (minutes === 10080) return "Weekly limit";
+          if (minutes % 1440 === 0) return `${minutes / 1440}-day limit`;
+          if (minutes % 60 === 0) return `${minutes / 60}-hour limit`;
+          return `${minutes}-min limit`;
+        };
+        // A missing primary/secondary window emits nothing. Never infer a 5-hour
+        // window merely because one side of the historical pair is absent.
+        add(windowLabel(rl.primary), rl.primary);
+        add(windowLabel(rl.secondary), rl.secondary);
+        if (buckets.length) {
+          lastRateLimitsByProvider.set("codex", { at: Date.now(), buckets });
+          return { buckets, planType: rl.plan_type || rl.planType || null };
+        }
+      }
+    }
+  } catch (_) {
+    /* never throw */
+  }
+  return null;
+}
+
 function formatClaudeUtilization(util) {
   if (!util || typeof util !== "object") return null;
   const lines = [];
@@ -2053,6 +3663,31 @@ async function bridgeCommandOutput(provider, chatId, task, repo, command) {
           lines.push("");
         } else {
           lines.push("(Subscription limits unavailable — sign in to Claude on this computer.)");
+          lines.push("");
+        }
+      } else if (provider === "codex" || provider === "grok" || provider === "agy") {
+        // Reuse structured report so /usage text matches the phone sheet.
+        const structured = await buildUsageReport(provider, chatId, { chatId, provider });
+        if (structured.buckets && structured.buckets.length) {
+          lines.push("Subscription limits:");
+          for (const b of structured.buckets) {
+            const reset = b.resetsAt ? fmtResetIn(b.resetsAt) : "";
+            lines.push(
+              `${b.label}: ${Math.round(Number(b.utilization) || 0)}% used${reset ? ` · ${reset}` : ""}`
+            );
+          }
+          lines.push("");
+        }
+      } else {
+        const cached = lastRateLimitsByProvider.get(provider);
+        if (cached && Array.isArray(cached.buckets) && cached.buckets.length) {
+          lines.push("Subscription limits:");
+          for (const b of cached.buckets) {
+            const reset = b.resetsAt ? fmtResetIn(b.resetsAt) : "";
+            lines.push(
+              `${b.label}: ${Math.round(Number(b.utilization) || 0)}% used${reset ? ` · ${reset}` : ""}`
+            );
+          }
           lines.push("");
         }
       }
@@ -2404,6 +4039,9 @@ function runtimePayload({
   const resolvedPayloadAdvisor = metadata.advisor || advisorFor(provider, task && task.chatId, task);
   if (resolvedPayloadModel) payload.model = resolvedPayloadModel;
   if (resolvedPayloadAdvisor) payload.advisor = resolvedPayloadAdvisor;
+  payload.intelligence = intelligenceFor(task);
+  payload.speed = speedFor(task);
+  payload.reasoningEffort = reasoningEffortFor(provider, task);
   if (metadata.permissionMode) payload.permissionMode = metadata.permissionMode;
   if (metadata.sessionId) payload.sessionId = metadata.sessionId;
   if (metadata.threadId) payload.threadId = metadata.threadId;
@@ -2510,12 +4148,25 @@ function revertFinishedTask(channel, payload) {
 }
 
 function bridgeStatusPayload() {
+  // Kick a background refresh when cache is empty/stale so the next status push
+  // carries live provider catalogs (Claude API / grok models / agy models).
+  if (
+    !providerModelsCache.models ||
+    Date.now() - providerModelsCache.at > PROVIDER_MODELS_TTL_MS
+  ) {
+    discoverProviderModels(false).catch(() => {});
+  }
+  refreshExternalProviderActivity().catch(() => {});
+  const models = providerModelsCache.models || fallbackProviderModels();
   return {
     computerId: ACTIVE_COMPUTER_ID,
     deviceLabel: ARGS.label || os.hostname(),
     cwd: DEFAULT_CWD,
     repositories: ADVERTISED_REPOSITORIES,
     runningTasks: runningTaskSummaries(),
+    // Live model pickers for the phone (refreshed from provider CLIs/APIs).
+    models,
+    modelsUpdatedAt: providerModelsCache.at || null,
     permissions: {
       claude: {
         permissionMode: process.env.VIBE_CLAUDE_PERMISSION_MODE || "per-task",
@@ -2545,12 +4196,13 @@ function bridgeStatusPayload() {
 
 function runningTaskSummaries() {
   const now = Date.now();
-  return Array.from(runningTasks.values()).map((entry) => ({
+  const bridgeTasks = Array.from(runningTasks.values()).map((entry) => ({
     provider: entry.provider,
     chatId: entry.chatId,
     taskId: entry.taskId,
     sessionId: entry.sessionId || null,
-    topic: cleanTopicCandidate(entry.prompt) || clip(`${entry.provider || "Agent"} task`, 80),
+    topic: (entry.provider === "codex" ? codexFallbackTitle(entry.prompt) : cleanTopicCandidate(entry.prompt))
+      || clip(`${entry.provider || "Agent"} task`, 80),
     repoId: entry.repo && entry.repo.id,
     repoName: entry.repo && entry.repo.name,
     project: entry.repo && (entry.repo.cwd || entry.repo.path),
@@ -2571,11 +4223,92 @@ function runningTaskSummaries() {
     teamWorker: entry.teamWorker || null,
     teamWorkers: Array.isArray(entry.teamWorkers) ? entry.teamWorkers : [],
   }));
+  const bridgeSessionIds = new Set(bridgeTasks.map((task) => task.sessionId).filter(Boolean));
+  return bridgeTasks.concat(
+    externalProviderActivity.filter((task) => !bridgeSessionIds.has(task.sessionId))
+  );
+}
+
+// Desktop / IDE sessions do not enter `runningTasks` because the bridge did not
+// spawn them. Expose each provider's newest live local session as provider-scoped
+// activity so Home reflects Claude/Grok/Agy as well as Codex.
+const EXTERNAL_PROVIDER_STATUS_TTL_MS = 3_000;
+let externalProviderActivity = [];
+let externalProviderActivityAt = 0;
+let externalProviderActivityRefresh = null;
+
+async function refreshExternalProviderActivity() {
+  const now = Date.now();
+  if (externalProviderActivityRefresh || now - externalProviderActivityAt < EXTERNAL_PROVIDER_STATUS_TTL_MS) {
+    return externalProviderActivityRefresh;
+  }
+  externalProviderActivityRefresh = (async () => {
+    const previous = JSON.stringify(externalProviderActivity);
+    const catalogs = await Promise.all([
+      listClaude(1),
+      listCodex(1),
+      listGrok(1),
+      listAgy(1),
+    ]);
+    externalProviderActivity = catalogs.flatMap((sessions) => {
+      const session = sessions.find((item) => item && item.live);
+      if (!session) return [];
+      const provider = String(session.provider || "").trim().toLowerCase();
+      if (!provider) return [];
+      return [{
+          provider,
+          // Desktop/IDE activity is not owned by any mobile DM. Keep it provider-
+          // wide so a stale prior chat id cannot hide the provider's Home state.
+          chatId: "",
+          taskId: `desktop:${provider}:${session.id}`,
+          sessionId: session.id,
+          topic: session.topic || `${provider} task`,
+          project: session.project || "",
+          projectName: session.projectName || "",
+          cwd: session.project || "",
+          startedAt: session.updatedAt || new Date().toISOString(),
+          source: "desktop",
+        }];
+    });
+    externalProviderActivityAt = Date.now();
+    if (previous !== JSON.stringify(externalProviderActivity)) {
+      const active = externalProviderActivity.map((task) => task.provider).join(",") || "none";
+      console.log(`[vibe-bridge][home-live] active providers=${active}`);
+    }
+    // The status push that initiated this async scan necessarily used the old
+    // cache. Publish the completed snapshot immediately so the server/phone do
+    // not wait for the next 30-second heartbeat.
+    if (previous !== JSON.stringify(externalProviderActivity)) {
+      const payload = bridgeStatusPayload();
+      if (activeChannel && activeChannel.state === "joined") {
+        activeChannel.push("status", payload);
+      }
+      // A chat page stops Home's REST poll. Keep every authenticated phone current
+      // directly as provider desktop/CLI activity starts or ends.
+      fanoutLanEvent("bridge_status", payload);
+    }
+  })().catch((err) => {
+    console.warn(`[vibe-bridge][home-live] provider scan failed: ${err && err.message ? err.message : err}`);
+    throw err;
+  });
+  try {
+    await externalProviderActivityRefresh;
+  } finally {
+    externalProviderActivityRefresh = null;
+  }
 }
 
 function teamFieldsForTask(task) {
   if (!task || typeof task !== "object") {
-    return { teamMode: null, teamRunId: null, teamWorker: null, teamWorkers: [] };
+    return {
+      teamMode: null,
+      teamRunId: null,
+      teamWorker: null,
+      teamWorkers: [],
+      leadWorker: null,
+      teamRole: null,
+      suppressVisible: false,
+    };
   }
   return {
     teamMode: task.teamMode || task.team_mode || null,
@@ -2586,13 +4319,40 @@ function teamFieldsForTask(task) {
       : Array.isArray(task.team_workers)
         ? task.team_workers
         : [],
+    leadWorker: task.leadWorker || task.lead_worker || null,
+    teamRole: task.teamRole || task.team_role || null,
+    suppressVisible:
+      task.suppressVisible === true ||
+      task.suppress_visible === true ||
+      task.teamRole === "worker" ||
+      task.team_role === "worker",
   };
 }
 
-function pushBridgeStatus(channel) {
-  if (channel.state === "joined") {
-    channel.push("status", bridgeStatusPayload());
-  }
+function pushBridgeStatus(channel, forceModels) {
+  if (channel.state !== "joined") return;
+  // Ensure models are populated before the first status after connect when possible.
+  // forceModels=true on connect so the phone sees a fresh provider catalog immediately.
+  discoverProviderModels(!!forceModels)
+    .then((models) => {
+      try {
+        const counts = Object.fromEntries(
+          Object.entries(models || {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])
+        );
+        console.log(`[vibe-bridge] provider models ready ${JSON.stringify(counts)}`);
+      } catch (_) {}
+    })
+    .catch(() => {})
+    .finally(() => {
+      if (channel.state !== "joined") return;
+      const payload = bridgeStatusPayload();
+      channel.push("status", payload);
+      // Status is task authority, not a Home-only decoration. Mirror every start,
+      // session-id discovery, and finish to LAN immediately. When `channel` itself is
+      // the requesting LAN transport, exclude that one socket because channel.push
+      // already delivered it there; other phones still receive the same snapshot.
+      fanoutLanEvent("bridge_status", payload, channel._lanSocket || null);
+    });
 }
 
 // ── Interactive repo pick ───────────────────────────────────────────
@@ -2837,6 +4597,14 @@ function captureSessionId(line) {
     if (typeof ev.session_id === "string") return ev.session_id;
     // Grok streaming-json / json use camelCase sessionId on the end frame.
     if (typeof ev.sessionId === "string") return ev.sessionId;
+    // `codex exec --json` announces the durable history id on its first event:
+    //   {"type":"thread.started","thread_id":"..."}
+    // Without this, the running task has no sessionId and iOS cannot merge it with
+    // the matching history row (so it renders a second prompt-derived row with a
+    // synthetic message count instead).
+    if (ev.type === "thread.started" && typeof ev.thread_id === "string") {
+      return ev.thread_id;
+    }
   } catch (_) {}
   return null;
 }
@@ -2862,9 +4630,10 @@ function looksToolish(line) {
   );
 }
 
-// Forward a line live if it carries assistant TEXT or tool activity, so the
-// server can stream a live bubble (not just the final batch). System/init lines
-// are skipped. The server is the source of truth for parsing — we stay thin.
+// Forward a line live only when it is a recognized assistant/tool event, so the
+// server can stream a live bubble (not just the final batch). Do not match on
+// arbitrary JSON text: Claude's bootstrap record contains a large tools/catalog
+// payload, and forwarding it makes the phone parse/render metadata as a live turn.
 function streamable(line) {
   // `--include-partial-messages` emits per-token `stream_event` deltas (text_delta,
   // message_start, …) that would otherwise match on "text"/"assistant" below and flood
@@ -2872,15 +4641,42 @@ function streamable(line) {
   // assistant message follows), and the one signal we DO want from them — thinking token
   // growth — is coalesced separately into the throttled vibe_thinking line (trackThinking).
   if (line.includes("stream_event")) return false;
-  return (
-    looksToolish(line) ||
-    line.includes('"text"') || // claude assistant text blocks + grok type:text
-    line.includes('"thought"') || // grok reasoning chunks
-    line.includes('"type":"end"') || // grok turn complete
-    line.includes('"assistant"') ||
-    line.includes('"agent_message"') || // codex agent text
-    line.includes('"item"') // codex item events
-  );
+  let event;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (!event || typeof event !== "object") return false;
+
+  const type = typeof event.type === "string" ? event.type.toLowerCase() : "";
+  if (
+    [
+      "assistant", // Claude completed assistant message (text and tool_use blocks)
+      "text", // Grok/Agy streamed answer chunk
+      "thought", // Grok/Agy reasoning chunk
+      "end", // Grok terminal marker
+      "agent_message", // Codex agent text
+      "tool_use",
+      "tool_result",
+      "tool_call",
+      "tool_call_update",
+      "command_execution",
+      "file_change",
+      "mcp_tool_call",
+      "todo_list",
+      "apply_patch",
+      "response_item",
+      "item",
+    ].includes(type)
+  ) {
+    return true;
+  }
+
+  // Codex emits `item.started` / `item.completed` records and nests the actual
+  // tool or assistant payload under `item`. These are real turn updates, unlike
+  // CLI system/init records that merely enumerate capabilities.
+  return type.startsWith("item.") && event.item && typeof event.item === "object";
 }
 
 // Decrypt the phone's sealed image attachments and write them under the repo's
@@ -2931,10 +4727,18 @@ async function runTask(channel, task) {
 
   // Drop duplicate deliveries of the same task (cloud+LAN double-send, reconnect
   // re-delivery) BEFORE the git snapshot / spawn, so we never run the CLI twice.
-  if (isDuplicateRunTask(provider, chatId, taskId)) {
+  // A requeued admission-gate task already holds its reservation — let it through.
+  if (!task.__requeued && isDuplicateRunTask(provider, chatId, taskId)) {
     console.log(
       `[vibe-bridge] run_task DUPLICATE dropped provider=${provider} chat=${chatId} task=${taskId}`
     );
+    return;
+  }
+
+  // Admission gate: over the CLI concurrency cap this task waits its turn with
+  // periodic queued heartbeats instead of spawning another process.
+  if (!task.__requeued && runningTasks.size >= MAX_CONCURRENT_CLI_TASKS) {
+    enqueuePendingTask(channel, task);
     return;
   }
 
@@ -2982,7 +4786,7 @@ async function runTask(channel, task) {
       `Use your file Read tool to view ${attachments.length === 1 ? "it" : "them"}:\n${lines}\n\n${prompt}`;
   }
   const promptForCli = taskWantsBridgeInstructions(task, prompt)
-    ? taskPromptWithBridgeInstructions(provider, effectivePrompt, repo)
+    ? taskPromptWithBridgeInstructions(provider, effectivePrompt, repo, task)
     : effectivePrompt;
   const built = buildCommand(provider, promptForCli, chatId, task);
   if (!built) {
@@ -3059,20 +4863,14 @@ async function runTask(channel, task) {
     speed: speedFor(task),
     reasoningEffort: reasoningEffortFor(provider, task),
     command: compactCommand(built.cmd, built.args),
-    teamMode: task.teamMode || task.team_mode || null,
-    teamRunId: task.teamRunId || task.team_run_id || null,
-    teamWorker: task.teamWorker || task.team_worker || null,
-    teamWorkers: Array.isArray(task.teamWorkers)
-      ? task.teamWorkers
-      : Array.isArray(task.team_workers)
-        ? task.team_workers
-        : [],
+    ...teamFieldsForTask(task),
     startedAt,
     frameSeq: 0,
     lastAckedSeq: -1,
     frameLog: [],
     lastProgress: null,
   });
+  writeBridgeHeartbeat();
   pushBridgeStatus(channel);
   pushProgressFrame(channel, key, {
     provider,
@@ -3088,14 +4886,7 @@ async function runTask(channel, task) {
     intelligence: intelligenceFor(task),
     speed: speedFor(task),
     reasoningEffort: reasoningEffortFor(provider, task),
-    teamMode: task.teamMode || task.team_mode || null,
-    teamRunId: task.teamRunId || task.team_run_id || null,
-    teamWorker: task.teamWorker || task.team_worker || null,
-    teamWorkers: Array.isArray(task.teamWorkers)
-      ? task.teamWorkers
-      : Array.isArray(task.team_workers)
-        ? task.team_workers
-        : [],
+    ...teamFieldsForTask(task),
     stage: "started",
     command: compactCommand(built.cmd, built.args),
     line: JSON.stringify({
@@ -3112,6 +4903,7 @@ async function runTask(channel, task) {
       speed: speedFor(task),
       reasoningEffort: reasoningEffortFor(provider, task),
       command: compactCommand(built.cmd, built.args),
+      ...teamFieldsForTask(task),
     }),
   });
   let output = "";
@@ -3243,6 +5035,9 @@ async function runTask(channel, task) {
       // Coalesce partial thinking deltas into a throttled live token counter (does not
       // itself forward the raw partial line — see streamable()).
       trackThinking(line);
+      try {
+        captureRateLimitsFromLine(provider, line);
+      } catch (_) {}
       const sid = captureSessionId(line);
       if (sid) {
         // Fork detection: if the run REPORTS a session id different from the one we
@@ -3256,6 +5051,30 @@ async function runTask(channel, task) {
           );
         }
         sessionByChat.set(chatId, sid);
+        const entry = runningTasks.get(key);
+        if (entry && entry.sessionId !== sid) {
+          entry.sessionId = sid;
+          console.log(
+            `[vibe-bridge][history-link] provider=${provider} chat=${chatId} ` +
+              `task=${taskId} session=${sid}`
+          );
+          // Publish the newly learned session id immediately. The phone can now
+          // overlay running state onto the real history row instead of inventing a
+          // separate `running:<taskId>` row until the next heartbeat.
+          pushBridgeStatus(channel);
+        }
+      }
+      // Lead-driven team spawn (also detected server-side from progress lines).
+      try {
+        maybeDetectTeamSpawn(channel, task, line);
+      } catch (_) {}
+      // Fable advisor failure signals → Sol fallback (async, non-blocking).
+      if (
+        /advisor.*(unavailable|failed|error)|fable.*(unavailable|failed|error|rate.?limit)/i.test(
+          line
+        )
+      ) {
+        maybeRunSolAdvisorFallback(task, line.slice(0, 200), output.slice(-3000)).catch(() => {});
       }
       if (progressCount < MAX_PROGRESS_LINES && line.length <= MAX_LINE_BYTES && streamable(line)) {
         progressCount++;
@@ -3398,7 +5217,10 @@ async function runTask(channel, task) {
       }
     }
     runningTasks.delete(key);
+    writeBridgeHeartbeat();
     pushBridgeStatus(channel);
+    // A slot just freed — admit the next queued task (if any) right away.
+    drainPendingTasks();
     // The run is done — re-push this chat's transcript so the live "running" flag on
     // the last turn clears and the phone collapses it into the "Worked" card.
     refireHistoryWatch(chatId);
@@ -3409,12 +5231,32 @@ async function runTask(channel, task) {
       } catch (_) {}
     }
     const durationMs = Date.now() - startedAt;
-    canceled = canceled || child.signalCode === "SIGTERM" || child.signalCode === "SIGKILL";
+    const terminalFailure = providerTerminalFailure(provider, output);
+    canceled =
+      canceled ||
+      child.signalCode === "SIGTERM" ||
+      child.signalCode === "SIGKILL" ||
+      !!(terminalFailure && terminalFailure.canceled);
     const afterGit = gitSnapshot(cwd);
-    const exitStatus = code == null ? (canceled ? 130 : 1) : code;
+    let exitStatus = code == null ? (canceled ? 130 : 1) : code;
+    if (exitStatus === 0 && terminalFailure && terminalFailure.failed) {
+      exitStatus = terminalFailure.canceled ? 130 : 1;
+    }
     console.log(
       `[vibe-bridge] done ${provider} chat=${chatId} task=${taskId} exit=${exitStatus} ${durationMs}ms`
     );
+    // Detect subscription/rate-limit failures so the phone can show a usage banner
+    // instead of inserting a "demo model" / limit bubble that shifts the list.
+    try {
+      const failReason =
+        (terminalFailure && terminalFailure.reason) ||
+        (exitStatus !== 0 ? String(output || "").slice(-800) : "");
+      if (failReason && rememberUsageLimitHit(provider, failReason)) {
+        console.log(`[vibe-bridge] usage limit hit provider=${provider} chat=${chatId}`);
+      } else if (exitStatus !== 0 && isUsageLimitText(output)) {
+        rememberUsageLimitHit(provider, output);
+      }
+    } catch (_) {}
     const agentRuntime = runtimePayload({
       provider,
       task,
@@ -3428,6 +5270,37 @@ async function runTask(channel, task) {
       canceled,
       output,
     });
+    // Flag the result so the server/iOS can route limit failures to the banner
+    // without inserting a transcript row.
+    if (isUsageLimitText(output) || (terminalFailure && isUsageLimitText(terminalFailure.reason))) {
+      agentRuntime.usageLimitHit = true;
+      const cached = lastRateLimitsByProvider.get(provider);
+      if (cached && cached.message) agentRuntime.usageLimitMessage = cached.message;
+    }
+    // Team scratch sweep (safety net): boards/briefs under .vibe/team/ are
+    // temporary by contract and carry the run id in their filenames. The lead is
+    // told to clean them up; sweep here so forgotten files never accumulate.
+    // Success only — a failed run keeps its board for debugging.
+    if (exitStatus === 0 && !canceled && isTeamLeadTask(task)) {
+      try {
+        const runBase = String(taskId || "").split(":")[0];
+        const teamDir = path.join(cwd, ".vibe", "team");
+        if (runBase && fs.existsSync(teamDir)) {
+          for (const name of fs.readdirSync(teamDir)) {
+            if (name.includes(runBase)) {
+              fs.unlinkSync(path.join(teamDir, name));
+              console.log(`[vibe-bridge] team scratch swept ${name} task=${taskId}`);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    // Team FE/UI work → Gemini (Agy) advise-only review into handoff (best-effort).
+    if (exitStatus === 0 && !canceled && (task.teamRunId || task.team_run_id)) {
+      try {
+        maybeRunGeminiUiAdvisor(task, agentRuntime, output);
+      } catch (_) {}
+    }
     const resultPayload = {
       ...computerFields(),
       provider,
@@ -3446,6 +5319,12 @@ async function runTask(channel, task) {
       ...runtimeResultField(agentRuntime),
       ...liveAgentActionsField(provider, output),
     };
+    if (agentRuntime.usageLimitHit) {
+      resultPayload.usageLimitHit = true;
+      if (agentRuntime.usageLimitMessage) {
+        resultPayload.usageLimitMessage = agentRuntime.usageLimitMessage;
+      }
+    }
     rememberFinishedTask(key, {
       provider,
       chatId,
@@ -3459,6 +5338,7 @@ async function runTask(channel, task) {
     });
     rememberRuntime(provider, chatId, agentRuntime);
     channel.push("result", resultPayload);
+    fanoutLanEvent("result", resultPayload);
     // Plan mode: the model proposed but made no edits. Surface the plan to the
     // phone for approval (the phone re-sends an "implement" run on approve).
     try {
@@ -3536,7 +5416,9 @@ function isContextMessage(text) {
   return (
     /^\s*<(environment_context|user_instructions|INSTRUCTIONS|permissions|ide_opened_file|ide_selection|local-command-caveat|command-name|system-reminder|turn_aborted|turn_context|user_action)/i.test(head) ||
     /^\s*#\s*Context from my IDE/i.test(head) ||
-    /^\s*AGENTS\.md instructions/i.test(head) ||
+    /^\s*#?\s*AGENTS\.md instructions/i.test(head) ||
+    /^\s*Here is a list of plugins that are available but not installed/i.test(head) ||
+    /^\s*Vibe bridge startup prepared these instruction files for this project/i.test(head) ||
     /^\s*The following is the Codex agent history/i.test(head) ||
     /^\s*The user interrupted the previous turn/i.test(head) ||
     /## Active (file|selection)/i.test(head)
@@ -3569,8 +5451,288 @@ function cleanMessageText(text) {
     /<(environment_context|user_instructions|INSTRUCTIONS|permissions|system-reminder|local-command-caveat|command-name|command-message|command-args|ide_opened_file|ide_selection)[\s\S]*?<\/\1>/gi,
     " "
   );
-  t = t.replace(/<\/?[a-z_-]+>/gi, " ");
+  // Codex app attachments are persisted as an XML-like wrapper followed by the
+  // user's actual text (`[Image #1] …`). Remove only the wrapper/marker; the prompt
+  // after it is the real conversational turn and must remain visible in History.
+  t = t.replace(/<image\b[^>]*>[\s\S]*?<\/image>/gi, " ");
+  t = t.replace(/<\/?[a-z][^>]*>/gi, " ");
+  t = t.replace(/^(?:\s*\[Image #\d+\]\s*)+/i, "");
   return t.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// Vibe work/group prompts wrap the actual human message in operating rules and
+// shared-agent context. Codex persists that whole wrapper as its user turn. Recover
+// the terminal message section so History can show the user's bubble and use it as
+// a title candidate instead of showing/hiding the injected prompt.
+function extractVibeUserPrompt(text) {
+  if (typeof text !== "string") return null;
+  let body = text;
+  let wrapped = false;
+
+  if (/^\s*Vibe bridge startup prepared these instruction files for this project/i.test(body)) {
+    const taskMarker = /(?:^|\n)User task:\s*(?:\n|$)/i.exec(body);
+    if (!taskMarker) return null;
+    body = body.slice(taskMarker.index + taskMarker[0].length);
+    wrapped = true;
+  }
+
+  // These are the terminal labels emitted by LocalAgentWorker. Use the last one:
+  // shared-memory examples can themselves contain an older "Request:"/"Message:".
+  const terminalMarkers = [
+    /(?:^|\n)Message:\s*(?:\n|$)/gi,
+    /(?:^|\n)Request:\s*(?:\n|$)/gi,
+    /(?:^|\n)Latest team request:\s*(?:\n|$)/gi,
+    /(?:^|\n)Latest request for you(?:\s*\([^\n)]*\))?:\s*(?:\n|$)/gi,
+    /(?:^|\n)Latest message for you(?:\s*\([^\n)]*\))?:\s*(?:\n|$)/gi,
+  ];
+  let terminal = null;
+  for (const pattern of terminalMarkers) {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(body)) !== null) {
+      const end = match.index + match[0].length;
+      if (!terminal || end > terminal.end) terminal = { end };
+      if (match[0].length === 0) pattern.lastIndex += 1;
+    }
+  }
+  if (terminal) {
+    body = body.slice(terminal.end);
+    wrapped = true;
+  }
+
+  if (!wrapped) return null;
+
+  // Attachment materialization is transport context, not part of the chat text.
+  body = body.replace(
+    /^\s*The user attached \d+ image file\(s\) to this message\.[\s\S]*?\n\s*\n/i,
+    ""
+  );
+  return body.trim();
+}
+
+// Users often paste Xcode / device logs after a short request. Cut at the first
+// tool/build/log boundary so History bubbles and titles keep the human prose.
+function stripCodexPastePollution(text) {
+  if (typeof text !== "string" || !text) return text;
+  const markers = [
+    /\s+ExecuteExternalTool\b/,
+    /\n\s*Command line invocation:/i,
+    /\n\s*SwiftDriver\b/,
+    /\n\s*CompileSwift\b/,
+    /\n\s*Ld\s+\//,
+    /\n\s*note:\s+/i,
+    // Mid-line path dumps after a short human sentence (no newline before the path).
+    /\s+-\s*sdk\s+\/Applications\/Xcode\.app\//i,
+    /\s+\/Applications\/Xcode\.app\//,
+    /\s+\/tmp\/vibe-device-build\//,
+    /\n\s*\/Applications\/Xcode\.app\//,
+    /\n\s*\/tmp\/vibe-device-build\//,
+    /\n\s*\[(?:ChatEngine|AgentBridgeHistory|AvatarPin|MediaDrop|MainThreadStall|VibeAgentKitStreamingText)\]/,
+    /\n\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\w+\[\d+/,
+    // Pasted `xcodebuild` argv clusters: " -project ios/… -scheme …"
+    /\s+-project\s+\S+\.xcodeproj\b/i,
+    /\s+-destination\s+['"]?platform=iOS/i,
+    /\s+-derivedDataPath\s+\/tmp\//i,
+    /\n```/,
+  ];
+  let cut = text.length;
+  for (const re of markers) {
+    const match = re.exec(text);
+    // Keep a minimum human lead-in so a real request that mentions "error:" mid-sentence
+    // is not wiped when a later log dump lands.
+    if (match && match.index >= 12 && match.index < cut) cut = match.index;
+  }
+  const trimmed = text.slice(0, cut).trim();
+  return trimmed.length >= 8 ? trimmed : text.trim();
+}
+
+// Codex IDE integrations wrap a genuine prompt in a context preamble:
+//   # Context from my IDE setup:
+//   …
+//   ## My request for Codex:
+//   <actual prompt>
+// Treating the whole record as context erased every user bubble. Extract the request
+// section first; context-only/AGENTS records remain suppressed.
+function codexUserMessageText(text) {
+  if (typeof text !== "string") return "";
+  let raw = extractVibeUserPrompt(text) ?? text;
+  const marker = /^##\s*My request for Codex:\s*$/im.exec(raw);
+  if (marker) raw = raw.slice(marker.index + marker[0].length);
+  else if (isContextMessage(raw)) return "";
+  return stripCodexPastePollution(cleanMessageText(raw));
+}
+
+function normalizeCodexTitleKey(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/[.…]+$/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+// Ungenerated Codex titles are the first prompt (or a truncated/prefix copy of it).
+// Real Codex-generated names are short, title-like, and diverge from the prompt body.
+function isRawCodexTitleCandidate(title, firstMessage) {
+  const raw = String(title || "").trim();
+  if (!raw) return true;
+  if (/^vibe bridge startup\b/i.test(raw)) return true;
+  if (/^you are codex\b/i.test(raw)) return true;
+  if (/^#\s*agents\.md\b/i.test(raw)) return true;
+  if (/\n/.test(raw) && raw.length > 48) return true;
+  if (raw.length > 90) return true;
+  if (/ExecuteExternalTool|xcodebuild|SwiftDriver|\/tmp\/vibe-device-build/i.test(raw)) return true;
+
+  const titleKey = normalizeCodexTitleKey(raw);
+  const firstKey = normalizeCodexTitleKey(firstMessage);
+  if (!titleKey) return true;
+  if (firstKey) {
+    if (titleKey === firstKey) return true;
+    // Prefix match with a length/ellipsis guard so a real short name like
+    // "Fix login" is kept even when the prompt starts with those words.
+    const looksTruncated = /[….]{1,3}$/.test(String(title || "").trim()) || /[a-z0-9]$/i.test(raw) && raw.length >= 40;
+    if (
+      firstKey.startsWith(titleKey) &&
+      titleKey.length >= 24 &&
+      (looksTruncated || titleKey.length >= 36 || firstKey.length > titleKey.length + 12)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Codex CLI/exec sessions often have no generated thread_name. Keep canonical
+// names when present, but distill a short chat-sized label from the recovered
+// human task rather than leaking the raw first prompt (or "Codex session").
+function codexFallbackTitle(text, role = "user") {
+  let value = role === "user" ? codexUserMessageText(text) : cleanMessageText(text);
+  if (!value || isContextMessage(value)) return null;
+
+  const greetingFallback = value
+    .replace(/^(?:\s*\[Image #\d+\]\s*)+/i, "")
+    .replace(/^\s*@codex\b[\s,:-]*/i, "")
+    .trim();
+  value = value
+    .replace(/^(?:\s*\[Image #\d+\]\s*)+/i, "")
+    .replace(/^\s*@codex\b[\s,:-]*/i, "")
+    .trim();
+  if (role === "assistant") {
+    value = value
+      .replace(/^\s*(?:yes|sure|okay)\b[\s,!.-]*/i, "")
+      .replace(/^\s*i\s+see\s+/i, "")
+      .replace(/^\s*(?:the\s+)?image\s+(?:is|shows|contains)\s+/i, "")
+      .trim();
+    // Setup/progress narration is not a chat name. Keep scanning until Codex
+    // describes the task/result itself (important for image-only Vibe turns).
+    if (/^(?:i(?:'|’)m|i(?:'|’)ll|i am)\s+(?:first\s+)?(?:read|check|inspect|trace|open|look|start|use|ask)\b/i.test(value)) {
+      return null;
+    }
+    if (/^(?:the\s+)?(?:repo|repository|project)\s+(?:is|has|looks)\b/i.test(value)) return null;
+    if (/(?:duplicated|overlapping)/i.test(value) && /(?:reply|message|chat)\s+bubble/i.test(value)) {
+      return "Fix duplicated reply bubble";
+    }
+  }
+  if (!value) {
+    const greeting = clip(greetingFallback.replace(/[.!?,\s]+$/g, "").trim(), 24);
+    return greeting ? greeting.charAt(0).toUpperCase() + greeting.slice(1) : null;
+  }
+
+  // Cut at the earliest blank line / fence / log line so paste dumps never become the name.
+  const blank = value.search(/\n\s*\n/);
+  if (blank > 12) value = value.slice(0, blank);
+  const fence = value.indexOf("```");
+  if (fence > 12) value = value.slice(0, fence);
+  const logLine = value.search(
+    /\n\s*(?:xcodebuild\b|ExecuteExternalTool\b|error:|warning:|\bat\s+\S)/i
+  );
+  if (logLine > 12) value = value.slice(0, logLine);
+  if (value.trim().length < 8) value = greetingFallback || value;
+
+  // Prefer the first actual prose line over markdown headings/file pointers.
+  const lines = value.split("\n").map((line) => line.trim()).filter(Boolean);
+  value = lines.find((line) =>
+    !line.startsWith("<") &&
+    !/^#{1,6}\s/.test(line) &&
+    !/^(?:[-*]\s*)?\/[^\s]+$/.test(line) &&
+    !/^(?:xcodebuild|ExecuteExternalTool|error:|warning:)\b/i.test(line)
+  ) || lines[0] || "";
+  value = value.replace(/^[-*]\s+/, "").replace(/^["'`]+|["'`]+$/g, "").trim();
+
+  // Strip conversational filler repeatedly, then normalize common intents into labels.
+  for (let i = 0; i < 3; i++) {
+    const next = value
+      .replace(/^\s*(?:hey|hi|hello)\b[\s,!.-]*/i, "")
+      .replace(/^(?:please\s+)?(?:can|could|would)\s+you\s+/i, "")
+      .replace(/^i\s+(?:want|need|would like)\s+(?:you\s+)?to\s+/i, "")
+      .replace(/^take\s+a\s+look\s+at\s+/i, "")
+      .replace(/^(?:please\s+)?(?:check|check out|look at|review)\s+/i, "")
+      .replace(/^there\s+(?:is|are)(?:\s+an?)?(?:\s+another)?\s+(?:issue|problem|bug)s?(?:\s+(?:with|in|for|that))?\s+/i, "Fix ")
+      .replace(/^(?:(?:the|another|other)\s+)?(?:issue|problem|bug)\s+(?:is|with|that)\s+/i, "Fix ")
+      .replace(/^look\s+at\s+/i, "")
+      .replace(/^i(?:'|’)m\s+/i, "")
+      .replace(/^i(?:'|’)ll\s+/i, "")
+      .trim();
+    if (next === value) break;
+    value = next;
+  }
+
+  // A frequent bridge debugging prompt has enough misspelling/noise that merely
+  // clipping it is still not a useful name; retain its semantic core.
+  if (/codex/i.test(value) && /pa+y?laod|payload/i.test(value) && /exec|command|raw|parse|node/i.test(value)) {
+    return "Fix Codex payload and command rendering";
+  }
+  if (/codex/i.test(value) && /(?:history|chat).{0,24}title|title.{0,24}(?:history|chat|name|row)|shows\s+raw/i.test(value)) {
+    return "Fix Codex history titles";
+  }
+  if (/\bios\b/i.test(value) && /list/i.test(value) && /(?:latency|delay|empty|push|open)/i.test(value)) {
+    return "Fix chat list open latency";
+  }
+
+  // First sentence, then a tight word/character cap at a word boundary (no ellipsis).
+  const sentence = value.match(/^(.{4,}?)(?:[.!?](?:\s|$)|$)/);
+  if (sentence && sentence[1]) value = sentence[1];
+  value = value.replace(/\s+/g, " ").replace(/[,:;\s-]+$/g, "").trim();
+  if (!value) return null;
+  const words = value.split(" ").filter(Boolean);
+  if (words.length > 7) value = words.slice(0, 7).join(" ");
+  if (value.length > 42) {
+    const clipped = value.slice(0, 42);
+    const boundary = clipped.lastIndexOf(" ");
+    value = (boundary >= 16 ? clipped.slice(0, boundary) : clipped).trim();
+  }
+  value = value.replace(/[,:;\s-]+$/g, "").trim();
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : null;
+}
+
+function isWeakCodexTitle(value) {
+  const title = String(value || "")
+    .replace(/^[\s.…—\-–]+/, "")
+    .replace(/[.!?…—\-–]+$/g, "")
+    .trim()
+    .toLowerCase();
+  return (
+    !title ||
+    title === "codex session" ||
+    title === "untitled" ||
+    // Assistant self-intro is not a conversation name.
+    /^(?:i(?:'|’)?m\s+)?codex(?:\s+here)?$/.test(title) ||
+    /^(?:hi[, ]+)?i(?:'|’)?m\s+codex\b/.test(title) ||
+    /^(?:see|view|check|review|look at)\s+(?:this|these)(?:\s+(?:image|images|photo|photos|screenshot|screenshots))?$/.test(title) ||
+    /^(?:here (?:is|are)|this is)\s+(?:the\s+)?(?:image|images|photo|photos|screenshot|screenshots)$/.test(title) ||
+    /^(?:image|images|photo|photos|screenshot|screenshots)$/.test(title) ||
+    // Still a raw prompt fragment rather than a conversation name.
+    title.length > 48 ||
+    /^(?:take a look|call (?:the |all )?agents|guys |again|yep|continue)\b/.test(title)
+  );
+}
+
+function resolveCodexTopic(stored, userTopic, assistantTopic) {
+  if (stored && !isWeakCodexTitle(stored) && !isRawCodexTitleCandidate(stored)) return stored;
+  const storedDistilled = stored ? codexFallbackTitle(stored) : null;
+  const user = userTopic && !isWeakCodexTitle(userTopic) ? userTopic : null;
+  const fromStored = storedDistilled && !isWeakCodexTitle(storedDistilled) ? storedDistilled : null;
+  const assistant = assistantTopic && !isWeakCodexTitle(assistantTopic) ? assistantTopic : null;
+  return user || fromStored || assistant || userTopic || storedDistilled || assistantTopic || "Codex session";
 }
 
 // Skip ephemeral scratch/test working dirs so the list shows real work.
@@ -3607,13 +5769,21 @@ async function readJsonl(file, onEvent, maxBytes) {
 
 // — Claude —
 async function claudeSummary(file) {
-  let topic = null, firstUser = null, lastTs = null, messages = 0;
+  let topic = null, firstUser = null, lastTs = null, messages = 0, model = null;
   await readJsonl(file, (ev) => {
     const t = ev.type;
     if (t === "ai-title" && ev.aiTitle) topic = ev.aiTitle;
     else if (t === "user" || t === "assistant") {
       messages++;
       if (ev.timestamp) lastTs = ev.timestamp;
+      if (
+        t === "assistant" &&
+        ev.message &&
+        ev.message.model &&
+        String(ev.message.model) !== "<synthetic>"
+      ) {
+        model = String(ev.message.model);
+      }
       if (t === "user" && !firstUser) {
         const c = ev.message && ev.message.content;
         if (typeof c === "string") {
@@ -3623,7 +5793,7 @@ async function claudeSummary(file) {
       }
     }
   });
-  return { topic: topic || firstUser || "Untitled", lastTs, messages };
+  return { topic: topic || firstUser || "Untitled", lastTs, messages, model };
 }
 
 function claudeSessionFiles() {
@@ -3741,15 +5911,15 @@ function collectClaudeEdits(acc, content) {
 // `custom_tool_call` (sometimes `function_call`) whose `input` is the classic
 // `*** Begin Patch / *** Add|Update|Delete File:` text.
 function collectCodexEdits(acc, payload) {
-  const p = payload;
-  if (!p) return;
-  const isPatch =
-    (p.type === "custom_tool_call" || p.type === "function_call") && /apply_patch/i.test(p.name || "");
-  if (!isPatch) return;
-  const input = typeof p.input === "string" ? p.input : typeof p.arguments === "string" ? p.arguments : "";
-  if (!input) return;
-  for (const f of parseApplyPatchEnvelope(input)) {
-    accumulateRuntimeFile(acc, f.path, f.status, f.additions, f.deletions, f.patchBlock);
+  for (const p of codexUnwrapActionPayloads(payload)) {
+    const isPatch =
+      (p.type === "custom_tool_call" || p.type === "function_call") && /apply_patch/i.test(p.name || "");
+    if (!isPatch) continue;
+    const input = codexPatchTextFromPayload(p);
+    if (!input) continue;
+    for (const f of parseApplyPatchEnvelope(input)) {
+      accumulateRuntimeFile(acc, f.path, f.status, f.additions, f.deletions, f.patchBlock);
+    }
   }
 }
 
@@ -3873,6 +6043,52 @@ function messageHasUserText(m) {
   return false;
 }
 
+const CLAUDE_BACKGROUND_TERMINAL_STATUSES = new Set([
+  "completed", "complete", "done", "success", "failed", "failure", "error",
+  "cancelled", "canceled", "interrupted", "stopped", "killed",
+]);
+
+// Claude Code reports an async Bash lifecycle in two different records: the
+// tool_result carries `backgroundTaskId`, then a task-notification XML envelope
+// announces completion. Keep that lifecycle separate from model turn boundaries:
+// a synthetic task notification is not a new user prompt, while a pending task
+// remains live even if the assistant has already emitted `end_turn`.
+function claudeTaskNotification(event) {
+  if (!event || typeof event !== "object") return null;
+  const candidates = [
+    event.content,
+    event.message && event.message.content,
+    event.attachment && event.attachment.prompt,
+  ];
+  const raw = candidates.find((value) => typeof value === "string" && /<task-notification>/i.test(value));
+  if (!raw) return null;
+  const idMatch = raw.match(/<task-id>\s*([^<]+?)\s*<\/task-id>/i);
+  const statusMatch = raw.match(/<status>\s*([^<]+?)\s*<\/status>/i);
+  const id = idMatch ? String(idMatch[1]).trim() : "";
+  const status = statusMatch ? String(statusMatch[1]).trim().toLowerCase() : "";
+  return id ? { id, status } : null;
+}
+
+function updateClaudeBackgroundTasks(activeTaskIds, event) {
+  if (!(activeTaskIds instanceof Set) || !event || typeof event !== "object") return false;
+  const backgroundTaskId = String(
+    (event.toolUseResult && event.toolUseResult.backgroundTaskId) || ""
+  ).trim();
+  if (backgroundTaskId) activeTaskIds.add(backgroundTaskId);
+
+  const notification = claudeTaskNotification(event);
+  if (!notification) return false;
+  if (
+    event.operation === "remove"
+    || CLAUDE_BACKGROUND_TERMINAL_STATUSES.has(notification.status)
+  ) {
+    activeTaskIds.delete(notification.id);
+  } else {
+    activeTaskIds.add(notification.id);
+  }
+  return true;
+}
+
 // A session is "live" when its transcript file is actively being appended to (a
 // turn is in flight) — detected by a recent mtime — OR when it matches a task the
 // bridge itself spawned and is still running. This lets the phone show a live badge
@@ -3904,6 +6120,14 @@ const GROK_DETAIL_MIDTURN_STALE_MS = Number(
 // a 40-file list — a primary cause of the socket drops + list-retry storm. Now async +
 // cached, so this is a one-time bound; raise via env for full topic parity at 8 MB.
 const CODEX_SUMMARY_HEAD_BYTES = Number(process.env.VIBE_CODEX_SUMMARY_HEAD_BYTES || 4 * 1024 * 1024);
+// Model/effort are emitted on `turn_context`, including when a resumed session
+// changes model. Read a bounded tail for roster rows so we see the latest context
+// without turning a 40-row list into 40 full rollout scans. The result is stored in
+// historySummaryCache alongside the head summary and invalidated only when the file
+// grows.
+const CODEX_METADATA_TAIL_BYTES = Number(
+  process.env.VIBE_CODEX_METADATA_TAIL_BYTES || 1024 * 1024
+);
 
 // Per-file roster-summary cache. Session/rollout files only ever APPEND, and every
 // field the list surfaces (topic, meta, first-message count) is derived from the file
@@ -3927,6 +6151,46 @@ function setCachedSummary(file, size, summary) {
   }
 }
 
+async function codexMetadataFromTail(file, size) {
+  const fileSize = Math.max(
+    0,
+    Number(size) || await fs.promises.stat(file).then((stat) => stat.size).catch(() => 0)
+  );
+  const length = Math.min(fileSize, CODEX_METADATA_TAIL_BYTES);
+  if (!length) return {};
+  let handle;
+  try {
+    handle = await fs.promises.open(file, "r");
+    const buffer = Buffer.allocUnsafe(length);
+    const position = Math.max(0, fileSize - length);
+    const { bytesRead } = await handle.read(buffer, 0, length, position);
+    let body = buffer.subarray(0, bytesRead).toString("utf8");
+    if (position > 0) body = body.slice(Math.max(0, body.indexOf("\n") + 1));
+    let model = null;
+    let reasoningEffort = null;
+    for (const line of body.split("\n")) {
+      if (!line) continue;
+      let event;
+      try { event = JSON.parse(line); } catch { continue; }
+      if (!event || event.type !== "turn_context" || !event.payload) continue;
+      if (event.payload.model && String(event.payload.model).trim()) {
+        model = String(event.payload.model).trim();
+      }
+      if (event.payload.effort && String(event.payload.effort).trim()) {
+        reasoningEffort = String(event.payload.effort).trim();
+      }
+    }
+    return {
+      ...(model ? { model } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+    };
+  } catch {
+    return {};
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
 function runningSessionIdSet(provider) {
   const set = new Set();
   const want = String(provider || "").trim().toLowerCase();
@@ -3934,12 +6198,110 @@ function runningSessionIdSet(provider) {
     if (want && entry.provider && String(entry.provider).toLowerCase() !== want) continue;
     if (entry.sessionId) set.add(entry.sessionId);
   }
+  // Desktop/IDE sessions are discovered outside `runningTasks`; include them so
+  // their History row receives the same live-state and accurate-count treatment.
+  for (const entry of externalProviderActivity) {
+    if (want && entry.provider && String(entry.provider).toLowerCase() !== want) continue;
+    if (entry.sessionId) set.add(entry.sessionId);
+  }
   return set;
+}
+
+// A history row and its bridge task share the durable provider session id. Prefer
+// the newest matching task if reconnect/re-delivery briefly leaves more than one
+// entry, and expose only values the live task actually knows.
+function runningSessionMetadata(provider, sessionId) {
+  if (!sessionId) return {};
+  const want = String(provider || "").trim().toLowerCase();
+  let match = null;
+  for (const entry of runningTasks.values()) {
+    if (!entry || entry.sessionId !== sessionId) continue;
+    if (want && String(entry.provider || "").toLowerCase() !== want) continue;
+    if (!match || Number(entry.startedAt || 0) > Number(match.startedAt || 0)) match = entry;
+  }
+  if (!match) return {};
+  const metadata = {};
+  if (match.model) metadata.model = match.model;
+  if (match.reasoningEffort) metadata.reasoningEffort = match.reasoningEffort;
+  return metadata;
 }
 
 function sessionIsLive(mtime, id, runningIds) {
   if (id && runningIds && runningIds.has(id)) return true;
   return mtime != null && Date.now() - mtime < LIVE_SESSION_WINDOW_MS;
+}
+
+// Codex emits explicit turn boundaries. Use them instead of treating a quiet
+// transcript as an idle session: reasoning and long-running commands can produce
+// no file writes for minutes while the turn is still active.
+const CODEX_LIVE_TAIL_BYTES = Number(process.env.VIBE_CODEX_LIVE_TAIL_BYTES || 1024 * 1024);
+async function codexOpenTurnState(file, size) {
+  const length = Math.min(Math.max(0, Number(size) || 0), CODEX_LIVE_TAIL_BYTES);
+  if (!length) return null;
+  let handle;
+  try {
+    handle = await fs.promises.open(file, "r");
+    const buffer = Buffer.allocUnsafe(length);
+    const position = Math.max(0, Number(size) - length);
+    const { bytesRead } = await handle.read(buffer, 0, length, position);
+    let text = buffer.subarray(0, bytesRead).toString("utf8");
+    // A bounded tail may begin in the middle of a JSONL record.
+    if (position > 0) text = text.slice(Math.max(0, text.indexOf("\n") + 1));
+    let state = null;
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      let event;
+      try { event = JSON.parse(line); } catch { continue; }
+      if (!event || event.type !== "event_msg" || !event.payload) continue;
+      const type = event.payload.type;
+      if (type === "task_started") state = true;
+      else if (type === "task_complete" || type === "turn_aborted") state = false;
+    }
+    return state;
+  } catch {
+    return null;
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
+// Claude's last real user message opens a turn; tool_use keeps it open and
+// end_turn closes it. Synthetic CLI notices are not model-turn boundaries.
+async function claudeOpenTurnState(file, size) {
+  const length = Math.min(Math.max(0, Number(size) || 0), CODEX_LIVE_TAIL_BYTES);
+  if (!length) return null;
+  let handle;
+  try {
+    handle = await fs.promises.open(file, "r");
+    const buffer = Buffer.allocUnsafe(length);
+    const position = Math.max(0, Number(size) - length);
+    const { bytesRead } = await handle.read(buffer, 0, length, position);
+    let text = buffer.subarray(0, bytesRead).toString("utf8");
+    if (position > 0) text = text.slice(Math.max(0, text.indexOf("\n") + 1));
+    let state = null;
+    const activeBackgroundTasks = new Set();
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      let event;
+      try { event = JSON.parse(line); } catch { continue; }
+      const isTaskNotification = updateClaudeBackgroundTasks(activeBackgroundTasks, event);
+      if (isTaskNotification) continue;
+      if (!event || (event.type !== "user" && event.type !== "assistant")) continue;
+      const message = event.message || {};
+      if (event.type === "user") {
+        if (!event.isMeta && messageHasUserText(message)) state = true;
+        continue;
+      }
+      if (String(message.model || "") === "<synthetic>") continue;
+      const stop = String(message.stop_reason || "").toLowerCase();
+      state = stop === "end_turn" ? false : true;
+    }
+    return activeBackgroundTasks.size > 0 ? true : state;
+  } catch {
+    return null;
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
 }
 
 async function listClaude(limit) {
@@ -3950,6 +6312,12 @@ async function listClaude(limit) {
     let sum = getCachedSummary(s.file, s.size);
     if (!sum) { sum = await claudeSummary(s.file); setCachedSummary(s.file, s.size, sum); }
     if (sum.messages === 0) continue;
+    const explicitTurnState = await claudeOpenTurnState(s.file, s.size);
+    const live = runningIds.has(s.id)
+      || (explicitTurnState == null
+        ? sessionIsLive(s.mtime, s.id, runningIds)
+        : explicitTurnState);
+    const liveMetadata = runningSessionMetadata("claude", s.id);
     results.push({
       provider: "claude",
       id: s.id,
@@ -3958,7 +6326,9 @@ async function listClaude(limit) {
       projectName: path.basename(s.project),
       updatedAt: sum.lastTs || new Date(s.mtime).toISOString(),
       messageCount: sum.messages,
-      live: sessionIsLive(s.mtime, s.id, runningIds),
+      live,
+      ...(liveMetadata.model || sum.model ? { model: liveMetadata.model || sum.model } : {}),
+      ...(liveMetadata.reasoningEffort ? { reasoningEffort: liveMetadata.reasoningEffort } : {}),
     });
   }
   return results;
@@ -4030,19 +6400,28 @@ function parseMcpToolRef(nameOrId) {
   return null;
 }
 
+// User-facing MCP tool labels. Wire ids stay ask_fable / ask_user / …;
+// the phone should never show the internal Fable product name.
+function prettyMcpToolLabel(tool) {
+  const raw = String(tool || "").replace(/_/g, " ").trim();
+  if (!raw) return "";
+  if (/^ask\s+fable$/i.test(raw) || /^fable$/i.test(raw)) return "ask advisor";
+  return raw;
+}
+
 function mcpActionDetail(name, input) {
   const inp = input && typeof input === "object" ? input : {};
   const fromName = parseMcpToolRef(name);
   const fromInput = parseMcpToolRef(inp.tool_name || inp.toolName || inp.name);
   const p = fromName || fromInput;
   if (!p) return null;
-  const prettyTool = String(p.tool || "").replace(/_/g, " ");
+  const prettyTool = prettyMcpToolLabel(p.tool);
   return {
     kind: "mcp",
     name: p.raw,
     server: p.server,
     tool: p.tool,
-    // Compact target for the phone: "vibeask · ask fable"
+    // Compact target for the phone: "vibeask · ask advisor"
     target: p.server + " · " + prettyTool,
     // Question / query rides encrypted output path when result arrives; keep a
     // short prompt preview on the action for the sheet header.
@@ -4229,10 +6608,34 @@ function codexShellDetail(rawCmd) {
   return bash;
 }
 
-function codexActionDetail(p) {
+function codexDecodedActionInput(p) {
+  if (!p || typeof p !== "object") return {};
+  const value = p.arguments != null ? p.arguments : p.input;
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string") return {};
+  try {
+    const decoded = JSON.parse(value);
+    return decoded && typeof decoded === "object" && !Array.isArray(decoded) ? decoded : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function codexPlanTodos(input) {
+  const raw = input && (input.todos || input.plan || input.items);
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => ({
+    content: String((item && (item.content || item.step)) || ""),
+    status: String((item && item.status) || "pending"),
+    activeForm: String((item && item.activeForm) || ""),
+  })).filter((item) => item.content.trim());
+}
+
+function codexActionDetailSingle(p) {
+  if (!p) return null;
   const name = String(p.name || "");
   if (/apply_patch/i.test(name)) {
-    const input = typeof p.input === "string" ? p.input : typeof p.arguments === "string" ? p.arguments : "";
+    const input = codexPatchTextFromPayload(p);
     const files = parseApplyPatchEnvelope(input);
     return {
       kind: "edit",
@@ -4246,21 +6649,330 @@ function codexActionDetail(p) {
   if (isCodexShellToolName(name)) {
     return codexShellDetail(codexCommandFromPayload(p));
   }
-  // Codex mcp_tool_call / MCP-ish function names.
+  if (/^(?:view_image|open_image)$/i.test(name)) {
+    const input = codexDecodedActionInput(p);
+    const imagePath = String(input.path || input.file_path || "");
+    return { kind: "read", name: safeBase(imagePath), path: imagePath };
+  }
+  if (/^(?:update_plan|todo_write|todowrite)$/i.test(name)) {
+    return { kind: "todo", todos: codexPlanTodos(codexDecodedActionInput(p)) };
+  }
+  if (/^(?:spawn_agent|spawn_subagent|delegate_to_subagent)$/i.test(name)) {
+    const input = codexDecodedActionInput(p);
+    const taskName = String(input.task_name || input.name || input.subagent_type || "subagent");
+    return {
+      kind: "task",
+      description: taskName,
+      subagent: taskName,
+    };
+  }
+  if (/^(?:send_message|followup_task)$/i.test(name)) {
+    const input = codexDecodedActionInput(p);
+    const target = String(input.target || input.task_name || "subagent").replace(/^\/root\//, "");
+    return { kind: "task", description: `Message ${target}`, subagent: target };
+  }
+  // Named MCP tools first (Claude-style `mcp__vibeask__ask_fable`, nested
+  // `tools.mcp__vibeask__ask_fable(...)`, or Grok `vibeask__ask_fable`). Do NOT
+  // re-wrap an already-qualified name with a default server ("mcp") — that used
+  // to produce `mcp__mcp__ask_fable` and drop the real server.
+  const namedMcp = mcpActionDetail(name, p.arguments || p.input || {});
+  if (namedMcp) return namedMcp;
+  // Codex stream item_type `mcp_tool_call` carries discrete server + tool fields.
   const itemType = String(p.item_type || p.type || p.kind || "").toLowerCase();
-  if (itemType === "mcp_tool_call" || /mcp/i.test(name)) {
+  if (itemType === "mcp_tool_call") {
     const server = String(p.server || p.mcp_server || "").trim() || "mcp";
     const tool = String(p.tool || p.name || "tool").replace(/^mcp__/i, "");
-    const mcp = mcpActionDetail("mcp__" + server + "__" + tool.replace(/^.*__/, ""), p.arguments || p.input || {});
+    const mcp = mcpActionDetail(
+      "mcp__" + server + "__" + tool.replace(/^.*__/, ""),
+      p.arguments || p.input || {}
+    );
     if (mcp) return mcp;
   }
-  const mcp = mcpActionDetail(name, p.arguments || p.input || {});
-  if (mcp) return mcp;
   return { kind: "tool", name: name || "tool" };
 }
 
+function codexActionDetails(payload) {
+  return codexUnwrapActionPayloads(payload)
+    .map(codexActionDetailSingle)
+    .filter(Boolean);
+}
+
+function codexActionDetail(payload) {
+  return codexActionDetails(payload)[0] || null;
+}
+
 function isCodexShellToolName(name) {
-  return ["shell", "local_shell", "container.exec", "exec_command"].includes(String(name || ""));
+  return ["exec", "shell", "local_shell", "container.exec", "exec_command", "bash", "run_command"].includes(String(name || ""));
+}
+
+// Current Codex app persistence records orchestration calls as an outer
+// `custom_tool_call {name:"exec", input:"...tools.exec_command(...)..."}`. The
+// operation users care about is the nested tool, not the transport wrapper. Parse
+// that small, generated subset without eval/Function so an on-disk transcript can
+// never execute code while being opened from History.
+const CODEX_EXEC_OUTPUT_HELPERS = new Set([
+  "text",
+  "image",
+  "generatedImage",
+  "store",
+  "load",
+  "notify",
+  "yield_control",
+]);
+const CODEX_CONTINUATION_TOOLS = new Set(["wait", "write_stdin", "wait_agent", "list_agents"]);
+
+function decodeCodexJsStringLiteral(source, start) {
+  const quote = source[start];
+  if (quote !== '"' && quote !== "'" && quote !== "`") return null;
+  let value = "";
+  for (let i = start + 1; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === quote) return { value, end: i + 1 };
+    if (ch !== "\\") {
+      value += ch;
+      continue;
+    }
+    if (i + 1 >= source.length) return null;
+    const next = source[++i];
+    switch (next) {
+      case "n": value += "\n"; break;
+      case "r": value += "\r"; break;
+      case "t": value += "\t"; break;
+      case "b": value += "\b"; break;
+      case "f": value += "\f"; break;
+      case "v": value += "\v"; break;
+      case "0": value += "\0"; break;
+      case "x": {
+        const hex = source.slice(i + 1, i + 3);
+        if (/^[0-9a-f]{2}$/i.test(hex)) {
+          value += String.fromCharCode(parseInt(hex, 16));
+          i += 2;
+        } else value += next;
+        break;
+      }
+      case "u": {
+        const hex = source.slice(i + 1, i + 5);
+        if (/^[0-9a-f]{4}$/i.test(hex)) {
+          value += String.fromCharCode(parseInt(hex, 16));
+          i += 4;
+        } else value += next;
+        break;
+      }
+      case "\n": break;
+      case "\r":
+        if (source[i + 1] === "\n") i += 1;
+        break;
+      default: value += next;
+    }
+  }
+  return null;
+}
+
+function codexJsStringLiterals(source) {
+  const values = [];
+  const text = String(source || "");
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '"' && text[i] !== "'" && text[i] !== "`") continue;
+    const decoded = decodeCodexJsStringLiteral(text, i);
+    if (!decoded) continue;
+    values.push(decoded.value);
+    i = decoded.end - 1;
+  }
+  return values;
+}
+
+function codexJsPropertyString(source, key) {
+  const escaped = String(key).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp("(?:\\b" + escaped + "\\b|[\\\"']" + escaped + "[\\\"'])\\s*:\\s*").exec(String(source || ""));
+  if (!match) return "";
+  const start = match.index + match[0].length;
+  const decoded = decodeCodexJsStringLiteral(String(source || ""), start);
+  return decoded ? decoded.value : "";
+}
+
+function codexJsPropertyStrings(source, key) {
+  const values = [];
+  const text = String(source || "");
+  const escaped = String(key).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp("(?:\\b" + escaped + "\\b|[\\\"']" + escaped + "[\\\"'])\\s*:\\s*", "g");
+  let match;
+  while ((match = re.exec(text))) {
+    const decoded = decodeCodexJsStringLiteral(text, match.index + match[0].length);
+    if (decoded) {
+      values.push(decoded.value);
+      re.lastIndex = decoded.end;
+    }
+  }
+  return values;
+}
+
+// Find generated `tools.<name>(…)` calls without evaluating persisted source. The
+// scanner skips string literals and balances parentheses so Promise.all/multi-call
+// envelopes can produce one native node per real operation.
+function codexNestedToolCalls(source) {
+  const calls = [];
+  const text = String(source || "");
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
+      const decoded = decodeCodexJsStringLiteral(text, i);
+      if (decoded) i = decoded.end - 1;
+      continue;
+    }
+    const match = /^tools\.([A-Za-z0-9_]+)\s*\(/.exec(text.slice(i));
+    if (!match) continue;
+    const name = match[1];
+    const open = i + match[0].lastIndexOf("(");
+    let depth = 0;
+    let end = text.length;
+    for (let j = open; j < text.length; j++) {
+      if (text[j] === '"' || text[j] === "'" || text[j] === "`") {
+        const decoded = decodeCodexJsStringLiteral(text, j);
+        if (decoded) {
+          j = decoded.end - 1;
+          continue;
+        }
+      }
+      if (text[j] === "(") depth++;
+      else if (text[j] === ")" && --depth === 0) {
+        end = j;
+        break;
+      }
+    }
+    calls.push({ name, source: text.slice(open + 1, end) });
+    i = end;
+  }
+  return calls;
+}
+
+function codexPatchTextFromPayload(p) {
+  const raw =
+    typeof p.input === "string"
+      ? p.input
+      : typeof p.arguments === "string"
+        ? p.arguments
+        : p.input && typeof p.input.patch === "string"
+          ? p.input.patch
+          : "";
+  const trimmed = raw.trimStart();
+  if (trimmed.startsWith("*** Begin Patch") && raw.includes("*** End Patch")) return raw;
+  return codexJsStringLiterals(raw).find(
+    (value) => value.includes("*** Begin Patch") && value.includes("*** End Patch")
+  ) || "";
+}
+
+function codexPlanInputFromSource(source) {
+  const steps = codexJsPropertyStrings(source, "step");
+  const statuses = codexJsPropertyStrings(source, "status");
+  return {
+    todos: steps.map((step, index) => ({
+      content: step,
+      status: statuses[index] || "pending",
+      activeForm: "",
+    })),
+  };
+}
+
+function codexJsAssignedArrayStrings(source, variable) {
+  const text = String(source || "");
+  const escaped = String(variable).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp("\\b(?:const|let|var)\\s+" + escaped + "\\s*=\\s*\\[").exec(text);
+  if (!match) return [];
+  const open = match.index + match[0].lastIndexOf("[");
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
+      const decoded = decodeCodexJsStringLiteral(text, i);
+      if (decoded) {
+        i = decoded.end - 1;
+        continue;
+      }
+    }
+    if (text[i] === "[") depth++;
+    else if (text[i] === "]" && --depth === 0) {
+      return codexJsStringLiterals(text.slice(open + 1, i));
+    }
+  }
+  return [];
+}
+
+function codexMappedExecInputs(source) {
+  const values = codexJsAssignedArrayStrings(source, "cmds");
+  if (!values.length) return [];
+  const paired = /\.map\s*\(\s*(?:async\s*)?\(\s*\[\s*cmd\s*,\s*workdir\s*\]/.test(source);
+  if (paired) {
+    const inputs = [];
+    for (let i = 0; i + 1 < values.length; i += 2) {
+      inputs.push({ command: values[i], workdir: values[i + 1] });
+    }
+    return inputs;
+  }
+  return values.map((command) => ({ command }));
+}
+
+function codexNestedToolInput(name, source, payload) {
+  if (name === "exec_command") {
+    return {
+      command: codexJsPropertyString(source, "cmd") || codexJsPropertyString(source, "command"),
+      workdir: codexJsPropertyString(source, "workdir"),
+    };
+  }
+  if (name === "apply_patch") return codexPatchTextFromPayload(payload);
+  if (name === "view_image") return { path: codexJsPropertyString(source, "path") };
+  if (name === "web__run") return { query: codexJsPropertyString(source, "q") };
+  if (name === "update_plan") return codexPlanInputFromSource(source);
+  // Nested MCP: tools.mcp__vibeask__ask_fable({ question: "…" }) or tools.vibeask__ask_fable(…)
+  if (/^mcp__/i.test(name) || /^[a-z][a-z0-9_-]*__[a-z0-9_-]+$/i.test(name)) {
+    const question =
+      codexJsPropertyString(source, "question") ||
+      codexJsPropertyString(source, "query") ||
+      codexJsPropertyString(source, "prompt");
+    return question ? { question } : {};
+  }
+  return {};
+}
+
+function codexUnwrapActionPayloads(payload) {
+  if (!payload || typeof payload !== "object") return payload ? [payload] : [];
+  const outerName = String(payload.name || payload.tool || "");
+  if (CODEX_CONTINUATION_TOOLS.has(outerName)) return [];
+  if (outerName !== "exec") return [payload];
+
+  const source =
+    typeof payload.input === "string"
+      ? payload.input
+      : typeof payload.arguments === "string"
+        ? payload.arguments
+        : "";
+  const calls = codexNestedToolCalls(source).filter(
+    (call) => !CODEX_EXEC_OUTPUT_HELPERS.has(call.name) && !CODEX_CONTINUATION_TOOLS.has(call.name)
+  );
+  if (!calls.length) {
+    const direct = codexDecodedActionInput(payload);
+    return direct.command || direct.cmd ? [payload] : [];
+  }
+  return calls.flatMap((call) => {
+    const input = codexNestedToolInput(call.name, call.source, payload);
+    if (call.name === "exec_command" && !input.command) {
+      const mapped = codexMappedExecInputs(source);
+      if (mapped.length) {
+        return mapped.map((mappedInput) => Object.assign({}, payload, {
+          name: call.name,
+          input: mappedInput,
+          arguments: undefined,
+        }));
+      }
+      return [];
+    }
+    return [Object.assign({}, payload, {
+      name: call.name,
+      input,
+      arguments: undefined,
+    })];
+  });
+}
+
+function codexUnwrapActionPayload(payload) {
+  return codexUnwrapActionPayloads(payload)[0] || null;
 }
 
 function codexCommandFromPayload(p) {
@@ -4276,28 +6988,42 @@ function codexCommandFromPayload(p) {
   return String(cmd || "").replace(/\s+/g, " ").trim();
 }
 
-// Codex emits the command result as a separate `function_call_output` whose
-// `output` is sometimes a JSON-wrapped string. Pull out the readable text.
+// Codex emits the command/MCP result as a separate `function_call_output` /
+// `custom_tool_call_output`. Current app persistence stores `output` as an
+// ARRAY of `{type:"input_text", text:"…"}` blocks (not a plain string). Older
+// shapes used a JSON-wrapped string or stdout/stderr fields. Pull readable text
+// from every known shape so Ask Fable / Read / shell results are not empty on iOS.
 function codexOutputText(output) {
   if (output == null) return "";
+  // Array of content blocks — the common Codex app shape for tool results.
+  if (Array.isArray(output)) return toolResultText(output);
   if (typeof output === "string") {
     try {
       const o = JSON.parse(output);
+      if (Array.isArray(o)) return toolResultText(o);
       if (o && typeof o.output === "string") return o.output;
+      if (o && Array.isArray(o.output)) return toolResultText(o.output);
       if (o && typeof o.aggregated_output === "string") return o.aggregated_output;
       if (o && (typeof o.stdout === "string" || typeof o.stderr === "string")) {
         return [o.stdout, o.stderr].filter(Boolean).join("\n");
       }
       if (o && typeof o.content === "string") return o.content;
+      if (o && Array.isArray(o.content)) return toolResultText(o.content);
+      if (o && typeof o.text === "string") return o.text;
+      if (o && typeof o.result === "string") return o.result;
     } catch (_) {}
     return output;
   }
   if (typeof output === "object") {
     if (typeof output.output === "string") return output.output;
+    if (Array.isArray(output.output)) return toolResultText(output.output);
     if (typeof output.aggregated_output === "string") return output.aggregated_output;
     if (typeof output.stdout === "string" || typeof output.stderr === "string") {
       return [output.stdout, output.stderr].filter(Boolean).join("\n");
     }
+    if (typeof output.text === "string") return output.text;
+    if (typeof output.result === "string") return output.result;
+    if (Array.isArray(output.content)) return toolResultText(output.content);
     return toolResultText(output.content);
   }
   return "";
@@ -4793,9 +7519,37 @@ function liveCodexActions(output) {
       return;
     }
 
+    // Stream `mcp_tool_call` items (server+tool fields) — not only nested exec wrappers.
+    if (type === "mcp_tool_call") {
+      const detail = codexActionDetailSingle(item);
+      if (detail) {
+        detailByUid.set(uid, detail);
+        order.push(uid);
+        const outputText = codexOutputText(item.result || item.output || item.content);
+        if (outputText) {
+          resultByUid.set(uid, {
+            output: clipText(outputText, MAX_ACTION_OUTPUT),
+            isError: !!item.is_error || String(item.status || "").toLowerCase().includes("error"),
+          });
+        }
+      }
+      return;
+    }
+
     if (type === "function_call" || type === "custom_tool_call") {
-      detailByUid.set(uid, codexActionDetail(item));
-      order.push(uid);
+      const details = codexActionDetails(item);
+      const actionUids = [];
+      details.forEach((detail, detailIndex) => {
+        const actionUid = details.length > 1 ? `${uid}:${detailIndex}` : uid;
+        detailByUid.set(actionUid, detail);
+        order.push(actionUid);
+        actionUids.push(actionUid);
+      });
+      if (item.call_id && actionUids.length) {
+        // A combined outer exec result cannot be split safely by action. Attach it
+        // once to the first native node rather than duplicating it across siblings.
+        callIdToUid.set(item.call_id, actionUids[0]);
+      }
       return;
     }
 
@@ -4868,10 +7622,14 @@ function cleanNodeLabel(kind, target, d) {
     case "todo": return "Planning";
     case "thinking": return "Thinking";
     case "mcp": {
-      // "MCP · ask fable" — stable base (duration is appended client-side at settle).
-      const tool = d.tool ? String(d.tool).replace(/_/g, " ") : "";
+      // "MCP · ask advisor" — stable base (duration is appended client-side at settle).
+      const tool = d.tool ? prettyMcpToolLabel(d.tool) : "";
       if (tool) return "MCP · " + tool;
-      return target ? "MCP · " + target : "MCP tool";
+      if (target) {
+        // Rewrite any residual "ask fable" in a prebuilt target string.
+        return "MCP · " + String(target).replace(/\bask\s+fable\b/gi, "ask advisor");
+      }
+      return "MCP tool";
     }
     default: return d.name || "Tool";
   }
@@ -4914,6 +7672,14 @@ function actionNode(detail, uid, status) {
       node.detail = clipText(cot.trim(), MAX_ACTION_OUTPUT);
       node.output = node.detail;
     }
+  }
+  // MCP / bash / read / search results: also mirror a clipped plaintext body onto
+  // the node so History/live sheets still show output when agentActionsEnc is
+  // missing (or decrypt fails on a peer device). Full body still rides the blob.
+  if (OUTPUT_KINDS.has(kind) && typeof d.output === "string" && d.output.trim()) {
+    const body = clipText(d.output.trim(), kind === "mcp" ? 4000 : 1400);
+    if (!node.detail) node.detail = body;
+    if (!node.output) node.output = body;
   }
   return node;
 }
@@ -5144,6 +7910,8 @@ async function claudeDetail(id, limit, before) {
   const messages = [];
   let pending = newRuntimeAccumulator();
   let topic = null;
+  let model = null;
+  const activeBackgroundTasks = new Set();
   // Claude Code re-appends prior messages (same `uuid`) into the JSONL every time a
   // session is resumed/compacted, so a long session contains the SAME message many
   // times over. Replaying those duplicates produced garbled "corpse" history and
@@ -5187,9 +7955,14 @@ async function claudeDetail(id, limit, before) {
   };
   await readJsonl(match.file, (ev) => {
     if (ev.type === "ai-title" && ev.aiTitle) topic = ev.aiTitle;
+    const isTaskNotification = updateClaudeBackgroundTasks(activeBackgroundTasks, ev);
+    if (isTaskNotification) return;
     if (ev.type !== "user" && ev.type !== "assistant") return;
-    if (ev.uuid) { if (seen.has(ev.uuid)) return; seen.add(ev.uuid); }
     const m = ev.message || {};
+    if (ev.type === "assistant" && m.model && String(m.model) !== "<synthetic>") {
+      model = String(m.model);
+    }
+    if (ev.uuid) { if (seen.has(ev.uuid)) return; seen.add(ev.uuid); }
     // /compact summaries are injected as user messages — render them as a
     // mid-chat divider (kind:"summary"), never a user bubble or a turn boundary.
     if (ev.type === "user" && ev.isCompactSummary) {
@@ -5321,6 +8094,7 @@ async function claudeDetail(id, limit, before) {
     if (ev.timestamp) lastEventTs = ev.timestamp;
   });
   flushTurn();
+  if (activeBackgroundTasks.size > 0) lastStopReason = "background_task";
   // Keep the most RECENT `limit` messages (the tail), not the oldest — a long
   // session must show what's happening NOW, not its opening turns (this was the
   // "messages are too old" bug: reading stopped at `limit` from the top). The
@@ -5332,6 +8106,7 @@ async function claudeDetail(id, limit, before) {
   // received the WHOLE session — otherwise "absent" just means "older than the
   // window", and deleting those would erase valid scrollback.
   const window = windowHistoryMessages(messages, limit, before);
+  const liveMetadata = runningSessionMetadata("claude", id);
   return {
     provider: "claude",
     id,
@@ -5346,6 +8121,8 @@ async function claudeDetail(id, limit, before) {
     totalMessages: window.totalMessages,
     messages: window.messages,
     lastStopReason,
+    ...(liveMetadata.model || model ? { model: liveMetadata.model || model } : {}),
+    ...(liveMetadata.reasoningEffort ? { reasoningEffort: liveMetadata.reasoningEffort } : {}),
   };
 }
 
@@ -5384,81 +8161,217 @@ function codexSessionFiles() {
   return out;
 }
 
+// Codex keeps the user-visible conversation name outside the rollout JSONL.
+// `session_index.jsonl` holds generated/renamed thread names, while newer Codex
+// builds also mirror titles in state_5.sqlite. The transcript's first message is
+// only a fallback; it is not the title shown by Codex itself.
+const codexStoredTitleCache = { at: 0, signature: "", titles: new Map() };
+
+function codexStoredTitles() {
+  const now = Date.now();
+  if (now - codexStoredTitleCache.at < 2_000) return codexStoredTitleCache.titles;
+
+  const codexDir = path.join(os.homedir(), ".codex");
+  const indexFile = path.join(codexDir, "session_index.jsonl");
+  const stateCandidates = [
+    path.join(codexDir, "state_5.sqlite"),
+    path.join(codexDir, "sqlite", "state_5.sqlite"),
+  ];
+  const stateFile = stateCandidates.find((candidate) => fs.existsSync(candidate));
+  const signature = [indexFile, stateFile]
+    .filter(Boolean)
+    .map((file) => {
+      try {
+        const stat = fs.statSync(file);
+        return `${file}:${stat.size}:${stat.mtimeMs}`;
+      } catch {
+        return `${file}:missing`;
+      }
+    })
+    .join("|");
+  if (signature === codexStoredTitleCache.signature) {
+    codexStoredTitleCache.at = now;
+    return codexStoredTitleCache.titles;
+  }
+
+  const titles = new Map();
+  // State DB is a useful fallback for recent Codex versions. Keep this optional:
+  // the bridge also runs on machines where the sqlite3 CLI is unavailable.
+  if (stateFile) {
+    const sqliteCandidates = process.platform === "darwin"
+      ? ["/usr/bin/sqlite3", "sqlite3"]
+      : ["sqlite3"];
+    for (const sqlite of sqliteCandidates) {
+      try {
+        const raw = execFileSync(
+          sqlite,
+          [
+            "-readonly",
+            "-json",
+            stateFile,
+            "select id, title, first_user_message from threads where archived = 0;",
+          ],
+          { encoding: "utf8", timeout: 2_000, maxBuffer: 4 * 1024 * 1024 }
+        );
+        const rows = JSON.parse(raw || "[]");
+        for (const row of Array.isArray(rows) ? rows : []) {
+          const id = row && typeof row.id === "string" ? row.id : "";
+          const rawTitle = String((row && row.title) || "").trim();
+          const firstMessage = String((row && row.first_user_message) || "").trim();
+          // Before Codex generates a title it stores the entire first prompt
+          // (or a truncated prefix) in `threads.title`. Those are not conversation
+          // names — only accept titles that clearly diverge from the first message.
+          if (!id || !rawTitle || isRawCodexTitleCandidate(rawTitle, firstMessage)) continue;
+          const title = cleanTopicCandidate(rawTitle);
+          if (title && !isWeakCodexTitle(title)) titles.set(id, title);
+        }
+        break;
+      } catch (_) {
+        // Fall through to the portable JSONL index.
+      }
+    }
+  }
+
+  // The index is the authoritative source for generated/explicit thread names;
+  // apply it last so it overrides a stale or first-message-shaped DB title.
+  try {
+    const lines = fs.readFileSync(indexFile, "utf8").split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let row;
+      try { row = JSON.parse(line); } catch { continue; }
+      const id = row && typeof row.id === "string" ? row.id : "";
+      const rawName = String((row && row.thread_name) || "").trim();
+      // session_index is the generated/renamed name; still reject anything that
+      // looks like a leftover first-prompt dump.
+      if (!id || !rawName || isRawCodexTitleCandidate(rawName)) continue;
+      const title = cleanTopicCandidate(rawName);
+      if (title && !isWeakCodexTitle(title)) titles.set(id, title);
+    }
+  } catch (_) {}
+
+  codexStoredTitleCache.at = now;
+  codexStoredTitleCache.signature = signature;
+  codexStoredTitleCache.titles = titles;
+  return titles;
+}
+
 // Lightweight roster summary: stream just far enough to recover session_meta + the
 // first couple of real messages, then stop. Early-exits the instant we have a topic and
 // ≥2 messages; otherwise stops at CODEX_SUMMARY_HEAD_BYTES. Replaces the old
 // fs.readSync(8 MB)-per-file scan that blocked the event loop for seconds across a
 // 40-file list (starving the WebSocket heartbeat) — this streams async so the socket
 // stays alive, and stops after a few KB for the common case.
-async function codexSummaryFromHead(file) {
-  let meta = null, topic = null, assistantTopic = null, messages = 0, sawResponseItem = false;
+async function codexSummaryFromHead(file, size) {
+  let meta = null, topic = null, assistantTopic = null, messages = 0, userTurns = 0;
   await readJsonl(file, (ev) => {
     if (ev.type === "session_meta") { meta = ev.payload || meta || {}; return; }
     if (ev.type !== "response_item" || !ev.payload) return;
-    sawResponseItem = true;
     if (ev.payload.type !== "message") return;
     const role = ev.payload.role;
     if (role !== "user" && role !== "assistant") return;
-    const text = codexText(ev.payload.content);
+    const raw = codexText(ev.payload.content);
+    const text = role === "user" ? codexUserMessageText(raw) : cleanMessageText(raw);
+    if (role === "assistant" && isContextMessage(raw)) return;
     if (!text) return;
     messages++;
     if (role === "user" && !topic) {
-      const clean = cleanTopicCandidate(text);
+      userTurns++;
+      const clean = codexFallbackTitle(text, "user");
       if (clean) topic = clean;
+    } else if (role === "user") {
+      userTurns++;
     } else if (role === "assistant" && !assistantTopic) {
-      const clean = cleanTopicCandidate(text);
+      const clean = codexFallbackTitle(text, "assistant");
       if (clean) assistantTopic = clean;
     }
-    if (topic && messages >= 2) return false; // enough to render the roster row
+    if (topic && !isWeakCodexTitle(topic) && messages >= 2) return false;
+    if (topic && isWeakCodexTitle(topic) && assistantTopic) return false;
   }, CODEX_SUMMARY_HEAD_BYTES);
-  if (!messages && sawResponseItem) messages = 1;
-  return { meta, topic: topic || assistantTopic || "Codex session", lastTs: null, messages };
+  const sessionMetadata = await codexMetadataFromTail(file, size);
+  const resolvedTopic = resolveCodexTopic(null, topic, assistantTopic);
+  const renderedMessages = userTurns > 0 ? userTurns * 2 : messages;
+  return { meta, topic: resolvedTopic, lastTs: null, messages, renderedMessages, ...sessionMetadata };
 }
 
 async function codexSummary(file, opts = {}) {
-  if (opts.fast) return codexSummaryFromHead(file);
-  let meta = null, topic = null, assistantTopic = null, lastTs = null, messages = 0;
+  if (opts.fast) return codexSummaryFromHead(file, opts.size);
+  let meta = null, topic = null, assistantTopic = null, lastTs = null, messages = 0, userTurns = 0;
+  let model = null, reasoningEffort = null;
   await readJsonl(file, (ev) => {
-    if (ev.type === "session_meta") meta = ev.payload || {};
-    else if (ev.type === "response_item" && ev.payload && ev.payload.type === "message") {
+    if (ev.type === "session_meta") {
+      meta = ev.payload || {};
+    } else if (ev.type === "turn_context" && ev.payload) {
+      if (ev.payload.model && String(ev.payload.model).trim()) {
+        model = String(ev.payload.model).trim();
+      }
+      if (ev.payload.effort && String(ev.payload.effort).trim()) {
+        reasoningEffort = String(ev.payload.effort).trim();
+      }
+    } else if (ev.type === "response_item" && ev.payload && ev.payload.type === "message") {
       const role = ev.payload.role;
       if (role !== "user" && role !== "assistant") return;
-      const text = codexText(ev.payload.content);
+      const raw = codexText(ev.payload.content);
+      const text = role === "user" ? codexUserMessageText(raw) : cleanMessageText(raw);
+      if (role === "assistant" && isContextMessage(raw)) return;
       if (!text) return;
       messages++;
       if (ev.timestamp) lastTs = ev.timestamp;
       if (role === "user" && !topic) {
-        const clean = cleanTopicCandidate(text);
+        userTurns++;
+        const clean = codexFallbackTitle(text, "user");
         if (clean) topic = clean;
+      } else if (role === "user") {
+        userTurns++;
       } else if (role === "assistant" && !assistantTopic) {
-        const clean = cleanTopicCandidate(text);
+        const clean = codexFallbackTitle(text, "assistant");
         if (clean) assistantTopic = clean;
       }
     }
   });
-  return { meta, topic: topic || assistantTopic || "Untitled", lastTs, messages };
+  const resolvedTopic = resolveCodexTopic(null, topic, assistantTopic);
+  const renderedMessages = userTurns > 0 ? userTurns * 2 : messages;
+  return { meta, topic: resolvedTopic, lastTs, messages, renderedMessages, model, reasoningEffort };
 }
 
 async function listCodex(limit) {
   const files = codexSessionFiles().sort((a, b) => b.mtime - a.mtime).slice(0, limit);
   const runningIds = runningSessionIdSet("codex");
+  const storedTitles = codexStoredTitles();
   const results = [];
   for (const f of files) {
     let sum = getCachedSummary(f.file, f.size);
-    if (!sum) { sum = await codexSummary(f.file, { fast: true }); setCachedSummary(f.file, f.size, sum); }
+    if (!sum) { sum = await codexSummary(f.file, { fast: true, size: f.size }); setCachedSummary(f.file, f.size, sum); }
     if (sum.messages === 0) continue;
     const project = (sum.meta && sum.meta.cwd) || "";
     if (isEphemeralProject(project)) continue;
     const id = (sum.meta && sum.meta.id) || f.id || f.name;
+    // Fast head scans are enough for dormant rows. The one active session must
+    // show its real bubble count, so scan that transcript fully (typically <200ms)
+    // without making History wait on every large archived rollout.
+    if (runningIds.has(id)) {
+      sum = await codexSummary(f.file);
+      setCachedSummary(f.file, f.size, sum);
+    }
+    const explicitTurnState = await codexOpenTurnState(f.file, f.size);
+    const live = runningIds.has(id)
+      || (explicitTurnState == null
+        ? sessionIsLive(f.mtime, id, runningIds)
+        : explicitTurnState);
+    const liveMetadata = runningSessionMetadata("codex", id);
     results.push({
       provider: "codex",
       id,
-      topic: sum.topic,
+      topic: resolveCodexTopic(storedTitles.get(id), sum.topic, null),
       project,
       projectName: project ? path.basename(project) : "",
       updatedAt: new Date(f.mtime).toISOString(),
-      messageCount: Math.max(1, sum.messages || 0),
-      live: sessionIsLive(f.mtime, id, runningIds),
+      messageCount: Math.max(1, sum.renderedMessages || sum.messages || 0),
+      live,
+      ...(liveMetadata.model || sum.model ? { model: liveMetadata.model || sum.model } : {}),
+      ...(liveMetadata.reasoningEffort || sum.reasoningEffort
+        ? { reasoningEffort: liveMetadata.reasoningEffort || sum.reasoningEffort }
+        : {}),
     });
   }
   return results;
@@ -5476,8 +8389,12 @@ async function codexDetail(id, limit, before) {
   }
   if (!match) return null;
   const messages = [];
+  let fallbackTopic = null;
+  let assistantFallbackTopic = null;
   let pending = newRuntimeAccumulator();
   let project = "";
+  let model = null;
+  let reasoningEffort = null;
   // Same guard as Claude: skip any response_item we've already processed (by id) so a
   // resumed/re-emitted rollout never replays a message or its apply_patch twice.
   const seen = new Set();
@@ -5511,6 +8428,15 @@ async function codexDetail(id, limit, before) {
   };
   await readJsonl(match.file, (ev) => {
     if (ev.type === "session_meta" && ev.payload) project = ev.payload.cwd || "";
+    if (ev.type === "turn_context" && ev.payload) {
+      if (ev.payload.model && String(ev.payload.model).trim()) {
+        model = String(ev.payload.model).trim();
+      }
+      if (ev.payload.effort && String(ev.payload.effort).trim()) {
+        reasoningEffort = String(ev.payload.effort).trim();
+      }
+      return;
+    }
     if (ev.type !== "response_item" || !ev.payload) return;
     const p = ev.payload;
     const dkey = p.id || ev.id || `codex-${eventSeq}`;
@@ -5519,14 +8445,19 @@ async function codexDetail(id, limit, before) {
     collectCodexEdits(pending, p); // apply_patch items accumulate into the turn
     if (p.type === "message" && (p.role === "user" || p.role === "assistant")) {
       const raw = codexText(p.content);
-      if (p.role === "user" && raw.trim()) {
+      const text = p.role === "user" ? codexUserMessageText(raw) : cleanMessageText(raw);
+      if (p.role === "user" && !fallbackTopic) {
+        fallbackTopic = codexFallbackTitle(text, "user");
+      } else if (p.role === "assistant" && !assistantFallbackTopic && !isContextMessage(raw)) {
+        assistantFallbackTopic = codexFallbackTitle(text, "assistant");
+      }
+      if (p.role === "user" && text) {
         flushTurn();                // seal prior turn's card + action feed
         turnStartTs = ev.timestamp || null;   // new turn opens at this prompt
       } else if (p.role === "assistant" && ev.timestamp) {
         turnEndTs = ev.timestamp;             // extend turn end to last assistant message
       }
-      const text = cleanMessageText(raw);
-      if (text && !isContextMessage(raw)) {
+      if (text && (p.role === "user" || !isContextMessage(raw))) {
         if (p.role === "user") {
           // User prompts stay their own right-side bubble (turn boundary).
           messages.push({ role: "user", text: clipText(text, 4000), ts: ev.timestamp, uid: dkey });
@@ -5554,9 +8485,17 @@ async function codexDetail(id, limit, before) {
       }
     } else if (p.type === "function_call" || p.type === "custom_tool_call") {
       // Collect the tool call for the current turn IN ORDER (output joins via call_id).
-      turnItems.push({ type: "tool", uid: dkey, ts: ev.timestamp });
-      actionDetailByUid.set(dkey, codexActionDetail(p));
-      if (p.call_id) callIdToUid.set(p.call_id, dkey);
+      const details = codexActionDetails(p);
+      const actionUids = [];
+      details.forEach((detail, detailIndex) => {
+        const actionUid = details.length > 1 ? `${dkey}:${detailIndex}` : dkey;
+        turnItems.push({ type: "tool", uid: actionUid, ts: ev.timestamp });
+        actionDetailByUid.set(actionUid, detail);
+        actionUids.push(actionUid);
+      });
+      if (p.call_id && actionUids.length) {
+        callIdToUid.set(p.call_id, actionUids[0]);
+      }
     } else if (p.type === "function_call_output" || p.type === "custom_tool_call_output") {
       const uid = p.call_id ? callIdToUid.get(p.call_id) : null;
       if (uid) resultByUid.set(uid, { output: clipText(codexOutputText(p.output), MAX_ACTION_OUTPUT), isError: false });
@@ -5567,10 +8506,13 @@ async function codexDetail(id, limit, before) {
   flushTurn();
   // Topic from the FULL set (the opening message), then keep the most recent
   // `limit` messages — see claudeDetail for rationale (tail, not head; stable uid).
-  const topic =
-    messages.map((m) => cleanTopicCandidate(m.text)).find(Boolean) ||
-    "Untitled";
+  const topic = resolveCodexTopic(
+    codexStoredTitles().get(id),
+    fallbackTopic,
+    assistantFallbackTopic
+  );
   const window = windowHistoryMessages(messages, limit, before);
+  const liveMetadata = runningSessionMetadata("codex", id);
   return {
     provider: "codex",
     id,
@@ -5584,6 +8526,10 @@ async function codexDetail(id, limit, before) {
     windowEnd: window.windowEnd,
     totalMessages: window.totalMessages,
     messages: window.messages,
+    ...(liveMetadata.model || model ? { model: liveMetadata.model || model } : {}),
+    ...(liveMetadata.reasoningEffort || reasoningEffort
+      ? { reasoningEffort: liveMetadata.reasoningEffort || reasoningEffort }
+      : {}),
   };
 }
 
@@ -5935,6 +8881,15 @@ async function listGrok(limit) {
       setCachedSummary(s.file, s.size, sum);
     }
     if (sum.messages === 0) continue;
+    const turnState = grokUpdatesTurnState(s);
+    const hasStructuralState = !!turnState.lastKind;
+    const structurallyLive = hasStructuralState
+      && !turnState.completedAfterActivity
+      && grokSessionIsLive(s, DETAIL_MIDTURN_STALE_MS);
+    const live = runningIds.has(s.id)
+      || (hasStructuralState
+        ? structurallyLive
+        : sessionIsLive(s.mtime, s.id, runningIds));
     results.push({
       provider: "grok",
       id: s.id,
@@ -5943,7 +8898,7 @@ async function listGrok(limit) {
       projectName: path.basename(s.project || "") || "Computer",
       updatedAt: sum.lastTs || new Date(s.mtime).toISOString(),
       messageCount: sum.messages,
-      live: sessionIsLive(s.mtime, s.id, runningIds),
+      live,
     });
   }
   return results;
@@ -6313,6 +9268,7 @@ function detailMidturnWindowMs(provider) {
  */
 function sliceGrokUpdatesLinesToCurrentTurn(lines) {
   let cut = 0;
+  let sawTurnStart = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line || !line.trim()) continue;
@@ -6325,10 +9281,20 @@ function sliceGrokUpdatesLinesToCurrentTurn(lines) {
     const u = (rec && rec.params && rec.params.update) || (rec && rec.update) || null;
     if (!u || typeof u !== "object") continue;
     const kind = String(u.sessionUpdate || "");
-    if (kind === "turn_completed") cut = i + 1;
-    else if (kind === "turn_started" || kind === "user_message_chunk") cut = i;
+    if (kind === "turn_completed") {
+      cut = i + 1;
+      sawTurnStart = false;
+    } else if (kind === "turn_started" || kind === "user_message_chunk") {
+      cut = i;
+      sawTurnStart = true;
+    }
   }
-  return lines.slice(cut);
+  // sawTurnStart: the retained slice's own beginning is a real turn boundary we
+  // actually saw, not just wherever our 768KB tail-read happened to start. Callers
+  // use this to decide whether the live edge may fully own this turn's narration
+  // (slice provably complete) or must defer to already-folded history (slice may be
+  // missing earlier content the tail-read cut off) — see mergeGrokLiveUpdatesIntoMessages.
+  return { lines: lines.slice(cut), sawTurnStart };
 }
 
 /**
@@ -6404,17 +9370,26 @@ function mergeGrokLiveUpdatesIntoMessages(match, messages) {
     return;
   }
 
-  const turnLines = sliceGrokUpdatesLinesToCurrentTurn(text.split("\n"));
+  const { lines: turnLines, sawTurnStart } = sliceGrokUpdatesLinesToCurrentTurn(text.split("\n"));
   if (!turnLines.length) return;
 
   const nodesById = new Map();
   // Seed prior history-folded nodes (tools + thinking + interim text segments).
   // Segmented live ids (grok-text-live-N) replace legacy single-slot live blobs.
+  // When the live slice is provably COMPLETE for this turn (sawTurnStart), the walk
+  // below regenerates narration/thinking for the whole open turn from scratch under
+  // grok-text-live-N / grok-thinking-live-N ids — seeding the history-folded
+  // txt-*/think-* copies too would paint the SAME content twice under different ids
+  // (the duplicate/"jumping" narration bug). Tool nodes always seed either way: their
+  // id is the model's real tool_call id, shared by both paths, so a later tool_call /
+  // tool_call_update just overwrites the same entry in place, never duplicates it.
   if (Array.isArray(last.progressNodes)) {
     for (const n of last.progressNodes) {
       if (!n || !n.id) continue;
       const id = String(n.id);
       if (id === "grok-text-live" || id === "grok-thinking-live") continue;
+      const nodeKind = String(n.kind || "");
+      if (sawTurnStart && (nodeKind === "text" || nodeKind === "thinking")) continue;
       nodesById.set(id, n);
     }
   }
@@ -6505,21 +9480,26 @@ function mergeGrokLiveUpdatesIntoMessages(match, messages) {
       if (chunk) {
         ensureSegForPhase("thought");
         thoughtAcc += chunk;
-        const id = `grok-thinking-live-${seg}`;
-        const tokens = Math.max(1, Math.round(thoughtAcc.length / 4));
-        const detail = clipText(thoughtAcc, 8000);
-        nodesById.set(id, {
-          id,
-          label: "Thinking",
-          kind: "thinking",
-          status: "streaming",
-          depth: 0,
-          tokens,
-          detail,
-          // History fold puts CoT on encrypted actions; live path rides plaintext detail.
-          output: detail,
-        });
-        ensureOrder(id);
+        // Only paint a live node once the slice provably covers the whole open turn
+        // (sawTurnStart) — otherwise history already owns this turn's thinking nodes
+        // and a live copy under a different id would duplicate them (see seeding above).
+        if (sawTurnStart) {
+          const id = `grok-thinking-live-${seg}`;
+          const tokens = Math.max(1, Math.round(thoughtAcc.length / 4));
+          const detail = clipText(thoughtAcc, 8000);
+          nodesById.set(id, {
+            id,
+            label: "Thinking",
+            kind: "thinking",
+            status: "streaming",
+            depth: 0,
+            tokens,
+            detail,
+            // History fold puts CoT on encrypted actions; live path rides plaintext detail.
+            output: detail,
+          });
+          ensureOrder(id);
+        }
       }
       continue;
     }
@@ -6540,17 +9520,22 @@ function mergeGrokLiveUpdatesIntoMessages(match, messages) {
         }
         textAcc += chunk;
         // Live: keep body empty and ride text as a feed node (phone suppresses body mid-run).
-        const id = `grok-text-live-${seg}`;
-        nodesById.set(id, {
-          id,
-          label: clipText(textAcc, 4000),
-          kind: "text",
-          status: "streaming",
-          depth: 0,
-          detail: clipText(textAcc, 4000),
-        });
-        ensureOrder(id);
         last.text = "";
+        // Only paint a live node once the slice provably covers the whole open turn
+        // (sawTurnStart) — otherwise history already owns this turn's narration and a
+        // live copy under a different id would duplicate it (see seeding above).
+        if (sawTurnStart) {
+          const id = `grok-text-live-${seg}`;
+          nodesById.set(id, {
+            id,
+            label: clipText(textAcc, 4000),
+            kind: "text",
+            status: "streaming",
+            depth: 0,
+            detail: clipText(textAcc, 4000),
+          });
+          ensureOrder(id);
+        }
       }
       continue;
     }
@@ -6806,9 +9791,19 @@ function isInterruptMarkerMessage(m) {
 function markDetailLiveTurn(result, provider, sessionId, chatId) {
   if (!result || result.mode !== "detail") return false;
   const msgs = result.session && result.session.messages;
-  if (!Array.isArray(msgs) || !msgs.length) return false;
+  if (!Array.isArray(msgs)) return false;
+  const runningEntry = runningTaskForChat(chatId);
+  const spawnedRunning = !!runningEntry;
+  // A bridge-owned task is live before Claude has persisted either the mirrored user
+  // prompt or its first assistant block. Surface that pre-token thinking phase now;
+  // otherwise STOP/header state only appears after the first streamed text/tool node.
+  if (!msgs.length) {
+    const placeholder = runningPlaceholderMessage(runningEntry);
+    if (!placeholder) return false;
+    msgs.push(placeholder);
+    return true;
+  }
   if (isInterruptMarkerMessage(msgs[msgs.length - 1])) return false; // stopped → settled
-  const spawnedRunning = !!runningTaskForChat(chatId);
   // Structural turn state (Claude only): the transcript's last assistant entry says
   // whether the turn truly ended (end_turn / stop_sequence) or is mid-flight
   // (tool_use, or null while an entry is being written). mtime alone can't tell a
@@ -6824,9 +9819,9 @@ function markDetailLiveTurn(result, provider, sessionId, chatId) {
   // A fresh user prompt with no assistant reply yet = the model is thinking before
   // its first token — the phone otherwise shows nothing "live" until the first
   // entry lands. Synthesize a running thinking turn so the chat goes live at send.
-  if (!spawnedRunning && last0 && last0.role === "user"
-      && sessionFileIsLive(provider, sessionId, midturnWindowMs)) {
-    msgs.push({
+  if (last0 && last0.role === "user"
+      && (spawnedRunning || sessionFileIsLive(provider, sessionId, midturnWindowMs))) {
+    const placeholder = runningPlaceholderMessage(runningEntry) || {
       role: "assistant",
       text: "",
       uid: `running-mirror-${sessionId}`,
@@ -6835,7 +9830,8 @@ function markDetailLiveTurn(result, provider, sessionId, chatId) {
       progressNodes: [
         { id: `running-mirror-${sessionId}`, label: "Thinking", kind: "thinking", status: "running", depth: 0 },
       ],
-    });
+    };
+    msgs.push(placeholder);
     return true;
   }
   if (!spawnedRunning) {
@@ -7419,7 +10415,8 @@ function handleFileRequest(channel, payload) {
 
 // Structured usage snapshot for the phone's inline Usage panel. Same data /usage
 // prints as text, but as machine-readable buckets so iOS can draw progress bars:
-// Claude subscription limits (5h + 7-day, from the OAuth utilization endpoint) plus
+// Claude subscription limits (5h + 7-day, from the OAuth utilization endpoint),
+// Codex primary/secondary windows (from live token_count rate_limits), plus
 // this chat's last-run token/cost. Never throws; missing pieces are just omitted.
 async function buildUsageReport(provider, chatId, task) {
   const currentModel = modelFor(provider, chatId, task);
@@ -7429,6 +10426,8 @@ async function buildUsageReport(provider, chatId, task) {
     advisor: advisorFor(provider, chatId, task) || null,
     buckets: [],
     chat: null,
+    limitHit: false,
+    limitMessage: null,
   };
   if (provider === "claude") {
     const util = await fetchClaudeUtilization();
@@ -7443,9 +10442,112 @@ async function buildUsageReport(provider, chatId, task) {
         }
       };
       add("5-hour session", util.five_hour);
-      add("7-day (all models)", util.seven_day);
+      add("7-day (weekly)", util.seven_day);
       add("7-day Opus", util.seven_day_opus);
       add("7-day Sonnet", util.seven_day_sonnet);
+    }
+  } else if (provider === "codex") {
+    // Prefer a live stream cache; otherwise scan recent Codex session logs so
+    // the phone sheet works even before a Vibe-spawned run this process.
+    let cached = lastRateLimitsByProvider.get("codex");
+    if (cached && Date.now() - (cached.at || 0) > 30 * 60 * 1000) {
+      lastRateLimitsByProvider.delete("codex");
+      cached = null;
+    }
+    if (!cached || !Array.isArray(cached.buckets) || !cached.buckets.length) {
+      const disk = fetchCodexUtilizationFromDisk();
+      if (disk && disk.buckets && disk.buckets.length) {
+        cached = { at: Date.now(), buckets: disk.buckets };
+      }
+    }
+    if (cached && Array.isArray(cached.buckets)) {
+      for (const b of cached.buckets) {
+        if (!b || !b.label) continue;
+        report.buckets.push({
+          label: b.label,
+          utilization: Math.round(Number(b.utilization) || 0),
+          resetsAt: b.resetsAt || null,
+        });
+      }
+      // Sticky `hit` from an earlier rate-limit event must not survive forever —
+      // only surface it while utilization is still at/near the ceiling, or the
+      // event is very recent (< 3 min). Otherwise the phone banner freezes on
+      // "Rate limit hit" after the window has recovered.
+      if (cached.hit) {
+        const maxUtil = Math.max(
+          0,
+          ...cached.buckets.map((b) => Number(b && b.utilization) || 0)
+        );
+        const ageMs = Date.now() - (cached.at || 0);
+        if (maxUtil >= 95 || ageMs < 3 * 60 * 1000) {
+          report.limitHit = true;
+          report.limitMessage = cached.message || null;
+        } else {
+          // Clear sticky hit so subsequent /usage replies are honest.
+          lastRateLimitsByProvider.set("codex", {
+            at: cached.at,
+            buckets: cached.buckets,
+            hit: false,
+          });
+        }
+      }
+    }
+  } else if (provider === "grok") {
+    const util = await fetchGrokUtilization();
+    if (util && Array.isArray(util.buckets)) {
+      for (const b of util.buckets) {
+        if (!b || !b.label) continue;
+        report.buckets.push({
+          label: b.label,
+          utilization: Math.round(Number(b.utilization) || 0),
+          resetsAt: b.resetsAt || null,
+        });
+      }
+      if (util.tier) report.model = report.model || util.tier;
+    }
+  } else if (provider === "agy") {
+    const util = await fetchAgyUtilization();
+    if (util && Array.isArray(util.buckets)) {
+      for (const b of util.buckets) {
+        if (!b || !b.label) continue;
+        report.buckets.push({
+          label: b.label,
+          utilization: Math.round(Number(b.utilization) || 0),
+          resetsAt: b.resetsAt || null,
+        });
+      }
+    }
+  } else {
+    // Unknown provider — stream / limit-hit cache only.
+    const cached = lastRateLimitsByProvider.get(provider);
+    if (cached && Array.isArray(cached.buckets) && cached.buckets.length) {
+      for (const b of cached.buckets) {
+        if (!b || !b.label) continue;
+        report.buckets.push({
+          label: b.label,
+          utilization: Math.round(Number(b.utilization) || 0),
+          resetsAt: b.resetsAt || null,
+        });
+      }
+      if (cached.hit) {
+        const maxUtil = Math.max(
+          0,
+          ...(Array.isArray(cached.buckets)
+            ? cached.buckets.map((b) => Number(b && b.utilization) || 0)
+            : [0])
+        );
+        const ageMs = Date.now() - (cached.at || 0);
+        if (maxUtil >= 95 || ageMs < 3 * 60 * 1000) {
+          report.limitHit = true;
+          report.limitMessage = cached.message || null;
+        } else {
+          lastRateLimitsByProvider.set(provider, {
+            at: cached.at,
+            buckets: cached.buckets,
+            hit: false,
+          });
+        }
+      }
     }
   }
   const usage = (lastRuntimeBySession.get(sessionKey(provider, chatId)) || {}).usage;
@@ -7477,6 +10579,7 @@ function controlTask(channel, payload) {
   const provider = payload.provider || payload.agentWorkerProvider || payload.agentBridgeProvider;
   const chatId = payload.chatId || payload.chat_id;
   const taskId = payload.taskId || payload.agentTaskId || payload.messageId;
+  const teamRunId = payload.teamRunId || payload.team_run_id || null;
   const action = String(payload.action || payload.type || "").trim().toLowerCase();
   if (action === "revert") {
     revertFinishedTask(channel, payload);
@@ -7484,6 +10587,36 @@ function controlTask(channel, payload) {
   }
   if (action !== "cancel" && action !== "stop") {
     channel.push("control_result", { ok: false, reason: "unsupported_action", action, provider, chatId, taskId });
+    return;
+  }
+
+  // Whole-team cancel: kill every running task for this teamRunId (lead + workers).
+  if (teamRunId) {
+    let killed = 0;
+    for (const [key, entry] of runningTasks.entries()) {
+      if (!entry) continue;
+      const entryRun = entry.teamRunId || entry.team_run_id;
+      const entryChat = entry.chatId || entry.chat_id;
+      if (entryRun !== teamRunId) continue;
+      if (chatId && entryChat && entryChat !== chatId) continue;
+      try {
+        entry.child.kill("SIGTERM");
+        setTimeout(() => {
+          try {
+            if (!entry.child.killed) entry.child.kill("SIGKILL");
+          } catch (_) {}
+        }, 2500).unref?.();
+        killed += 1;
+      } catch (_) {}
+    }
+    channel.push("control_result", {
+      ok: killed > 0,
+      action,
+      teamRunId,
+      chatId,
+      killed,
+      reason: killed > 0 ? undefined : "task_not_running",
+    });
     return;
   }
 
@@ -7496,16 +10629,34 @@ function controlTask(channel, payload) {
   }
 
   try {
-    entry.child.kill("SIGTERM");
-    setTimeout(() => {
-      if (!entry.child.killed) entry.child.kill("SIGKILL");
-    }, 2500).unref?.();
+    // If this task is a team lead, also cancel siblings sharing teamRunId.
+    const entryTeamRun = entry.teamRunId || entry.team_run_id;
+    if (entryTeamRun) {
+      for (const [, sibling] of runningTasks.entries()) {
+        if (!sibling) continue;
+        if ((sibling.teamRunId || sibling.team_run_id) !== entryTeamRun) continue;
+        try {
+          sibling.child.kill("SIGTERM");
+          setTimeout(() => {
+            try {
+              if (!sibling.child.killed) sibling.child.kill("SIGKILL");
+            } catch (_) {}
+          }, 2500).unref?.();
+        } catch (_) {}
+      }
+    } else {
+      entry.child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!entry.child.killed) entry.child.kill("SIGKILL");
+      }, 2500).unref?.();
+    }
     channel.push("control_result", {
       ok: true,
       action,
       provider: entry.provider,
       chatId: entry.chatId,
       taskId: entry.taskId,
+      teamRunId: entryTeamRun || null,
     });
   } catch (err) {
     channel.push("control_result", {
@@ -7917,21 +11068,22 @@ const TOOL = {
   }
 };
 const ADVISOR_TOOL = {
+  // Wire id stays ask_fable (agents / MCP already call this). UI labels use "Ask Advisor".
   name: "ask_fable",
   description:
-    "Ask Fable for explicit second-opinion advice during the current run. Pass the concrete " +
+    "Ask Advisor for explicit second-opinion advice during the current run. Pass the concrete " +
     "question plus relevant context, snippets, diffs, constraints, and current assumptions. " +
     "Use this when the built-in advisor is unavailable or when you need a deliberate critique. " +
-    "Fable returns advice only; the calling model remains responsible for implementation and verification.",
+    "Advisor returns advice only; the calling model remains responsible for implementation and verification.",
   inputSchema: {
     type: "object",
     properties: {
-      question: { type: "string", description: "The exact advice question for Fable." },
+      question: { type: "string", description: "The exact advice question for the advisor." },
       context: { type: "string", description: "Relevant run context, findings, errors, and assumptions." },
       diff: { type: "string", description: "Optional patch or git diff to review." },
       constraints: {
         type: "array",
-        description: "Important constraints Fable must respect.",
+        description: "Important constraints the advisor must respect.",
         items: { type: "string" }
       },
       files: {
@@ -8058,14 +11210,47 @@ function buildAdvisorPrompt(args) {
   if (args.diff) parts.push("Diff or proposed patch:\\n" + compactText(args.diff, diffBudget));
   return compactText(parts.join("\\n\\n"), budget);
 }
-function runAdvisor(prompt) {
+// Advisor fallback chain: try Fable first, then fall back when Fable is
+// rate-limited / usage-limited / unavailable so ask_fable still returns real
+// advice instead of a hard "unavailable". Order: Fable -> Opus -> GPT (codex).
+// Sonnet is deliberately NOT in the chain. Override with
+// VIBE_FABLE_FALLBACK_MODELS (comma-separated; "gpt"/"codex" routes to codex).
+function advisorChain() {
+  const primary = ADVISOR_MODEL || "fable";
+  const envFallback = (process.env.VIBE_FABLE_FALLBACK_MODELS || "").trim();
+  let names;
+  if (envFallback) {
+    names = [primary].concat(envFallback.split(","));
+  } else if (primary === "opus") {
+    names = ["opus", "gpt"];
+  } else {
+    names = ["fable", "opus", "gpt"];
+  }
+  const seen = {};
+  const out = [];
+  for (const n of names) {
+    const trimmed = String(n || "").trim();
+    if (!trimmed) continue;
+    const norm = /gpt|codex/i.test(trimmed) ? "gpt" : normalizeAdvisorModel(trimmed);
+    if (norm && norm !== "sonnet" && !seen[norm]) {
+      seen[norm] = 1;
+      out.push(norm);
+    }
+  }
+  return out.length ? out : ["opus"];
+}
+function runAdvisorClaude(prompt, model) {
   return new Promise((resolve) => {
     const cmd = process.env.VIBE_CLAUDE_COMMAND || "claude";
+    // Both Fable and Opus advise WITH thinking: --effort raises reasoning depth.
+    const effort = process.env.VIBE_ADVISOR_CLAUDE_EFFORT || "high";
     const args = [
       "-p",
       prompt,
       "--model",
-      ADVISOR_MODEL,
+      model,
+      "--effort",
+      effort,
       "--output-format",
       "json",
       "--permission-mode",
@@ -8081,10 +11266,10 @@ function runAdvisor(prompt) {
     let stdout = "";
     let stderr = "";
     let done = false;
-    const finish = (text) => {
+    const finish = (res) => {
       if (done) return;
       done = true;
-      resolve(text);
+      resolve(res);
     };
     const child = spawn(cmd, args, {
       cwd: CWD,
@@ -8097,16 +11282,18 @@ function runAdvisor(prompt) {
         VIBE_CLAUDE_ADVISOR_MODEL: ""
       }
     });
+    // A slow model is not helped by trying another one; only fast failures
+    // (rate-limit / auth / non-zero exit) cascade to the next model.
     const timer = setTimeout(() => {
       try { child.kill("SIGTERM"); } catch (_) {}
-      finish("Fable advisor unavailable: timed out.");
+      finish({ ok: false, retriable: false, text: "Advisor (" + model + ") unavailable: timed out." });
     }, ADVISOR_TIMEOUT_MS);
     if (timer.unref) timer.unref();
     child.stdout.on("data", (d) => { stdout += d.toString("utf8"); });
     child.stderr.on("data", (d) => { stderr += d.toString("utf8"); });
     child.on("error", (err) => {
       clearTimeout(timer);
-      finish("Fable advisor unavailable: " + (err && err.message ? err.message : "spawn failed"));
+      finish({ ok: false, retriable: true, text: "Advisor (" + model + ") unavailable: " + (err && err.message ? err.message : "spawn failed") });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -8115,10 +11302,89 @@ function runAdvisor(prompt) {
       let parsed = null;
       try { parsed = raw ? JSON.parse(raw.split("\\n").pop()) : null; } catch (_) {}
       const text = parsed && typeof parsed.result === "string" ? parsed.result.trim() : raw;
-      if (code === 0 && text) finish(text);
-      else finish("Fable advisor unavailable: " + compactText((stderr || raw || ("claude exited " + code)).trim(), 2000));
+      if (code === 0 && text) finish({ ok: true, retriable: false, text: text });
+      else finish({ ok: false, retriable: true, text: "Advisor (" + model + ") unavailable: " + compactText((stderr || raw || ("claude exited " + code)).trim(), 2000) });
     });
   });
+}
+// GPT advisor via the codex CLI (used when the claude-based models are exhausted).
+function runAdvisorCodex(prompt) {
+  return new Promise((resolve) => {
+    const cmd = process.env.VIBE_CODEX_COMMAND || "codex";
+    // GPT advisor = GPT-5.6-Sol thinking hard (xhigh; the model also supports
+    // max/ultra). Override with VIBE_ADVISOR_CODEX_MODEL / VIBE_ADVISOR_CODEX_EFFORT.
+    const gptModel = process.env.VIBE_ADVISOR_CODEX_MODEL || "gpt-5.6-sol";
+    const effort = process.env.VIBE_ADVISOR_CODEX_EFFORT || "xhigh";
+    const args = ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "-m", gptModel, "-c", 'model_reasoning_effort="' + effort + '"', prompt];
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+    const finish = (res) => {
+      if (done) return;
+      done = true;
+      resolve(res);
+    };
+    const child = spawn(cmd, args, {
+      cwd: CWD,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, VIBE_ASK_MCP: "0", VIBE_FABLE_MCP: "0" }
+    });
+    const timer = setTimeout(() => {
+      try { child.kill("SIGTERM"); } catch (_) {}
+      finish({ ok: false, retriable: false, text: "Advisor (gpt) unavailable: timed out." });
+    }, ADVISOR_TIMEOUT_MS);
+    if (timer.unref) timer.unref();
+    child.stdout.on("data", (d) => { stdout += d.toString("utf8"); });
+    child.stderr.on("data", (d) => { stderr += d.toString("utf8"); });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      finish({ ok: false, retriable: true, text: "Advisor (gpt) unavailable: " + (err && err.message ? err.message : "spawn failed") });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (done) return;
+      // codex emits JSONL; the final answer is the last agent_message. Shapes seen:
+      //  {type:"item.completed", item:{type:"agent_message", text:"..."}}   (exec --json)
+      //  {payload:{type:"task_complete", last_agent_message:"..."}}          (session-file)
+      //  {type:"agent_message", text|message:"..."}
+      let answer = "";
+      const lines = stdout.split("\\n");
+      for (const ln of lines) {
+        const t = ln.trim();
+        if (!t) continue;
+        let obj = null;
+        try { obj = JSON.parse(t); } catch (_) { continue; }
+        const item = obj && obj.item ? obj.item : null;
+        if (item && (item.type === "agent_message" || item.type === "assistant_message") && typeof item.text === "string" && item.text.trim()) {
+          answer = item.text.trim();
+          continue;
+        }
+        const p = obj && obj.payload ? obj.payload : obj;
+        if (p && typeof p.last_agent_message === "string" && p.last_agent_message.trim()) { answer = p.last_agent_message.trim(); continue; }
+        if (p && p.type === "agent_message" && typeof p.text === "string" && p.text.trim()) { answer = p.text.trim(); continue; }
+        if (p && p.type === "agent_message" && typeof p.message === "string" && p.message.trim()) { answer = p.message.trim(); continue; }
+      }
+      if (code === 0 && answer) finish({ ok: true, retriable: false, text: answer });
+      else finish({ ok: false, retriable: true, text: "Advisor (gpt) unavailable: " + compactText((stderr || ("codex exited " + code)).trim(), 2000) });
+    });
+  });
+}
+async function runAdvisor(prompt) {
+  const chain = advisorChain();
+  let last = "Fable advisor unavailable.";
+  for (let i = 0; i < chain.length; i++) {
+    const name = chain[i];
+    const res = name === "gpt" ? await runAdvisorCodex(prompt) : await runAdvisorClaude(prompt, name);
+    if (res && res.ok) {
+      // Be transparent: if a fallback answered, say so rather than passing it
+      // off as Fable.
+      if (i === 0) return res.text;
+      return "[advisor: " + name + " — Fable was unavailable/rate-limited]\\n\\n" + res.text;
+    }
+    last = res && res.text ? res.text : last;
+    if (res && res.retriable === false) break;
+  }
+  return last;
 }
 async function askFable(args) {
   if (!ADVISOR_ENABLED) return "Fable advisor MCP is disabled by VIBE_FABLE_MCP=0.";
@@ -8202,8 +11468,9 @@ process.stdin.on("end", () => {
     probe.on("error", () => finish(() => emit("ask", "Vibe bridge unreachable — asking here.")));
     return;
   }
-  const timer = setTimeout(() => finish(() => emit("ask", "Vibe: no response from your phone — approve here.")), 180000);
-  if (timer.unref) timer.unref();
+  // Wait for an explicit phone decision. A local timeout silently turns a mobile
+  // approval into a desktop prompt while the phone is backgrounded/reconnecting.
+  const timer = null;
   let buf = "";
   const conn = net.createConnection(SOCK, () => {
     conn.write(JSON.stringify({ type: "command", cwd: cwd, source: "hook", sessionId: ev.session_id || "", tool_name: toolName, input: input }) + "\\n");
@@ -8238,8 +11505,8 @@ const DEFAULT_AGENT_CONFIG_TOML = `# Vibe agent config — controls how Claude C
 #
 # approval_mode:
 #   "local"  -> DEFAULT. Approve / answer everything on THIS device only (no phone).
-#   "mobile" -> Everything not auto-allowed is sent to your phone (falls back to a
-#               local prompt after 3 min or if the bridge is down, so nothing hangs).
+#   "mobile" -> Everything not auto-allowed is sent to your phone and stays pending
+#               until answered; if the bridge is down it falls back locally.
 #   "auto"   -> Safe / allow-listed commands run WITHOUT asking; only blockers go to
 #               the phone. Closest to how Codex feels day to day.
 #   "both"   -> Like "auto", but a blocker shows on the desk AND the phone at once
@@ -8250,6 +11517,14 @@ const DEFAULT_AGENT_CONFIG_TOML = `# Vibe agent config — controls how Claude C
 # Always-blocked in mobile/auto/full (denied even in full): rm -rf, sudo, git push,
 # git reset --hard, dd, mkfs, curl|sh, npm publish, ...
 approval_mode = "local"
+
+# team_orchestration:
+#   "server"       -> DEFAULT/legacy: the server classifies @team runs and fans out
+#                     separate worker tasks (VIBE_TEAM_SPAWN markers).
+#   "agent_native" -> the lead agent CLI loads .vibe/instructions/team-lead.md and
+#                     spawns worker CLIs itself as background subprocesses; the
+#                     bridge suppresses the legacy fan-out. See docs/team-architecture.md.
+team_orchestration = "server"
 
 # Extra Bash commands to auto-allow (substring match) on top of the built-in safe list
 # (ls/cat/grep/find/git status|diff|log/echo/... and any build — building is free).
@@ -8265,7 +11540,7 @@ deny = []
 // stable socket WITHOUT a chatId (it isn't a bridge run). Route it to the mobile
 // chat that most recently ran this provider in this repo (cwd), else the last chat
 // seen for the provider. Populated from run_task in runTask().
-const lastAgentChatByCwd = new Map(); // cwd -> { chatId, provider }
+const lastAgentChatByCwd = new Map(); // cwd -> { chatId, provider, byProvider }
 const lastAgentChatByProvider = new Map(); // provider -> chatId
 const AGENT_CHATS_FILE = path.join(CONFIG_DIR, "agent-chats.json");
 // Persist the repo/provider→chat map so interactive routing works IMMEDIATELY after
@@ -8292,13 +11567,36 @@ function rememberAgentChat(provider, chatId, cwd) {
   if (!chatId) return;
   if (provider) lastAgentChatByProvider.set(provider, chatId);
   const key = realDir(cwd || "") || cwd;
-  if (key) lastAgentChatByCwd.set(key, { chatId, provider });
+  if (key) {
+    const existing = lastAgentChatByCwd.get(key) || {};
+    const byProvider =
+      existing.byProvider && typeof existing.byProvider === "object"
+        ? { ...existing.byProvider }
+        : {};
+    if (existing.provider && existing.chatId && !byProvider[existing.provider]) {
+      byProvider[existing.provider] = existing.chatId;
+    }
+    if (provider) byProvider[provider] = chatId;
+    lastAgentChatByCwd.set(key, { chatId, provider, byProvider });
+  }
   saveAgentChats();
 }
 function resolveInteractiveChat(cwd, provider) {
   const key = realDir(cwd || "") || cwd;
-  if (key && lastAgentChatByCwd.has(key)) return lastAgentChatByCwd.get(key).chatId;
-  if (provider && lastAgentChatByProvider.has(provider)) return lastAgentChatByProvider.get(provider);
+  const wantedProvider = provider ? String(provider).toLowerCase() : "";
+  const cwdRecord = key && lastAgentChatByCwd.has(key) ? lastAgentChatByCwd.get(key) : null;
+  if (cwdRecord && wantedProvider) {
+    const byProvider =
+      cwdRecord.byProvider && typeof cwdRecord.byProvider === "object"
+        ? cwdRecord.byProvider
+        : {};
+    if (byProvider[wantedProvider]) return byProvider[wantedProvider];
+    if (String(cwdRecord.provider || "").toLowerCase() === wantedProvider && cwdRecord.chatId) {
+      return cwdRecord.chatId;
+    }
+  }
+  if (wantedProvider && lastAgentChatByProvider.has(wantedProvider)) return lastAgentChatByProvider.get(wantedProvider);
+  if (cwdRecord && cwdRecord.chatId) return cwdRecord.chatId;
   // Last resort: any known agent chat (single-agent DM setups share one chatId).
   const first = lastAgentChatByProvider.values().next();
   return first && !first.done ? first.value : null;
@@ -8589,11 +11887,23 @@ function recoverAfterReconnect(channel) {
   socketDownSince = null;
 }
 
+// Single-flight reconnect: overlapping forceReconnect from heartbeat + onClose used to
+// thrash the transport every ~3s (log: 50+ reconnects / short window).
+let reconnectInFlight = false;
+let reconnectInFlightUntil = 0;
+
 // Hard-kill a (likely half-open) transport so Phoenix runs its normal
 // reconnect+rejoin path — the same path a real network drop takes. We prefer
 // ws.terminate() because on a zombie socket ws.close() waits on a close
 // handshake the dead peer will never answer, leaving us deaf for minutes.
 function forceReconnect(socket) {
+  const now = Date.now();
+  if (reconnectInFlight && now < reconnectInFlightUntil) {
+    console.log("[vibe-bridge] forceReconnect skipped (already in flight)");
+    return;
+  }
+  reconnectInFlight = true;
+  reconnectInFlightUntil = now + 4000;
   try {
     if (socket.conn && typeof socket.conn.terminate === "function") {
       socket.conn.terminate();
@@ -8612,29 +11922,26 @@ function forceReconnect(socket) {
   }
 }
 
-// ws-level ping/pong watchdog attached to the RAW transport (socket.conn) on every
-// (re)connect. This is the fast path for detecting a half-open TCP connection — a dead
-// peer whose FIN/RST never arrives (common through Cloudflare/Railway's proxy layer)
-// leaves onClose unfired for minutes, but a ping control frame gets no pong back within
-// one interval, so we notice in ~WS_PING_INTERVAL_MS instead. Independent of the Phoenix
-// channel/app-heartbeat below (see WS_PING_INTERVAL_MS) — either one firing is enough to
-// force the reconnect.
+// ws-level ping/pong OBSERVER only. Cloudflare often delays pongs; terminating on miss
+// was the primary cause of the 1006 reconnect storm that batched progress frames.
+// Application-level heartbeat remains the sole reconnect authority.
 function attachSocketLivenessPing(conn) {
   if (!conn || typeof conn.ping !== "function") return;
   let awaitingPong = false;
   let misses = 0;
+  let lastPongAt = Date.now();
   const pingTimer = setInterval(() => {
     if (conn.readyState !== WebSocket.OPEN) return;
     if (awaitingPong) {
       misses += 1;
-      console.error(`[vibe-bridge] ws ping timeout (#${misses}) — socket may be a zombie`);
+      console.warn(
+        `[vibe-bridge] ws ping timeout (#${misses}) rtt> ${WS_PING_INTERVAL_MS}ms ` +
+          `lastPongAge=${Date.now() - lastPongAt}ms (observe-only; app heartbeat owns reconnect)`
+      );
       if (misses > WS_PING_MAX_MISSES) {
-        console.error("[vibe-bridge] terminating zombie socket (ws ping got no pong)");
-        clearInterval(pingTimer);
-        try {
-          conn.terminate();
-        } catch (_) {}
-        return;
+        // Reset counter so logs stay readable; do NOT terminate.
+        misses = 0;
+        awaitingPong = false;
       }
     }
     awaitingPong = true;
@@ -8645,6 +11952,7 @@ function attachSocketLivenessPing(conn) {
   conn.on("pong", () => {
     awaitingPong = false;
     misses = 0;
+    lastPongAt = Date.now();
   });
   conn.on("close", () => clearInterval(pingTimer));
 }
@@ -8668,6 +11976,10 @@ const LAN_SERVICE_TYPE = "_vibegram-bridge._tcp";
 const LAN_AUTH_TIMEOUT_MS = 6000;
 let lanServer = null;
 let lanAdvertiseProc = null;
+let lanAdvertisePort = 0;
+let lanAdvertiseUser = null;
+let lanAdvertiseRestartTimer = null;
+let lanAdvertiseHealthTimer = null;
 const lanClients = new Set();
 
 function startLanServer(userId) {
@@ -8725,6 +12037,7 @@ function makeLanTransport(sock) {
     },
   };
   return {
+    _lanSocket: sock,
     get state() {
       return sock.readyState === WebSocket.OPEN ? "joined" : "closed";
     },
@@ -8753,6 +12066,7 @@ function handleLanConnection(sock, req, userId) {
     }
   }, LAN_AUTH_TIMEOUT_MS);
   // Challenge first: the client must echo this nonce back sealed with the pairing key.
+  console.log(`[vibe-bridge] LAN connection from ${peer} — issuing auth challenge`);
   send({ type: "lan_challenge", nonce, bridgeUser: userId, proto: 1 });
   sock.on("message", (raw) => {
     let msg = null;
@@ -8766,15 +12080,23 @@ function handleLanConnection(sock, req, userId) {
           clearTimeout(authTimer);
           lanClients.add(sock);
           lanTransport = makeLanTransport(sock);
-          console.log(`[vibe-bridge] LAN client authenticated from ${peer}`);
+          console.log(`[vibe-bridge] LAN client authenticated from ${peer} ✓`);
           // Prove the bridge holds the key too (mutual), hand over identity, and push the
           // current bridge status (linked repos etc.) so the LAN client is immediately usable.
           send({ type: "lan_ready", proof: encryptRuntimeBlob({ nonce, role: "bridge" }), user: userId });
           try { pushBridgeStatus(lanTransport); } catch (_) {}
         } else {
-          console.warn(`[vibe-bridge] LAN auth REJECTED from ${peer} (bad or missing proof)`);
+          // Split the two failure modes so a post-rescan issue is diagnosable from the log:
+          //  - no `opened` → the phone sealed with a DIFFERENT key (re-scan the pairing QR)
+          //  - nonce mismatch → a stale/replayed challenge
+          const why = !opened
+            ? "proof failed to decrypt — phone key ≠ bridge key (re-scan the pairing QR)"
+            : "nonce mismatch — stale/replayed challenge";
+          console.warn(`[vibe-bridge] LAN auth REJECTED from ${peer} — ${why}`);
           try { sock.close(4403, "auth_failed"); } catch (_) {}
         }
+      } else {
+        console.warn(`[vibe-bridge] LAN pre-auth frame ignored from ${peer}: type=${msg && msg.type}`);
       }
       return;
     }
@@ -8826,31 +12148,74 @@ function handleLanConnection(sock, req, userId) {
 
 function advertiseLanService(port, userId) {
   if (!port) return;
+  lanAdvertisePort = port;
+  lanAdvertiseUser = userId;
   stopLanAdvertise();
   try {
     const label = `Vibe Bridge (${os.hostname()})`;
     // macOS ships `dns-sd`, so Bonjour registration needs no npm dependency. The uid TXT
     // record lets the phone pick the bridge for THIS account when several share a network.
-    lanAdvertiseProc = spawn(
+    const proc = spawn(
       "dns-sd",
       ["-R", label, LAN_SERVICE_TYPE, ".", String(port), `uid=${userId}`],
       { stdio: "ignore" }
     );
-    lanAdvertiseProc.on("error", (err) => {
+    lanAdvertiseProc = proc;
+    proc.on("error", (err) => {
       console.warn(
         `[vibe-bridge] Bonjour advertise failed (${(err && err.message) || err}) — LAN still reachable by direct IP`
       );
     });
-    console.log(`[vibe-bridge] advertising ${LAN_SERVICE_TYPE} on port ${port} via Bonjour`);
+    // The dns-sd registration is ONLY live while this child runs. If it dies (which we
+    // have seen happen silently) the service vanishes and phones get stuck "searching"
+    // forever — so respawn it. Guard against a superseding advertise having replaced it.
+    proc.on("exit", (code, signal) => {
+      if (proc !== lanAdvertiseProc) return;
+      lanAdvertiseProc = null;
+      console.warn(
+        `[vibe-bridge] Bonjour advertise exited (code=${code} signal=${signal || "-"}) — re-advertising`
+      );
+      scheduleReadvertise();
+    });
+    console.log(`[vibe-bridge] advertising ${LAN_SERVICE_TYPE} on port ${port} via Bonjour (pid ${proc.pid})`);
+    startLanAdvertiseHealthCheck();
   } catch (err) {
     console.warn(`[vibe-bridge] Bonjour advertise error: ${(err && err.message) || err}`);
+    scheduleReadvertise();
   }
+}
+
+// Debounced respawn of the Bonjour registration after its child dies.
+function scheduleReadvertise() {
+  if (lanAdvertiseRestartTimer) return;
+  lanAdvertiseRestartTimer = setTimeout(() => {
+    lanAdvertiseRestartTimer = null;
+    if (!lanServer || !lanAdvertisePort || lanAdvertiseProc) return;
+    advertiseLanService(lanAdvertisePort, lanAdvertiseUser);
+  }, 2000);
+  if (lanAdvertiseRestartTimer.unref) lanAdvertiseRestartTimer.unref();
+}
+
+// Belt-and-suspenders: even if the `exit` event is ever missed, re-assert the
+// advertisement periodically so a dead registration self-heals within a minute.
+function startLanAdvertiseHealthCheck() {
+  if (lanAdvertiseHealthTimer) return;
+  lanAdvertiseHealthTimer = setInterval(() => {
+    if (!lanServer || !lanAdvertisePort) return;
+    const alive = lanAdvertiseProc && lanAdvertiseProc.exitCode == null && !lanAdvertiseProc.killed;
+    if (!alive) {
+      console.warn("[vibe-bridge] Bonjour advertise health check found it dead — re-advertising");
+      advertiseLanService(lanAdvertisePort, lanAdvertiseUser);
+    }
+  }, 45000);
+  if (lanAdvertiseHealthTimer.unref) lanAdvertiseHealthTimer.unref();
 }
 
 function stopLanAdvertise() {
   if (lanAdvertiseProc) {
-    try { lanAdvertiseProc.kill(); } catch (_) {}
-    lanAdvertiseProc = null;
+    const dying = lanAdvertiseProc;
+    lanAdvertiseProc = null; // clear first so the exit handler's guard skips the respawn
+    try { dying.kill(); } catch (_) {}
   }
 }
 
@@ -8887,6 +12252,45 @@ function connect(server, token, userId) {
     stopAllHistoryWatches(); // watchers hold a now-stale channel
   });
   socket.connect();
+
+  // Transport watchdog — the ONLY self-heal that runs when the channel is NOT joined.
+  //
+  // A CLEAN socket close (code=1000: LB recycle / server deploy) never triggers
+  // phoenix.js auto-reconnect (it only retries abnormal closes), and the app
+  // heartbeat below early-returns while channel.state !== "joined" — so a clean
+  // close used to wedge the bridge cloud-dead FOREVER while the process (and LAN)
+  // stayed up (observed 2026-07-15: 'socket closed code=1000' with no reconnect,
+  // every dispatch → {:error, :offline}). If the transport sits closed with no
+  // connection attempt for 20s+, force a fresh socket.connect(). During normal
+  // phoenix backoff the state flips to "connecting" on every attempt, which
+  // resets the timer — this only fires when phoenix has genuinely given up.
+  let transportDownSince = null;
+  setInterval(() => {
+    let st = "unknown";
+    try {
+      st = typeof socket.connectionState === "function" ? socket.connectionState() : "unknown";
+    } catch (_) {}
+    if (st === "open" || st === "connecting") {
+      transportDownSince = null;
+      return;
+    }
+    if (transportDownSince == null) {
+      transportDownSince = Date.now();
+      return;
+    }
+    const downMs = Date.now() - transportDownSince;
+    if (downMs >= 20000) {
+      console.error(
+        `[vibe-bridge] transport ${st} for ${downMs}ms with no reconnect attempt — forcing socket.connect()`
+      );
+      transportDownSince = null;
+      try {
+        socket.connect();
+      } catch (e) {
+        console.error(`[vibe-bridge] watchdog connect failed: ${(e && e.message) || e}`);
+      }
+    }
+  }, 10000);
 
   const channel = socket.channel(`bridge:${userId}`, {});
   channel.on("bridge_identity", (payload) => {
@@ -8943,6 +12347,7 @@ function connect(server, token, userId) {
             "   Change projects later with:  vibegram-bridge --pick\n"
         );
       }
+      reconnectInFlight = false;
       recoverAfterReconnect(channel);
       pushBridgeStatus(channel);
     })
@@ -8957,27 +12362,29 @@ function connect(server, token, userId) {
   // delivered and the bridge goes silent indefinitely (observed: 8+ min dead
   // while the phone got no response at all).
   //
-  // So we run an APPLICATION-level liveness check independent of Phoenix's
-  // internal heartbeat: push a heartbeat that expects an :ok reply (the server
-  // replies :ok in agent_bridge_channel). If two in a row time out, hard-kill
-  // the transport so Phoenix reconnects+rejoins on its own.
+  // APPLICATION-level liveness: sole reconnect authority (ws-ping is observe-only).
+  // Higher miss budget + longer push timeout: one delayed ack through the edge must
+  // NOT thrash the socket (that batch-dumped progress at 7–15s recv→push).
   let missedHeartbeats = 0;
   setInterval(() => {
     if (channel.state !== "joined") return;
+    // Don't pile heartbeats while a reconnect is already in flight.
+    if (reconnectInFlight && Date.now() < reconnectInFlightUntil) return;
     channel
-      .push("heartbeat", {}, 10000)
+      .push("heartbeat", {}, APP_HEARTBEAT_PUSH_TIMEOUT_MS)
       .receive("ok", () => {
         if (missedHeartbeats > 0) {
           console.log(`[vibe-bridge] heartbeat recovered after ${missedHeartbeats} miss(es)`);
         }
         missedHeartbeats = 0;
+        reconnectInFlight = false;
       })
       .receive("timeout", () => {
         missedHeartbeats += 1;
         console.error(
-          `[vibe-bridge] heartbeat ack timeout (#${missedHeartbeats}) — socket may be a zombie`
+          `[vibe-bridge] heartbeat ack timeout (#${missedHeartbeats}/${APP_HEARTBEAT_MAX_MISSES}) — socket may be a zombie`
         );
-        if (missedHeartbeats >= 2) {
+        if (missedHeartbeats >= APP_HEARTBEAT_MAX_MISSES) {
           console.error(
             "[vibe-bridge] forcing reconnect after repeated heartbeat timeouts (zombie socket)"
           );
@@ -8985,8 +12392,12 @@ function connect(server, token, userId) {
           forceReconnect(socket);
         }
       });
-    pushBridgeStatus(channel);
-  }, 30000);
+    // Status is useful but not every tick — only when idle tasks need advertising.
+    // Pushing status every 30s during heavy stream was extra channel load on a flaky edge.
+    if (runningTasks.size === 0) {
+      pushBridgeStatus(channel);
+    }
+  }, APP_HEARTBEAT_INTERVAL_MS);
 }
 
 async function runSelfTest() {
@@ -9075,6 +12486,278 @@ async function runSelfTest() {
     },
     ARGS.selfTestRevert
   );
+}
+
+// ── Singleton (one bridge process at a time) ────────────────────────
+
+/**
+ * Ensure only ONE long-lived bridge daemon runs on this machine.
+ *
+ * Dual bridges both join the server socket and both execute run_task, which
+ * posts duplicate agent replies (e.g. two near-identical Grok bubbles). On
+ * start we:
+ *   1) kill every other vibe-bridge / vibegram-bridge node process
+ *   2) claim ~/.vibe/bridge.pid
+ *   3) re-sweep after a short settle (covers two starters racing)
+ *   4) if another live pid still owns the pidfile, exit
+ *
+ * Management commands (--status, --install, --help, …) skip this.
+ */
+// Stamp {pid, ts, active} so another starter can see we're alive and how many CLI tasks
+// we're running. Called on a timer AND at every task register/finish so the active count
+// is never stale across the yield decision window.
+function writeBridgeHeartbeat() {
+  try {
+    fs.writeFileSync(
+      SINGLETON_HEARTBEAT_FILE,
+      JSON.stringify({ pid: process.pid, ts: Date.now(), active: runningTasks.size }),
+      { mode: 0o600 }
+    );
+  } catch (_) {}
+}
+
+let bridgeHeartbeatTimer = null;
+function startBridgeHeartbeat() {
+  writeBridgeHeartbeat();
+  bridgeHeartbeatTimer = setInterval(writeBridgeHeartbeat, SINGLETON_HEARTBEAT_MS);
+  if (bridgeHeartbeatTimer && bridgeHeartbeatTimer.unref) bridgeHeartbeatTimer.unref();
+}
+
+function readBridgeHeartbeat() {
+  try {
+    const o = JSON.parse(fs.readFileSync(SINGLETON_HEARTBEAT_FILE, "utf8"));
+    if (o && Number.isFinite(o.pid) && Number.isFinite(o.ts)) return o;
+  } catch (_) {}
+  return null;
+}
+
+function ensureBridgeSingleton() {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+
+  // Never take over a bridge that is actively running work — its child worker CLIs
+  // (claude/grok/codex) would die with it (exit 143/130), gutting a team run mid-flight.
+  // If a healthy bridge is already up and BUSY, yield (exit) instead of killing it. An
+  // idle or stale/wedged holder is still replaced, so relaunching to pick up new bridge
+  // code keeps working.
+  const holder = readBridgePidFile();
+  if (holder && holder !== process.pid && isProcessAlive(holder)) {
+    const hb = readBridgeHeartbeat();
+    const fresh = hb && hb.pid === holder && Date.now() - hb.ts < SINGLETON_HEARTBEAT_STALE_MS;
+    if (fresh && Number(hb.active) > 0) {
+      console.log(
+        `[vibe-bridge] an existing bridge is running ${hb.active} task(s) pid=${holder}; ` +
+          `yielding so its workers aren't killed (exit). Use --stop/--restart to replace it.`
+      );
+      process.exit(0);
+    }
+  }
+
+  killOtherBridgeProcesses();
+
+  // Serialize concurrent starters via exclusive O_EXCL create of a lock stamp.
+  // The winner writes the pidfile; the loser exits (after killing others so a
+  // stale lock can't block forever).
+  let wonLock = false;
+  try {
+    const fd = fs.openSync(SINGLETON_LOCK_FILE, "wx", 0o600);
+    fs.writeFileSync(fd, String(process.pid) + "\n");
+    fs.closeSync(fd);
+    wonLock = true;
+  } catch (err) {
+    if (err && err.code === "EEXIST") {
+      const holder = readLockFilePid(SINGLETON_LOCK_FILE);
+      if (holder && holder !== process.pid && isProcessAlive(holder)) {
+        // A live lock-holder that is BUSY running tasks must not be killed — yield to it
+        // (same reason as the top guard; covers the near-simultaneous-start race).
+        const hb = readBridgeHeartbeat();
+        const busy =
+          hb && hb.pid === holder &&
+          Date.now() - hb.ts < SINGLETON_HEARTBEAT_STALE_MS &&
+          Number(hb.active) > 0;
+        if (busy) {
+          console.log(
+            `[vibe-bridge] lock-holder pid=${holder} is running ${hb.active} task(s); ` +
+              `yielding (exit).`
+          );
+          process.exit(0);
+        }
+        // Idle/stale live holder — replace it (auto-kill duplicates), then claim.
+        try {
+          process.kill(holder, "SIGTERM");
+          console.log(
+            `[vibe-bridge] killed lock-holder bridge pid=${holder}`
+          );
+        } catch (_) {}
+        try {
+          execFileSync("sleep", ["0.2"], { stdio: "ignore" });
+        } catch (_) {}
+        if (isProcessAlive(holder)) {
+          try {
+            process.kill(holder, "SIGKILL");
+          } catch (_) {}
+        }
+      }
+      try {
+        fs.unlinkSync(SINGLETON_LOCK_FILE);
+      } catch (_) {}
+      try {
+        const fd = fs.openSync(SINGLETON_LOCK_FILE, "wx", 0o600);
+        fs.writeFileSync(fd, String(process.pid) + "\n");
+        fs.closeSync(fd);
+        wonLock = true;
+      } catch (err2) {
+        // Another starter won the re-create race — yield.
+        const other = readLockFilePid(SINGLETON_LOCK_FILE) || readBridgePidFile();
+        console.error(
+          `[vibe-bridge] another bridge is already running` +
+            (other ? ` (pid ${other})` : "") +
+            `; exiting`
+        );
+        process.exit(0);
+      }
+    } else {
+      console.error(
+        `[vibe-bridge] cannot claim singleton lock: ${(err && err.message) || err}`
+      );
+      process.exit(1);
+    }
+  }
+
+  if (!wonLock) {
+    console.error("[vibe-bridge] failed to claim singleton lock; exiting");
+    process.exit(1);
+  }
+
+  try {
+    fs.writeFileSync(SINGLETON_PID_FILE, String(process.pid) + "\n", {
+      mode: 0o600,
+    });
+  } catch (_) {}
+
+  const release = () => {
+    try {
+      const cur = readBridgePidFile();
+      if (cur === process.pid) fs.unlinkSync(SINGLETON_PID_FILE);
+    } catch (_) {}
+    try {
+      const lockPid = readLockFilePid(SINGLETON_LOCK_FILE);
+      if (lockPid === process.pid || lockPid == null) {
+        fs.unlinkSync(SINGLETON_LOCK_FILE);
+      }
+    } catch (_) {}
+  };
+  process.once("exit", release);
+  process.once("SIGINT", () => {
+    release();
+    process.exit(130);
+  });
+  process.once("SIGTERM", () => {
+    release();
+    process.exit(143);
+  });
+
+  // Race cover: two processes can both pass pgrep before either claims the lock.
+  setTimeout(() => {
+    killOtherBridgeProcesses();
+    try {
+      fs.writeFileSync(SINGLETON_PID_FILE, String(process.pid) + "\n", {
+        mode: 0o600,
+      });
+    } catch (_) {}
+  }, 1500);
+
+  startBridgeHeartbeat();
+  console.log(`[vibe-bridge] singleton ready pid=${process.pid}`);
+}
+
+function readLockFilePid(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8").trim();
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readBridgePidFile() {
+  return readLockFilePid(SINGLETON_PID_FILE);
+}
+
+function isProcessAlive(pid) {
+  if (!pid || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function killOtherBridgeProcesses() {
+  const selfPid = process.pid;
+  let pids = [];
+  try {
+    const out = execFileSync(
+      "pgrep",
+      ["-f", "vibe-bridge\\.js|@vibegram/agent-bridge|vibegram-bridge"],
+      { encoding: "utf8" }
+    );
+    pids = out
+      .split(/\s+/)
+      .map((s) => parseInt(s, 10))
+      .filter((n) => Number.isFinite(n) && n > 0 && n !== selfPid);
+  } catch (_) {
+    // pgrep exit 1 = no matches
+    pids = [];
+  }
+
+  const filePid = readBridgePidFile();
+  if (filePid && filePid !== selfPid && !pids.includes(filePid)) {
+    pids.push(filePid);
+  }
+
+  for (const pid of pids) {
+    if (!isProcessAlive(pid)) continue;
+    let cmdline = "";
+    try {
+      cmdline = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+        encoding: "utf8",
+      }).trim();
+    } catch (_) {
+      continue;
+    }
+    if (
+      !/vibe-bridge\.js|@vibegram\/agent-bridge|vibegram-bridge/.test(cmdline)
+    ) {
+      continue;
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+      console.log(`[vibe-bridge] killed duplicate bridge pid=${pid}`);
+    } catch (err) {
+      console.warn(
+        `[vibe-bridge] failed to kill duplicate pid=${pid}: ${(err && err.message) || err}`
+      );
+    }
+  }
+
+  const deadline = Date.now() + 800;
+  while (Date.now() < deadline) {
+    if (!pids.some(isProcessAlive)) break;
+    try {
+      execFileSync("sleep", ["0.05"], { stdio: "ignore" });
+    } catch (_) {
+      break;
+    }
+  }
+  for (const pid of pids) {
+    if (!isProcessAlive(pid)) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+      console.log(`[vibe-bridge] force-killed duplicate bridge pid=${pid}`);
+    } catch (_) {}
+  }
 }
 
 // ── Main ────────────────────────────────────────────────────────────
@@ -9220,6 +12903,9 @@ async function main() {
     return installService(server, config);
   }
 
+  // Long-lived socket path only: kill duplicate daemons, claim exclusive ownership.
+  ensureBridgeSingleton();
+
   // Bring up the optional direct-LAN path alongside the cloud relay. Guarded + additive:
   // if it can't bind or advertise, the cloud connection below is entirely unaffected.
   try {
@@ -9240,21 +12926,34 @@ module.exports = {
   readHistory,
   buildHistoryRuntime,
   collectClaudeEdits,
-	  collectCodexEdits,
-	  parseApplyPatchEnvelope,
-	  newRuntimeAccumulator,
-	  ensureRuntimeKey,
-	  liveAgentActionsField,
-	  liveClaudeActions,
-	  liveCodexActions,
-	  fileWithinLinkedRepo,
-	  handleFileRequest,
-	  normalizeModel,
-	  runningPlaceholderMessage,
-	  markMessageRunning,
-	  sessionFilePath,
-	  sessionFileIsLive,
-	};
+  collectCodexEdits,
+  codexActionDetail,
+  codexActionDetails,
+  codexUnwrapActionPayload,
+  codexUnwrapActionPayloads,
+  codexUserMessageText,
+  codexFallbackTitle,
+  codexOutputText,
+  extractVibeUserPrompt,
+  parseApplyPatchEnvelope,
+  newRuntimeAccumulator,
+  ensureRuntimeKey,
+  liveAgentActionsField,
+  liveClaudeActions,
+  liveCodexActions,
+  fileWithinLinkedRepo,
+  handleFileRequest,
+  normalizeModel,
+  runningPlaceholderMessage,
+  markDetailLiveTurn,
+  markMessageRunning,
+  claudeOpenTurnState,
+  claudeTaskNotification,
+  updateClaudeBackgroundTasks,
+  sessionFilePath,
+  sessionFileIsLive,
+  providerTerminalFailure,
+};
 
 // Only auto-run the daemon when invoked directly (so the module is requireable).
 if (require.main === module) {

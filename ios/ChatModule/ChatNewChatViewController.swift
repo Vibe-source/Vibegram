@@ -279,7 +279,7 @@ final class ChatNativeNewChatViewController: UIViewController,
     super.viewDidLoad()
     configureLayout()
     configureAppearance()
-    if ((ChatEngine.shared.getTransportStatus()["transportMode"] as? String) ?? "packet_mesh")
+    if ((ChatEngine.shared.getTransportStatus()["transportMode"] as? String) ?? "direct")
       == "bridge_text"
     {
       searchBar.isUserInteractionEnabled = false
@@ -292,7 +292,7 @@ final class ChatNativeNewChatViewController: UIViewController,
 
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
-    if ((ChatEngine.shared.getTransportStatus()["transportMode"] as? String) ?? "packet_mesh")
+    if ((ChatEngine.shared.getTransportStatus()["transportMode"] as? String) ?? "direct")
       == "bridge_text"
     {
       return
@@ -459,7 +459,7 @@ final class ChatNativeNewChatViewController: UIViewController,
       request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
     }
 
-    searchTask = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+    searchTask = VibeHTTP.shared.dataTask(with: request) { [weak self] data, response, error in
       guard let self else { return }
 
       if requestToken != self.latestSearchToken {

@@ -240,6 +240,10 @@ struct VibeAgentKitProgressItem: Equatable {
   var tokens: Int? = nil
   var durationMs: Int? = nil
   var todos: [VibeAgentKitTodoItem]? = nil
+  // Absolute epoch-ms the node started (server-stamped). A `teamworker` row uses it
+  // to drive a live 1Hz elapsed clock ("Calling… · 0m 07s") from the spawn beat until
+  // the worker settles; nil on old servers → the row falls back to its static status.
+  var startedAtMs: Int64? = nil
 
   static func from(label: String, raw: [String: Any]?, eventType: String = "progress")
     -> VibeAgentKitProgressItem

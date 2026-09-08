@@ -1,0 +1,18 @@
+{
+  "id": 9,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Video-note cell chrome was laid out against the square bounding box while mediaContainerView is clipped to a circle (clipsToBounds + cornerRadius=D/2), so the duration badge (14,H-32), the download badge (10,10) and the upload size label (8,8) all fell OUTSIDE the circle and were cut in half. Fixed in ChatListCell.layoutMediaSubviews: mute+duration now share one bottom-centre pill inside the rim (mute reparented into mediaVideoInfoBadgeView), and transfer chrome centres on circular cells. The branch also forced mediaVideoInfoBadgeView.isHidden=false, overriding updateMediaTransferChrome, so the duration badge stayed on screen during upload — removed.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787742348,
+  "updated_at": 1787742348
+}

@@ -1,0 +1,54 @@
+{
+  "session": "01a03dd9-af2f-7091-ab78-c543c79356fd",
+  "task": "please fix the handle send cell and rtl text cu…",
+  "steps": [
+    {
+      "what": "PendingAudit: skip in-flight sending; keep video-note status sending",
+      "id": "1",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Morph: callback before overlay remove; no reloadData; fade overlay then cell",
+      "id": "2",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Camera: wait exposure/WB settle before recording; keep loading blur",
+      "id": "3",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "List-level video-note tap scale 200→248 with auto scale-down on end",
+      "id": "4",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "xcodebuild Vibe and append memory",
+      "id": "5",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787745524
+}

@@ -1,5 +1,15 @@
 import UIKit
 
+/// Uptime anchor for "user tapped a chat row" — set at route creation, read by every
+/// `[ChatOpen] host-stage` log so the tap→settled timeline is attributable end to end.
+enum VibeChatOpenTap {
+  static var uptime: TimeInterval = 0
+  static func msSinceTap() -> Int {
+    guard uptime > 0 else { return -1 }
+    return Int((ProcessInfo.processInfo.systemUptime - uptime) * 1000)
+  }
+}
+
 final class ChatNativeMainRegistry {
   static let shared = ChatNativeMainRegistry()
 
@@ -115,6 +125,8 @@ public final class ChatMainView: UIView,
   private let headerContainer = UIView()
   private let headerMaskView = UIView()
   private let headerMaskBlurView = UIVisualEffectView(effect: UIBlurEffect(style: .regular))
+  /// Second blur pass — single material maxes out soft; stack for stronger frost.
+  private let headerMaskBlurBoostView = UIVisualEffectView(effect: UIBlurEffect(style: .regular))
   private let headerMaskOverlayView = UIView()
   private let headerMaskGradientLayer = CAGradientLayer()
   private let headerContentView = UIView()
@@ -127,15 +139,19 @@ public final class ChatMainView: UIView,
 
   private let avatarGlassView = UIVisualEffectView(effect: nil)
   private let avatarButton = UIButton(type: .system)
-  private let avatarImageView = UIImageView()
-  private let avatarFallbackIconView = UIImageView()
-  private let avatarFallbackLabel = UILabel()
+  private let avatarNode = ChatAvatarNodeView()
+  /// Lives inside avatar glass — same chip morphs avatar → "Selected" + count.
+  private let selectionHeaderStack = UIStackView()
+  private let selectionTitleLabel = UILabel()
+  private let selectionCountLabel = UILabel()
 
   private let rightActionsStack = UIStackView()
   private let callButton = UIButton(type: .system)
   private let videoCallButton = UIButton(type: .system)
   private let historyButton = UIButton(type: .system)
   private let newChatButton = UIButton(type: .system)
+  /// Selection-mode confirm (replaces call/video glass on the trailing side).
+  private let selectionDoneButton = UIButton(type: .system)
 
   private let menuGlassView = UIVisualEffectView(effect: nil)
   private let savedSearchCancelGlassView = UIVisualEffectView(effect: nil)
@@ -161,11 +177,15 @@ public final class ChatMainView: UIView,
   private let chatSubtitleRow = UIStackView()
   private let chatSubtitleDotView = UIView()
   private let chatSubtitleLabel = UILabel()
+  /// Leading line spinner for Connecting / Updating — matches Home principal header.
+  private let chatConnectingSpinner = VibeHeaderLineSpinnerView(size: 11, lineWidth: 1.55)
   private let profileHeaderStack = UIStackView()
   private let profileTitleLabel = UILabel()
   private let profileSubtitleLabel = UILabel()
 
-  private let rootWallpaperLayer = CAGradientLayer()
+  /// The one and only chat wallpaper. Owns gradient, pattern, mask, theme and raster —
+  /// see `ChatWallpaperView`. The list used to carry a second copy of all of this.
+  private let wallpaperView = ChatWallpaperView()
   private let pagesHost = UIView()
   private let chatPage = UIView()
   // The DM-level agent runtime view (Claude/Codex) is hosted FULL-SCREEN by the owning
@@ -191,9 +211,7 @@ public final class ChatMainView: UIView,
   private let profileContentView = UIView()
 
   private let profileAvatarView = UIView()
-  private let profileAvatarImageView = UIImageView()
-  private let profileAvatarFallbackIconView = UIImageView()
-  private let profileAvatarFallbackLabel = UILabel()
+  private let profileAvatarNode = ChatAvatarNodeView()
   private let profileOnlineDotView = UIView()
   private let profileNameLabel = UILabel()
   private let profileHandleLabel = UILabel()
@@ -215,11 +233,16 @@ public final class ChatMainView: UIView,
   private let profileAgentRow = ChatMainProfileListRowNode()
   private var agentConfig: [String: Any]?
   private var isGroupOrChannel = false
+  /// Broadcast channel (not a multi-member group). Drives header/profile copy.
+  private var isChannel = false
 
-  private var appearance = ChatListAppearance.fallback
+  private var appearance = ChatListAppearance.current
+  private var lastAppliedSystemStyleIsDark: Bool?
   private var lastRawAppearance: [String: Any]?
   private var headerMode: ChatMainHeaderMode = .default
+  private var builtInAgentChatMode = false
   private var bridgeProvider: String = ""
+  private var ownedStandaloneAgentMode = false
   private var isOnline = false
   private var surfacePresenceOnline: Bool?
   private var chatTitleText: String = "Chat"
@@ -231,8 +254,16 @@ public final class ChatMainView: UIView,
   private var groupMemberDisplayNameByUserId: [String: String] = [:]
   private var groupMemberRoleByUserId: [String: String] = [:]
   private var groupMemberOrder: [String] = []
+  private var groupAvatarMembers: [[String: Any]] = []
   private var groupMemberCount: Int?
   private var groupTypingUserIds: [String] = []
+  /// Sticky group-typing display: last uptime each member was seen typing. During a
+  /// multi-agent run the per-agent typing events renew on independent TTLs, so the raw
+  /// engine set flaps (Agy → Grok → Codex → …) several times a second. Members stay in
+  /// the displayed set for a short hold window so the header reads steady.
+  private var groupTypingLastSeenAt: [String: TimeInterval] = [:]
+  private var groupTypingHoldTimer: Timer?
+  private static let groupTypingHoldSeconds: TimeInterval = 3.5
   private var directPeerTypingActive = false
   private var hasPeerResponseInCurrentRows = false
   private var agentProgressSubtitle: String?
@@ -241,7 +272,16 @@ public final class ChatMainView: UIView,
   // snapshot. Shown as the idle header subtitle so the user knows WHICH session this
   // thread is on; nil (no session yet / New Chat) falls back to "Start session".
   private var bridgeSessionTopic: String?
+  private var bridgeSessionModel: String?
+  /// Last concrete model reported for the mounted bridge session. History/list/runtime
+  /// snapshots arrive independently; a later sparse snapshot must not replace a real
+  /// model (for example `claude-opus-4-8`) with the provider fallback (`Claude`).
+  private var bridgeLastKnownRealModel: String?
+  private var bridgeSessionReasoningEffort: String?
+  private var bridgeSessionProjectName: String?
+  private var bridgeSessionProjectPath: String?
   private var defersEngineStateRefreshes = false
+  private var engineStateUpdatesSuspended = false
   private var pinnedBannerMessageId: String?
   private var pinnedBannerTitle: String?
   private var pinnedBannerBody: String?
@@ -284,9 +324,6 @@ public final class ChatMainView: UIView,
   private var profileTabContentNeedsReload = true
   private var profileLastTabContentWidth: CGFloat = 0.0
   private var currentPage: ChatMainPage = .chat
-  private var avatarLoadTask: Task<Void, Never>?
-  private var avatarResolveGeneration: UInt = 0
-  private var displayedAvatarUri: String?
   private var registeredSurfaceId: String = ""
   private var pendingNativePageTarget: ChatMainPage?
   private var pendingNativePageLockUntil: CFTimeInterval = 0.0
@@ -296,6 +333,7 @@ public final class ChatMainView: UIView,
   private var profileHierarchyAttached = false
   private var externalNavigationHeaderEnabled = false
   private var previewHeaderCenterOnly = false
+  private var previewHeaderCompactLeading = false
   private let engineStateRefreshQueue = DispatchQueue(
     label: "vibe.chat.main.engine-state",
     qos: .utility
@@ -312,23 +350,6 @@ public final class ChatMainView: UIView,
   }()
 
 
-  private static let lastSeenDateFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .short
-    formatter.timeStyle = .none
-    return formatter
-  }()
-  private static let lastSeenTimeFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .none
-    formatter.timeStyle = .short
-    return formatter
-  }()
-  private static let lastSeenWeekdayFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "EEEE"
-    return formatter
-  }()
   private static let profileListDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateStyle = .medium
@@ -344,15 +365,25 @@ public final class ChatMainView: UIView,
     red: 36.0 / 255.0, green: 36.0 / 255.0, blue: 36.0 / 255.0, alpha: 1.0)
   private static let themeLightCard = UIColor.white
   override init(frame: CGRect) {
+    let initStartedAt = ProcessInfo.processInfo.systemUptime
     chatListView = ChatListView()
+    let listDoneAt = ProcessInfo.processInfo.systemUptime
     super.init(frame: frame)
     clipsToBounds = true
     configureView()
+    let configureDoneAt = ProcessInfo.processInfo.systemUptime
     startObservingChatEngine()
     syncListDispatchers()
     applyTheme()
     updateHeaderTexts()
     updateProfileTexts()
+    let now = ProcessInfo.processInfo.systemUptime
+    NSLog(
+      "[ChatOpen] host-stage ChatMainView.init totalMs=%d listMs=%d configureMs=%d sinceTapMs=%d",
+      Int((now - initStartedAt) * 1000),
+      Int((listDoneAt - initStartedAt) * 1000),
+      Int((configureDoneAt - listDoneAt) * 1000),
+      VibeChatOpenTap.msSinceTap())
   }
 
   required init?(coder: NSCoder) {
@@ -361,15 +392,28 @@ public final class ChatMainView: UIView,
 
   override public func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
     super.traitCollectionDidChange(previousTraitCollection)
-    guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else {
-      return
-    }
+    reapplyNativeThemeIfSystemStyleChanged()
+  }
+
+  override public func didMoveToWindow() {
+    super.didMoveToWindow()
+    reapplyNativeThemeIfSystemStyleChanged()
+  }
+
+  /// This page owns light/dark for everything inside it. The list used to derive it too,
+  /// from its own detached traitCollection, and whichever ran last won.
+  private func reapplyNativeThemeIfSystemStyleChanged() {
+    guard window != nil else { return }
+    let isDarkNow = ChatListAppearance.resolvedSystemStyle() == .dark
+    guard lastAppliedSystemStyleIsDark != isDarkNow else { return }
+    lastAppliedSystemStyleIsDark = isDarkNow
+    ChatListAppearance.invalidateBootstrap()
     reapplyNativeThemeForCurrentInterfaceStyle()
   }
 
   deinit {
-    avatarLoadTask?.cancel()
     engineStateRefreshWorkItem?.cancel()
+    groupTypingHoldTimer?.invalidate()
     NotificationCenter.default.removeObserver(
       self, name: ChatEngine.didChangeNotification, object: nil)
     if !registeredSurfaceId.isEmpty {
@@ -379,27 +423,48 @@ public final class ChatMainView: UIView,
 
   override public func layoutSubviews() {
     super.layoutSubviews()
-    rootWallpaperLayer.frame = bounds
+    let layoutStartedAt = ProcessInfo.processInfo.systemUptime
+    var layoutMarkAt = layoutStartedAt
+    func layoutPhaseMs() -> Int {
+      let now = ProcessInfo.processInfo.systemUptime
+      defer { layoutMarkAt = now }
+      return Int((now - layoutMarkAt) * 1000)
+    }
+    wallpaperView.frame = bounds
     layoutChrome()
+    let chromeMs = layoutPhaseMs()
     layoutPages()
+    let pagesMs = layoutPhaseMs()
     layoutProfileContent()
     layoutProfileMembersContent()
+    let profileMs = layoutPhaseMs()
     layoutAgentContent()
-    applyPageState(animated: false, emitEvent: false)
-
-    avatarGlassView.contentView.layer.sublayers?.first(where: { $0.name == "savedMessagesGradient" })?.frame = avatarGlassView.contentView.bounds
-    // Inset to match avatarImageView's sizing (avatarButton.bounds.insetBy(dx: 4, dy: 4))
-    // so the gradient reads as the same size as the photo, not the full glass wrapper.
-    if let headerGradientLayer = avatarGlassView.contentView.layer.sublayers?.first(where: { $0.name == "userAvatarGradient" }) {
-      let insetBounds = avatarGlassView.contentView.bounds.insetBy(dx: 4.0, dy: 4.0)
-      headerGradientLayer.frame = insetBounds
-      headerGradientLayer.cornerRadius = insetBounds.height / 2.0
+    let agentMs = layoutPhaseMs()
+    applyPageState(animated: false, emitEvent: false, fromLayout: true)
+    let pageStateMs = layoutPhaseMs()
+    let layoutTotalMs = Int((ProcessInfo.processInfo.systemUptime - layoutStartedAt) * 1000)
+    if layoutTotalMs >= 8 {
+      NSLog(
+        "[ChatOpen] host-stage ChatMainView.layout totalMs=%d chromeMs=%d pagesMs=%d profileMs=%d agentMs=%d pageStateMs=%d sinceTapMs=%d",
+        layoutTotalMs, chromeMs, pagesMs, profileMs, agentMs, pageStateMs,
+        VibeChatOpenTap.msSinceTap())
     }
-    profileAvatarView.layer.sublayers?.first(where: { $0.name == "savedMessagesGradient" })?.frame = profileAvatarView.bounds
-    profileAvatarView.layer.sublayers?.first(where: { $0.name == "userAvatarGradient" })?.frame = profileAvatarView.bounds
+
   }
 
   // MARK: - Forwarded chat-list APIs
+
+  func setOpeningUnreadCount(_ value: Int) {
+    chatListView.setOpeningUnreadCount(value)
+  }
+
+  func persistViewportState() {
+    chatListView.persistViewportState()
+  }
+
+  func captureReopenSnapshot() {
+    chatListView.captureReopenSnapshot()
+  }
 
   func setRows(_ rows: [[String: Any]]) {
     // [EmptyTrace] The chat view gets its rows here. Log an empty apply together with the
@@ -423,14 +488,89 @@ public final class ChatMainView: UIView,
     }
   }
 
+  func setAuthoritativeRows(_ rows: [[String: Any]]) {
+    chatListView.setAuthoritativeRows(rows)
+    let nextHasPeerResponse = Self.rowsContainPeerResponse(rows, peerUserId: enginePeerUserId)
+    if nextHasPeerResponse != hasPeerResponseInCurrentRows {
+      hasPeerResponseInCurrentRows = nextHasPeerResponse
+      applyTheme()
+      updateHeaderTexts()
+      updateProfileTexts()
+    }
+  }
+
+  func clearRows() {
+    chatListView.clearRows()
+    hasPeerResponseInCurrentRows = false
+    applyTheme()
+    updateHeaderTexts()
+    updateProfileTexts()
+  }
+
+  func animateClearChatDisintegration(completion: @escaping () -> Void) {
+    chatListView.animateClearChatDisintegration(completion: completion)
+  }
+
   func setEngineSurfaceId(_ value: String) {
     chatListView.setEngineSurfaceId(value)
+  }
+
+  func setRestrictSavingContent(_ restricted: Bool) {
+    chatListView.setRestrictSavingContent(restricted)
   }
 
   func setDefersEngineStateRefreshes(_ value: Bool) {
     if defersEngineStateRefreshes == value { return }
     defersEngineStateRefreshes = value
     VibeDebugLog.log("[ChatMainView] defersEngineStateRefreshes=%@", value ? "true" : "false")
+    // The flag gates connection/presence chrome, so repaint it here rather than
+    // waiting on an incidental layout pass.
+    updateHeaderTexts()
+  }
+
+  /// Freeze the transcript's geometry while this chat is off (or leaving) the screen.
+  /// See `ChatListView.setGeometryFrozenForDismissal`.
+  func setGeometryFrozenForDismissal(_ frozen: Bool) {
+    chatListView.setGeometryFrozenForDismissal(frozen)
+  }
+
+  func dismissGifPanel() {
+    chatListView.dismissGifPanel()
+  }
+
+  func setEngineStateUpdatesSuspended(_ suspended: Bool) {
+    if engineStateUpdatesSuspended == suspended { return }
+    engineStateUpdatesSuspended = suspended
+    if suspended {
+      // Drop any in-flight / queued snapshot without touching visible header/profile state.
+      engineStateRefreshGeneration &+= 1
+      engineStateRefreshWorkItem?.cancel()
+      engineStateRefreshWorkItem = nil
+      return
+    }
+    guard !defersEngineStateRefreshes else { return }
+    scheduleEngineStateRefresh(force: true, reason: "hostBecameVisible")
+  }
+
+  func setDefersTranscriptUpdatesForPresentation(_ value: Bool) {
+    chatListView.setDefersTranscriptUpdatesForPresentation(value)
+  }
+
+  func beginNavigationPushPrestaging() {
+    chatListView.beginNavigationPushPrestaging()
+  }
+
+  func setNavigationPrestageSafeAreaBottom(_ inset: CGFloat) {
+    chatListView.setNavigationPrestageSafeAreaBottom(inset)
+  }
+
+  @discardableResult
+  func finishNavigationPushPrestaging() -> Bool {
+    chatListView.finishNavigationPushPrestaging()
+  }
+
+  func completeTranscriptPresentation() {
+    chatListView.completeTranscriptPresentation()
   }
 
   func setEngineChatId(_ value: String) {
@@ -477,6 +617,12 @@ public final class ChatMainView: UIView,
 
   func setEnginePeerAgentId(_ value: String) {
     chatListView.setEnginePeerAgentId(value)
+    let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let next = !normalized.isEmpty && ChatOwnedAgentIdsCache.agentIds.contains(normalized)
+    guard ownedStandaloneAgentMode != next else { return }
+    ownedStandaloneAgentMode = next
+    updateChatModeHeaderControls()
+    setNeedsLayout()
   }
 
   /// Host controller asks (at view-appear) to mount the isolated agent surface as this DM's
@@ -490,12 +636,42 @@ public final class ChatMainView: UIView,
     let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard bridgeProvider != normalized else { return }
     bridgeProvider = normalized
+    bridgeSessionModel = nil
+    bridgeLastKnownRealModel = nil
+    bridgeSessionReasoningEffort = nil
+    bridgeSessionProjectName = nil
+    bridgeSessionProjectPath = nil
     chatListView.setBridgeProvider(normalized)
     updateChatModeHeaderControls()
     applyTheme()
     updateHeaderTexts()
     updateProfileTexts()
     setNeedsLayout()
+  }
+
+  /// Scope the chat list to an explicitly-picked History session (or clear with nil).
+  /// Required so follow-ups appear under historical isolation and multi-session
+  /// bridge rows do not combine on the shared agent DM chatId.
+  func setBridgeLoadedSessionId(_ sessionId: String?) {
+    chatListView.setBridgeLoadedSessionId(sessionId)
+  }
+
+  /// History sheet pick: seed the session title, scope the list, show the custom
+  /// skeleton spinner, and request the session transcript from the bridge.
+  /// Header shows **Loading…** until rows land (never the idle "Start session" default).
+  func loadBridgeHistorySession(provider: String, session: AgentBridgeHistorySession) {
+    let topic = session.topic.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Seed topic for when load finishes; while in-flight the subtitle is "Loading…".
+    if !topic.isEmpty {
+      bridgeSessionTopic = topic
+    }
+    bridgeLastKnownRealModel = nil
+    bridgeSessionModel = session.model
+    bridgeSessionReasoningEffort = session.reasoningEffort
+    bridgeSessionProjectName = session.projectName
+    bridgeSessionProjectPath = session.projectPath
+    chatListView.loadBridgeSessionIntoChat(provider: provider, session: session)
+    updateHeaderTexts()
   }
 
   /// Enables agent inbox mode: event notifications are filtered out of the
@@ -610,16 +786,8 @@ public final class ChatMainView: UIView,
   }
 
   private func reapplyNativeThemeForCurrentInterfaceStyle() {
-    guard var rawAppearance = lastRawAppearance,
-      rawAppearance["nativeThemeId"] != nil
-    else {
-      applyTheme()
-      updateHeaderTexts()
-      updateProfileTexts()
-      return
-    }
-
-    rawAppearance["nativeThemeIsDark"] = traitCollection.userInterfaceStyle == .dark
+    let isDark = ChatListAppearance.resolvedSystemStyle() == .dark
+    let rawAppearance = ChatAppearanceDraftStore.chatRawAppearance(isDark: isDark)
     setAppearance(rawAppearance)
   }
 
@@ -650,6 +818,24 @@ public final class ChatMainView: UIView,
     setNeedsLayout()
   }
 
+  func setPreviewHeaderCompactLeading(_ enabled: Bool) {
+    guard previewHeaderCompactLeading != enabled else { return }
+    previewHeaderCompactLeading = enabled
+    updateChatModeHeaderControls()
+    setNeedsLayout()
+  }
+
+  func setProgressiveHeightWarmupSuppressed(_ suppressed: Bool) {
+    chatListView.suppressesProgressiveHeightWarmup = suppressed
+  }
+
+  /// Mark this as the home long-press preview list: reuse the real chat's
+  /// heights at the narrower card width (no per-hold re-measure) and never
+  /// persist narrow-width heights over the real chat's on-disk cache.
+  func setEphemeralPreviewMode(_ ephemeral: Bool) {
+    chatListView.isEphemeralPreview = ephemeral
+  }
+
   func setVoicePlayback(_ payload: [String: Any]) {
     chatListView.setVoicePlayback(payload)
   }
@@ -671,7 +857,9 @@ public final class ChatMainView: UIView,
   }
 
   func setAgentChatMode(_ enabled: Bool) {
+    builtInAgentChatMode = enabled
     chatListView.setAgentChatMode(enabled)
+    updateHeaderTexts()
   }
 
   func setAgentStreaming(_ streaming: Bool) {
@@ -680,12 +868,6 @@ public final class ChatMainView: UIView,
 
   func setDebugAnimationPanel(_ enabled: Bool) {
     chatListView.setDebugAnimationPanel(enabled)
-  }
-
-  func setBuilderSetupPanel(_ value: [String: Any]?) {
-    builderSetupPanelPayload = ChatBuilderPanelPayload(raw: value)
-    synchronizeBuilderPanelPresentation()
-    setNeedsLayout()
   }
 
   func applyTransactions(_ transactions: [[String: Any]]) {
@@ -707,6 +889,27 @@ public final class ChatMainView: UIView,
       applyPageState(animated: true, emitEvent: true)
     }
     setHeaderSearchExpanded(true, animated: true)
+  }
+
+  func openProfileContent(_ payload: [String: Any]) {
+    let messageId =
+      (payload["messageId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      ?? ""
+    let tab = (payload["tab"] as? String)?.lowercased() ?? ""
+    let url = (payload["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let senderName =
+      (payload["senderName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let mediaKey =
+      (payload["mediaKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let sourceView = payload["sourceView"] as? UIView
+    chatListView.openProfileContent(
+      messageId: messageId,
+      tab: tab,
+      urlString: url,
+      senderName: senderName,
+      mediaKey: mediaKey,
+      sourceView: sourceView
+    )
   }
 
   func startSendTransition(_ payload: [String: Any]) {
@@ -862,6 +1065,7 @@ public final class ChatMainView: UIView,
     groupMemberDisplayNameByUserId = nextNamesByUserId
     groupMemberRoleByUserId = nextRolesByUserId
     groupMemberOrder = nextOrder
+    groupAvatarMembers = rawMembers
     // Feed the message list its sender directory (name + avatar + agent provider) so
     // incoming group bubbles can show the sender's name label and floating avatar.
     chatListView.setGroupSenderDirectory(rawMembers)
@@ -870,6 +1074,7 @@ public final class ChatMainView: UIView,
     }
     updateHeaderTexts()
     updateProfileTexts()
+    updateAvatarViews()
   }
 
   func setGroupMemberCount(_ value: Int?) {
@@ -1002,13 +1207,25 @@ public final class ChatMainView: UIView,
   private func configureView() {
     backgroundColor = .clear
 
-    layer.insertSublayer(rootWallpaperLayer, at: 0)
+    // Behind every page. The chat page deliberately extends up under the header, so the
+    // wallpaper has to cover more than the list's own box — which is the other reason it
+    // belongs here and not inside the list.
+    insertSubview(wallpaperView, at: 0)
+    // Cells sample this raster for the frosted backdrop behind bubbles; when it changes
+    // (theme switch, resize) the visible ones have to rebind.
+    wallpaperView.onSnapshotChanged = { [weak self] in
+      guard let self else { return }
+      self.chatListView.wallpaperSnapshotDidChange()
+    }
 
     addSubview(pagesHost)
     pagesHost.clipsToBounds = false
 
     pagesHost.addSubview(chatPage)
     chatPage.addSubview(chatListView)
+    // Read-only: the list borrows the raster for bubble backdrops and for the reopen
+    // cover's base layer. It owns no wallpaper of its own.
+    chatListView.wallpaperSource = wallpaperView
     chatPage.addSubview(pinnedBannerView)
     pinnedBannerView.isHidden = true
     pinnedBannerView.alpha = 0.0
@@ -1023,10 +1240,10 @@ public final class ChatMainView: UIView,
     chatListView.onEventInboxChanged = { [weak self] count, latestPreview in
       self?.updateInboxBanner(count: count, latestPreview: latestPreview)
     }
-    chatListView.onBridgeUsageBannerVisibilityChanged = { [weak self] in
-      self?.setNeedsLayout()
-      self?.layoutIfNeeded()
-    }
+    // The usage card is an absolute overlay owned and laid out by ChatListView. It does
+    // not reserve list/header space, so synchronously relaying its visibility through the
+    // whole chat hierarchy only makes the fixed header mask flash during a rows update.
+    chatListView.onBridgeUsageBannerVisibilityChanged = nil
 
     // The DM-level agent runtime view is hosted FULL-SCREEN by the owning controller;
     // forward ChatListView's present/teardown/presence to it (no in-view nesting).
@@ -1049,6 +1266,16 @@ public final class ChatMainView: UIView,
     profilePage.addSubview(profileMembersNode)
     profilePage.isHidden = true
     profilePage.alpha = 0
+    // Same implicit-animation trap as rootWallpaperLayer above.
+    for layer in [
+      profileWallpaperLayer, profileWallpaperPatternLayer, profileWallpaperPatternMaskLayer,
+    ] as [CALayer] {
+      layer.actions = [
+        "position": NSNull(), "bounds": NSNull(), "frame": NSNull(),
+        "contents": NSNull(), "opacity": NSNull(), "hidden": NSNull(),
+        "colors": NSNull(), "locations": NSNull(),
+      ]
+    }
     profileWallpaperPatternLayer.mask = profileWallpaperPatternMaskLayer
     profileWallpaperPatternMaskLayer.contentsGravity = .resizeAspectFill
     profileWallpaperPatternMaskLayer.contentsScale = UIScreen.main.scale
@@ -1098,15 +1325,25 @@ public final class ChatMainView: UIView,
     headerContainer.clipsToBounds = false
     headerMaskView.isUserInteractionEnabled = false
     headerContainer.addSubview(headerMaskView)
+    // Blur stack underneath, pure tint sibling on top (not inside contentView —
+    // materials inside contentView still read gray/brown over wallpaper).
     headerMaskView.addSubview(headerMaskBlurView)
-    headerMaskBlurView.contentView.addSubview(headerMaskOverlayView)
+    headerMaskView.addSubview(headerMaskBlurBoostView)
+    headerMaskView.addSubview(headerMaskOverlayView)
+    // Custom soft mask (replaces system topEdgeEffect): multi-stop alpha so the
+    // blur+tint plate feathers into the transcript — no hard rectangular cutoff.
+    // Keep the top band denser so dark black actually reads, then soft fade.
     headerMaskGradientLayer.colors = [
       UIColor.black.withAlphaComponent(1.0).cgColor,
-      UIColor.black.withAlphaComponent(0.95).cgColor,
-      UIColor.black.withAlphaComponent(0.55).cgColor,
+      UIColor.black.withAlphaComponent(0.96).cgColor,
+      UIColor.black.withAlphaComponent(0.72).cgColor,
+      UIColor.black.withAlphaComponent(0.32).cgColor,
+      UIColor.black.withAlphaComponent(0.08).cgColor,
       UIColor.clear.cgColor,
     ]
-    headerMaskGradientLayer.locations = [0.0, 0.35, 0.75, 1.0]
+    headerMaskGradientLayer.locations = [0.0, 0.22, 0.45, 0.68, 0.86, 1.0]
+    headerMaskGradientLayer.startPoint = CGPoint(x: 0.5, y: 0.0)
+    headerMaskGradientLayer.endPoint = CGPoint(x: 0.5, y: 1.0)
     headerMaskView.layer.mask = headerMaskGradientLayer
     headerContainer.addSubview(headerContentView)
     headerContainer.layer.zPosition = 50.0
@@ -1138,7 +1375,7 @@ public final class ChatMainView: UIView,
     profileBackGlassView.contentView.addSubview(profileBackButton)
     profileMenuGlassView.contentView.addSubview(profileMenuButton)
 
-    [backButton, titleButton, avatarButton, menuButton, profileBackButton, profileMenuButton, callButton, videoCallButton, historyButton, newChatButton].forEach
+    [backButton, titleButton, avatarButton, menuButton, profileBackButton, profileMenuButton, callButton, videoCallButton, historyButton, newChatButton, selectionDoneButton].forEach
     { button in
       button.backgroundColor = .clear
       button.contentHorizontalAlignment = .center
@@ -1180,8 +1417,9 @@ public final class ChatMainView: UIView,
     rightActionsStack.addArrangedSubview(videoCallButton)
     rightActionsStack.addArrangedSubview(historyButton)
     rightActionsStack.addArrangedSubview(newChatButton)
+    rightActionsStack.addArrangedSubview(selectionDoneButton)
 
-    [callButton, videoCallButton, historyButton, newChatButton].forEach { button in
+    [callButton, videoCallButton, historyButton, newChatButton, selectionDoneButton].forEach { button in
       button.translatesAutoresizingMaskIntoConstraints = false
       NSLayoutConstraint.activate([
         button.heightAnchor.constraint(equalToConstant: 44.0)
@@ -1196,9 +1434,25 @@ public final class ChatMainView: UIView,
     historyButton.setImage(createHistoryIcon(), for: .normal)
     newChatButton.setImage(UIImage(systemName: "plus"), for: .normal)
     newChatButton.setPreferredSymbolConfiguration(actionSymbolConfig, forImageIn: .normal)
+    selectionDoneButton.setImage(UIImage(systemName: "checkmark"), for: .normal)
+    selectionDoneButton.setPreferredSymbolConfiguration(
+      UIImage.SymbolConfiguration(pointSize: 15, weight: .bold), forImageIn: .normal)
+    selectionDoneButton.accessibilityIdentifier = "chat.selection.done"
+    selectionDoneButton.accessibilityLabel = "Done"
+    selectionDoneButton.isHidden = true
+    selectionDoneButton.tintColor = .white
+    selectionDoneButton.backgroundColor = UIColor.systemBlue
+    selectionDoneButton.clipsToBounds = true
+    selectionDoneButton.layer.cornerCurve = .continuous
+    historyButton.accessibilityIdentifier = "chat.history"
+    historyButton.accessibilityLabel = "History"
+    newChatButton.accessibilityIdentifier = "chat.new"
+    newChatButton.accessibilityLabel = "New Chat"
 
+    callButton.addTarget(self, action: #selector(handlePrimaryTrailingActionPressed), for: .touchUpInside)
     historyButton.addTarget(self, action: #selector(handleHistoryPressed), for: .touchUpInside)
     newChatButton.addTarget(self, action: #selector(handleNewChatPressed), for: .touchUpInside)
+    selectionDoneButton.addTarget(self, action: #selector(handleSelectionDonePressed), for: .touchUpInside)
 
     // TODO: Add actual targets for call/videoCall/history/newChat.
     // historyButton.addTarget(self, action: #selector(handleHistoryPressed), for: .touchUpInside)
@@ -1241,14 +1495,30 @@ public final class ChatMainView: UIView,
     profileMenuButton.addTarget(self, action: #selector(handleMenuPressed), for: .touchUpInside)
 
     avatarButton.addTarget(self, action: #selector(handleAvatarPressed), for: .touchUpInside)
-    avatarButton.addSubview(avatarImageView)
-    avatarButton.addSubview(avatarFallbackIconView)
-    avatarButton.addSubview(avatarFallbackLabel)
-    avatarButton.addSubview(checkmarkImageView)
-    checkmarkImageView.contentMode = .scaleAspectFit
-    checkmarkImageView.image = UIImage(systemName: "checkmark.circle.fill")
-    checkmarkImageView.tintColor = .systemBlue
-    checkmarkImageView.isHidden = true
+    avatarButton.addSubview(avatarNode)
+    // Selection title lives in the TITLE glass (same frame as username/subtitle) so
+    // enter/exit is a pure alpha cross-fade — no X/Y translation of the header text.
+    // Counter sits alongside the title (horizontal), not under it.
+    selectionTitleLabel.text = "Select messages"
+    selectionTitleLabel.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
+    selectionTitleLabel.textAlignment = .left
+    selectionTitleLabel.lineBreakMode = .byTruncatingTail
+    selectionCountLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
+    selectionCountLabel.textAlignment = .left
+    selectionCountLabel.lineBreakMode = .byClipping
+    selectionCountLabel.setContentHuggingPriority(.required, for: .horizontal)
+    selectionCountLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+    selectionHeaderStack.axis = .horizontal
+    selectionHeaderStack.alignment = .center
+    selectionHeaderStack.distribution = .fill
+    selectionHeaderStack.spacing = 6
+    selectionHeaderStack.isUserInteractionEnabled = false
+    selectionHeaderStack.alpha = 0
+    selectionHeaderStack.isHidden = true
+    selectionHeaderStack.addArrangedSubview(selectionTitleLabel)
+    selectionHeaderStack.addArrangedSubview(selectionCountLabel)
+    titleButton.addSubview(selectionHeaderStack)
+    // Selection confirm lives in the trailing glass (call/video or search slot).
 
     let backSymbolConfig = UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
     backButton.setPreferredSymbolConfiguration(backSymbolConfig, forImageIn: .normal)
@@ -1258,21 +1528,8 @@ public final class ChatMainView: UIView,
     if profileMenuButton.configuration == nil {
       profileMenuButton.setPreferredSymbolConfiguration(menuSymbolConfig, forImageIn: .normal)
     }
-    avatarImageView.contentMode = .scaleAspectFill
-    avatarImageView.isHidden = true
-
-    avatarFallbackIconView.contentMode = .scaleAspectFit
-    avatarFallbackIconView.image = UIImage(systemName: "person.fill")
-    avatarFallbackIconView.isHidden = false
-
-    avatarFallbackLabel.textAlignment = .center
-    avatarFallbackLabel.textColor = .white
-    avatarFallbackLabel.font = UIFont.systemFont(ofSize: 20, weight: .semibold)
-    avatarFallbackLabel.adjustsFontSizeToFitWidth = true
-    avatarFallbackLabel.minimumScaleFactor = 0.8
-    avatarFallbackLabel.isHidden = false
-
     chatHeaderStack.axis = .vertical
+    // Leading-aligned (next to avatar) — only Home principal is centered.
     chatHeaderStack.alignment = .leading
     chatHeaderStack.distribution = .fill
     chatHeaderStack.spacing = -1
@@ -1305,8 +1562,20 @@ public final class ChatMainView: UIView,
     chatSubtitleRow.axis = .horizontal
     chatSubtitleRow.alignment = .center
     chatSubtitleRow.spacing = 4
+    // Order: status dot → line spinner → text (matches Home principal).
+    // Spinner/dot slots stay laid out (alpha/isHidden carefully) to limit jump.
+    chatConnectingSpinner.translatesAutoresizingMaskIntoConstraints = false
+    chatConnectingSpinner.setContentHuggingPriority(.required, for: .horizontal)
+    chatConnectingSpinner.setContentCompressionResistancePriority(.required, for: .horizontal)
+    NSLayoutConstraint.activate([
+      chatConnectingSpinner.widthAnchor.constraint(equalToConstant: 11),
+      chatConnectingSpinner.heightAnchor.constraint(equalToConstant: 11),
+    ])
     chatSubtitleRow.addArrangedSubview(chatSubtitleDotView)
+    chatSubtitleRow.addArrangedSubview(chatConnectingSpinner)
     chatSubtitleRow.addArrangedSubview(chatSubtitleLabel)
+    chatConnectingSpinner.alpha = 0
+    chatConnectingSpinner.isHidden = true
 
     chatHeaderStack.addArrangedSubview(chatTitleLabel)
     chatHeaderStack.addArrangedSubview(chatSubtitleRow)
@@ -1326,8 +1595,7 @@ public final class ChatMainView: UIView,
     profilePage.addGestureRecognizer(profileSwipeBackGesture)
 
     profileContentView.addSubview(profileAvatarView)
-    profileAvatarView.addSubview(profileAvatarImageView)
-    profileAvatarView.addSubview(profileAvatarFallbackIconView)
+    profileAvatarView.addSubview(profileAvatarNode)
     profileAvatarView.addSubview(profileOnlineDotView)
     profileContentView.addSubview(profileNameLabel)
     profileContentView.addSubview(profileHandleLabel)
@@ -1350,11 +1618,6 @@ public final class ChatMainView: UIView,
     profileAgentRow.addTarget(self, action: #selector(handleAgentRowTapped), for: .touchUpInside)
 
     profileAvatarView.clipsToBounds = true
-    profileAvatarImageView.clipsToBounds = true
-    profileAvatarImageView.contentMode = .scaleAspectFill
-    profileAvatarFallbackIconView.contentMode = .scaleAspectFit
-    profileAvatarFallbackIconView.image = UIImage(systemName: "person.fill")
-    profileAvatarFallbackIconView.isHidden = false
     profileOnlineDotView.layer.cornerCurve = .continuous
 
     profileNameLabel.textAlignment = .center
@@ -1410,17 +1673,8 @@ public final class ChatMainView: UIView,
     syncProfileHierarchyForMode()
     updateChatModeHeaderControls()
 
-    if #available(iOS 26.0, *) {
-      let mainInteraction = UIScrollEdgeElementContainerInteraction()
-      mainInteraction.scrollView = chatListView.collectionView
-      mainInteraction.edge = .top
-      headerContainer.addInteraction(mainInteraction)
-
-      let profileInteraction = UIScrollEdgeElementContainerInteraction()
-      profileInteraction.scrollView = profileScrollView
-      profileInteraction.edge = .top
-      profileHeaderContainer.addInteraction(profileInteraction)
-    }
+    // Top scroll-edge API is disabled — header uses custom soft blur/tint masking
+    // (see applyHeaderChromeSystemStyle / layoutChrome). Bottom edge stays system soft.
   }
 
   private func ensureProfileHierarchyAttached() {
@@ -1460,7 +1714,6 @@ public final class ChatMainView: UIView,
 
   private var selectionModeActive = false
   private var selectionCount = 0
-  private let checkmarkImageView = UIImageView()
 
   private func syncListDispatchers() {
     chatListView.onNativeEvent = NativeEventDispatcher { [weak self] event in
@@ -1468,57 +1721,178 @@ public final class ChatMainView: UIView,
       self?.onNativeEvent(event)
     }
     chatListView.onViewportChanged = onViewportChanged
+    chatListView.onAgentRunStateChanged = { [weak self] in
+      self?.updateHeaderTexts()
+    }
   }
 
   private func handleInternalListEvent(_ event: [String: Any]) {
     if let type = event["type"] as? String, type == "messageSelectionChanged" {
       if let active = event["active"] as? Bool, let count = event["selectedCount"] as? Int {
-        let changed = (active != self.selectionModeActive || count != self.selectionCount)
+        let modeChanged = active != self.selectionModeActive
+        let countChanged = count != self.selectionCount
         self.selectionModeActive = active
         self.selectionCount = count
-        if changed {
-          self.updateHeaderForSelectionState()
+        if modeChanged {
+          self.updateHeaderForSelectionState(animated: true)
+        } else if countChanged && active {
+          self.updateSelectionTitleContent(count: count, animated: true)
         }
       }
     } else if let type = event["type"] as? String, type == "messageSelectionAction" {
-      // In case we want to hide selection immediately
-      self.selectionModeActive = false
-      self.updateHeaderForSelectionState()
+      // Do not hard-exit selection here — share sheet may still be open; the
+      // send path clears selection after dismiss to avoid a mid-sheet flicker.
     }
   }
 
-  private func updateHeaderForSelectionState() {
-    let isActive = selectionModeActive
-    let count = selectionCount
-    
-    UIView.transition(with: headerContentView, duration: 0.3, options: .transitionCrossDissolve) {
-      if isActive {
-        self.backButton.setTitle(nil, for: .normal)
-        self.backButton.setImage(UIImage(systemName: "xmark"), for: .normal)
-        self.backButton.accessibilityLabel = "Cancel selection"
-        self.chatTitleLabel.text = "\(count) Selected"
-        self.chatSubtitleLabel.isHidden = true
-        self.chatSubtitleDotView.isHidden = true
-        self.avatarImageView.alpha = 0
-        self.avatarFallbackIconView.alpha = 0
-        self.checkmarkImageView.isHidden = false
-        self.checkmarkImageView.alpha = 1
-      } else {
-        self.backButton.setTitle(nil, for: .normal)
-        self.backButton.setImage(UIImage(systemName: "chevron.backward"), for: .normal)
-        self.backButton.accessibilityLabel = "Back"
-        self.updateHeaderTexts() // restores chatTitleLabel and chatSubtitleLabel
-        self.avatarImageView.alpha = 1
-        self.avatarFallbackIconView.alpha = 1
-        self.checkmarkImageView.alpha = 0
-        self.checkmarkImageView.isHidden = true
-      }
-    }
-    
-    UIView.animate(withDuration: 0.3) {
+  /// Cancels in-flight selection header morph (enter/exit).
+  private var selectionHeaderAnimator: UIViewPropertyAnimator?
+
+  /// Direct (1:1) chat — not group/channel/saved. Selection left becomes Clear Chat.
+  private var selectionShowsClearChat: Bool {
+    !isGroupOrChannel && headerMode != .savedMessages
+  }
+
+  /// Zero selected → "Select messages"; N selected → "Selected" + count (horizontal).
+  private func updateSelectionTitleContent(count: Int, animated: Bool) {
+    let empty = count <= 0
+    let nextTitle = empty ? "Select messages" : "Selected"
+    let nextCount = empty ? "" : "\(count)"
+    let showCount = !empty
+
+    let apply = {
+      self.selectionTitleLabel.text = nextTitle
+      self.selectionCountLabel.text = nextCount
+      self.selectionCountLabel.isHidden = !showCount
+      self.selectionCountLabel.alpha = showCount ? 1 : 0
       self.setNeedsLayout()
       self.layoutIfNeeded()
     }
+
+    if animated, window != nil {
+      // Cross-dissolve title + monospaced digit swap (smooth counter feel).
+      UIView.transition(
+        with: selectionHeaderStack,
+        duration: 0.22,
+        options: [.transitionCrossDissolve, .beginFromCurrentState, .allowUserInteraction]
+      ) {
+        apply()
+      }
+    } else {
+      apply()
+    }
+  }
+
+  /// Apply selection chrome *flags* synchronously so layout can measure trailing
+  /// checkmark / Clear Chat before the system bar animation runs.
+  private func applySelectionChromeFlags(isActive: Bool, count: Int) {
+    if isActive {
+      if selectionShowsClearChat {
+        // Direct chat: left morphs to Clear Chat (functional — engine + server).
+        backButton.setTitle(nil, for: .normal)
+        backButton.setImage(UIImage(systemName: "trash"), for: .normal)
+        backButton.accessibilityLabel = "Clear chat"
+        backButton.tintColor = .systemRed
+      } else {
+        backButton.setTitle(nil, for: .normal)
+        backButton.setImage(UIImage(systemName: "xmark"), for: .normal)
+        backButton.accessibilityLabel = "Cancel selection"
+        backButton.tintColor = nil  // restore from applyHeaderChromeColors
+      }
+      updateSelectionTitleContent(count: count, animated: false)
+      selectionHeaderStack.isHidden = false
+      avatarButton.isUserInteractionEnabled = false
+      callButton.isHidden = true
+      videoCallButton.isHidden = true
+      historyButton.isHidden = true
+      newChatButton.isHidden = true
+      // Saved Messages: search glass becomes the blue checkmark.
+      // Everyone else: trailing actions glass holds the checkmark.
+      if headerMode == .savedMessages {
+        menuButton.isHidden = true
+        selectionDoneButton.isHidden = false
+        rightActionsGlassView.isHidden = false
+        menuGlassView.isHidden = true
+      } else {
+        selectionDoneButton.isHidden = false
+        rightActionsGlassView.isHidden = false
+      }
+      avatarGlassView.isHidden = false
+      applySelectionDoneBlueTint()
+    } else {
+      backButton.setTitle(nil, for: .normal)
+      backButton.setImage(UIImage(systemName: "chevron.backward"), for: .normal)
+      backButton.accessibilityLabel = "Back"
+      backButton.tintColor = nil
+      selectionHeaderStack.isHidden = true
+      selectionCountLabel.isHidden = true
+      avatarButton.isUserInteractionEnabled = headerMode != .savedMessages
+      selectionDoneButton.isHidden = true
+      updateHeaderTexts()
+      updateChatModeHeaderControls()
+    }
+  }
+
+  private func applySelectionDoneBlueTint() {
+    selectionDoneButton.tintColor = .white
+    selectionDoneButton.backgroundColor = UIColor.systemBlue
+    selectionDoneButton.clipsToBounds = true
+    let side = min(
+      max(selectionDoneButton.bounds.width, 44.0),
+      max(selectionDoneButton.bounds.height, 44.0)
+    )
+    selectionDoneButton.layer.cornerRadius = side / 2.0
+    selectionDoneButton.layer.cornerCurve = .continuous
+  }
+
+  private func updateHeaderForSelectionState(animated: Bool = true) {
+    let isActive = selectionModeActive
+    let count = selectionCount
+
+    selectionHeaderAnimator?.stopAnimation(true)
+    selectionHeaderAnimator = nil
+
+    // Flags first so layout measures Done / Clear before the fade runs.
+    applySelectionChromeFlags(isActive: isActive, count: count)
+
+    // CRITICAL: keep titleGlassView frame + avatarGlassView frame stable.
+    // Only alpha-crossfade username/subtitle ↔ selection title (no X/Y shift).
+    let applyAnimatedChrome = {
+      self.selectionHeaderStack.alpha = isActive ? 1 : 0
+      self.chatHeaderStack.alpha = isActive ? 0 : 1
+      // Avatar fades in place — no translate / scale.
+      self.avatarNode.alpha = isActive ? 0 : 1
+      self.avatarGlassView.alpha = 1
+      self.avatarGlassView.transform = .identity
+      self.titleGlassView.alpha = 1
+      self.titleGlassView.transform = .identity
+      self.chatHeaderStack.transform = .identity
+      self.selectionHeaderStack.transform = .identity
+      self.setNeedsLayout()
+      self.layoutIfNeeded()
+    }
+
+    if animated {
+      let duration = TimeInterval(UINavigationController.hideShowBarDuration)
+      let animator = UIViewPropertyAnimator(duration: max(duration, 0.32), curve: .easeInOut) {
+        applyAnimatedChrome()
+      }
+      animator.addCompletion { [weak self] _ in
+        self?.selectionHeaderAnimator = nil
+      }
+      selectionHeaderAnimator = animator
+      animator.startAnimation()
+    } else {
+      applyAnimatedChrome()
+    }
+  }
+
+  @objc private func handleSelectionDonePressed() {
+    chatListView.clearMessageSelection(animated: true)
+  }
+
+  @objc private func handleSelectionClearChatPressed() {
+    onNativeEvent(["type": "headerMenuAction", "action": "clearChat"])
   }
 
   private func updateChatModeHeaderControls() {
@@ -1539,6 +1913,21 @@ public final class ChatMainView: UIView,
     headerContainer.isHidden = false
     let usesSavedMessagesHeader = headerMode == .savedMessages
     let searchActive = savedSearchExpanded && currentPage == .chat
+    if previewHeaderCompactLeading && !searchActive {
+      headerContainer.isUserInteractionEnabled = false
+      backGlassView.isHidden = true
+      avatarButton.isHidden = false
+      avatarGlassView.isHidden = false
+      menuGlassView.isHidden = true
+      savedSearchCancelGlassView.isHidden = true
+      rightActionsGlassView.isHidden = true
+      titleGlassView.isHidden = false
+      titleButton.isUserInteractionEnabled = false
+      titleButton.showsMenuAsPrimaryAction = false
+      titleButton.menu = nil
+      applyHeaderSearchPresentation()
+      return
+    }
     if previewHeaderCenterOnly && !searchActive {
       headerContainer.isUserInteractionEnabled = false
       backGlassView.isHidden = true
@@ -1554,36 +1943,72 @@ public final class ChatMainView: UIView,
       return
     }
     headerContainer.isUserInteractionEnabled = true
-    avatarButton.isHidden = usesSavedMessagesHeader || searchActive
-    avatarGlassView.isHidden = usesSavedMessagesHeader || searchActive
-    avatarButton.isUserInteractionEnabled = !usesSavedMessagesHeader && !searchActive
+    avatarButton.isHidden = searchActive
+    avatarGlassView.isHidden = searchActive
+    avatarButton.isUserInteractionEnabled =
+      !usesSavedMessagesHeader && !searchActive && !selectionModeActive
     // The title is a plain tappable name (opens the profile) for every chat now — no
     // per-chat dropdown menu, agent or not.
-    titleButton.isUserInteractionEnabled = !usesSavedMessagesHeader && !searchActive
+    titleButton.isUserInteractionEnabled =
+      !usesSavedMessagesHeader && !searchActive && !selectionModeActive
     titleButton.showsMenuAsPrimaryAction = false
     titleButton.menu = nil
-    menuButton.isHidden = !(usesSavedMessagesHeader || searchActive)
-    menuGlassView.isHidden = !(usesSavedMessagesHeader || searchActive)
-    savedSearchCancelGlassView.isHidden = !searchActive
 
     let isAgent = !bridgeProvider.isEmpty
-    let isNewChat = engineChatId.isEmpty
-    callButton.isHidden = isAgent || usesSavedMessagesHeader || searchActive
-    videoCallButton.isHidden = isAgent || usesSavedMessagesHeader || searchActive
-    historyButton.isHidden = !isAgent || usesSavedMessagesHeader || searchActive
-    newChatButton.isHidden = !isAgent || !isNewChat || usesSavedMessagesHeader || searchActive
-    rightActionsGlassView.isHidden = usesSavedMessagesHeader || searchActive
-
-    menuButton.setImage(
-      UIImage(
-        systemName: searchActive ? "magnifyingglass" : (usesSavedMessagesHeader ? "magnifyingglass" : "ellipsis"),
-        withConfiguration: UIImage.SymbolConfiguration(
-          pointSize: searchActive || usesSavedMessagesHeader ? 16.0 : 17.0,
-          weight: searchActive || usesSavedMessagesHeader ? .medium : .semibold
-        )
-      ),
-      for: .normal
-    )
+    let isOwnedAgent = ownedStandaloneAgentMode
+    let isAgentGroup = isGroupOrChannel && chatListView.groupHasBridgeAgentsPublic
+    // Agent DMs, multi-agent groups, and the built-in Vibe AI surface: history /
+    // new-chat instead of call actions. Plain human groups keep call/video.
+    let showAgentHistory =
+      (isAgent || isAgentGroup || builtInAgentChatMode) && !usesSavedMessagesHeader && !searchActive
+    if selectionModeActive {
+      // Selection owns trailing: blue checkmark. Saved Messages search glass hides.
+      callButton.isHidden = true
+      videoCallButton.isHidden = true
+      historyButton.isHidden = true
+      newChatButton.isHidden = true
+      selectionDoneButton.isHidden = false
+      rightActionsGlassView.isHidden = false
+      menuButton.isHidden = true
+      menuGlassView.isHidden = true
+      savedSearchCancelGlassView.isHidden = true
+      applySelectionDoneBlueTint()
+    } else {
+      selectionDoneButton.isHidden = true
+      callButton.isHidden =
+        (isAgent || isAgentGroup || builtInAgentChatMode || usesSavedMessagesHeader || searchActive)
+          && !isOwnedAgent
+      videoCallButton.isHidden =
+        isOwnedAgent || isAgent || isAgentGroup || builtInAgentChatMode || usesSavedMessagesHeader
+          || searchActive
+      historyButton.isHidden = isOwnedAgent || !showAgentHistory
+      // Agent DMs always have a transport chat id. Gating this control on an empty
+      // engineChatId made New Chat unreachable in normal Grok/Claude/Codex sessions.
+      // Groups with agents also get New Chat so a report-scoped view can be cleared.
+      // Built-in Vibe AI uses the same chrome for conversation History / New Chat.
+      newChatButton.isHidden = isOwnedAgent || !showAgentHistory
+      callButton.setImage(
+        isOwnedAgent ? createAgentSettingsMenuIcon() : UIImage(systemName: "phone"),
+        for: .normal
+      )
+      callButton.accessibilityLabel = isOwnedAgent ? "Agent settings" : "Audio call"
+      rightActionsGlassView.isHidden = usesSavedMessagesHeader || searchActive
+      menuButton.isHidden = !(usesSavedMessagesHeader || searchActive)
+      menuGlassView.isHidden = !(usesSavedMessagesHeader || searchActive)
+      savedSearchCancelGlassView.isHidden = !searchActive
+      menuButton.setImage(
+        UIImage(
+          systemName: searchActive
+            ? "magnifyingglass"
+            : (usesSavedMessagesHeader ? "magnifyingglass" : "ellipsis"),
+          withConfiguration: UIImage.SymbolConfiguration(
+            pointSize: searchActive || usesSavedMessagesHeader ? 16.0 : 17.0,
+            weight: searchActive || usesSavedMessagesHeader ? .medium : .semibold
+          )
+        ),
+        for: .normal
+      )
+    }
     applyHeaderSearchPresentation()
   }
 
@@ -1594,6 +2019,23 @@ public final class ChatMainView: UIView,
       name: ChatEngine.didChangeNotification,
       object: nil
     )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleAppearanceDraftDidChange),
+      name: ChatAppearanceDraftStore.didChangeNotification,
+      object: nil
+    )
+  }
+
+  @objc private func handleAppearanceDraftDidChange() {
+    if !Thread.isMainThread {
+      DispatchQueue.main.async { [weak self] in
+        self?.handleAppearanceDraftDidChange()
+      }
+      return
+    }
+    ChatListAppearance.invalidateBootstrap()
+    reapplyNativeThemeForCurrentInterfaceStyle()
   }
 
   @objc private func handleChatEngineDidChange(_ notification: Notification) {
@@ -1603,6 +2045,7 @@ public final class ChatMainView: UIView,
       }
       return
     }
+    guard !engineStateUpdatesSuspended else { return }
     let changeReason = (notification.userInfo?["reason"] as? String) ?? "(unknown)"
     let changedChatId = (notification.userInfo?["chatId"] as? String) ?? ""
     if changeReason == "surfaceBindingChanged" {
@@ -1653,6 +2096,7 @@ public final class ChatMainView: UIView,
   }
 
   private func scheduleEngineStateRefresh(force: Bool = false, reason: String) {
+    guard !engineStateUpdatesSuspended else { return }
     guard !defersEngineStateRefreshes else {
       updateHeaderTexts()
       updateProfileTexts()
@@ -1716,6 +2160,7 @@ public final class ChatMainView: UIView,
         guard let self else { return }
         guard self.engineStateRefreshGeneration == generation else { return }
         guard self.engineChatId == chatId, self.enginePeerUserId == peerUserId else { return }
+        guard !self.engineStateUpdatesSuspended else { return }
         guard !self.defersEngineStateRefreshes else { return }
         self.applyEngineStateSnapshot(
           chatId: chatId,
@@ -1764,20 +2209,19 @@ public final class ChatMainView: UIView,
     if force || nextOnline != isOnline || nextLastSeen != engineLastSeenTimestampMs {
       isOnline = nextOnline
       engineLastSeenTimestampMs = nextLastSeen
-      applyTheme()
+      applyPresenceTheme()
       shouldUpdateHeader = true
       shouldUpdateProfile = true
     }
 
     if isGroupOrChannel {
-      if force || groupTyping != groupTypingUserIds || directPeerTypingActive {
-        groupTypingUserIds = groupTyping
+      if updateGroupTypingDisplay(groupTyping, force: force) || directPeerTypingActive {
         directPeerTypingActive = false
         shouldUpdateHeader = true
         shouldUpdateProfile = true
       }
     } else if force || !groupTypingUserIds.isEmpty || directTyping != directPeerTypingActive {
-      groupTypingUserIds = []
+      clearGroupTypingDisplay()
       directPeerTypingActive = directTyping
       shouldUpdateHeader = true
       shouldUpdateProfile = true
@@ -1821,79 +2265,55 @@ public final class ChatMainView: UIView,
     }
   }
 
-  private func refreshPresenceStateFromEngine(force: Bool = false) {
-    guard !enginePeerUserId.isEmpty else { return }
-    let engineOnline = ChatEngine.shared.isUserOnline(userId: enginePeerUserId)
-    let nextOnline = engineOnline || (surfacePresenceOnline == true)
-    let nextLastSeen =
-      nextOnline
-      ? nil
-      : ChatEngine.shared.lastSeenTimestampMs(userId: enginePeerUserId)
-    guard
-      force || nextOnline != isOnline || nextLastSeen != engineLastSeenTimestampMs
-    else { return }
-    isOnline = nextOnline
-    engineLastSeenTimestampMs = nextLastSeen
-    applyTheme()
-    updateHeaderTexts()
-    updateProfileTexts()
+
+  /// Merge a raw engine typing set into the sticky displayed set. Additions show
+  /// immediately; a member only leaves once it hasn't been seen typing for the hold
+  /// window. Returns true when the displayed set actually changed.
+  @discardableResult
+  private func updateGroupTypingDisplay(_ engineIds: [String], force: Bool) -> Bool {
+    let now = ProcessInfo.processInfo.systemUptime
+    for id in engineIds {
+      groupTypingLastSeenAt[id.uppercased()] = now
+    }
+    groupTypingLastSeenAt = groupTypingLastSeenAt.filter {
+      now - $0.value < Self.groupTypingHoldSeconds
+    }
+    let displayed = groupTypingLastSeenAt.keys.sorted()
+    scheduleGroupTypingHoldTick()
+    guard force || displayed != groupTypingUserIds.map({ $0.uppercased() }).sorted() else {
+      return false
+    }
+    groupTypingUserIds = displayed
+    return true
   }
 
-  private func refreshTypingStateFromEngine(force: Bool = false) {
-    let chatId = engineChatId.trimmingCharacters(in: .whitespacesAndNewlines)
-
-    guard isGroupOrChannel else {
-      let nextDirectTyping =
-        !chatId.isEmpty
-        ? ChatEngine.shared.isTyping(["chatId": chatId])
-        : false
-      guard
-        force
-          || !groupTypingUserIds.isEmpty
-          || nextDirectTyping != directPeerTypingActive
-      else { return }
-      groupTypingUserIds = []
-      directPeerTypingActive = nextDirectTyping
-      updateHeaderTexts()
-      updateProfileTexts()
-      return
+  /// One-shot re-check so held members eventually drop off the header after the
+  /// last agent stops typing (no engine event fires for a TTL expiry we held past).
+  private func scheduleGroupTypingHoldTick() {
+    groupTypingHoldTimer?.invalidate()
+    groupTypingHoldTimer = nil
+    guard !groupTypingLastSeenAt.isEmpty else { return }
+    groupTypingHoldTimer = Timer.scheduledTimer(
+      withTimeInterval: 1.0, repeats: false
+    ) { [weak self] _ in
+      guard let self, self.isGroupOrChannel else { return }
+      if self.updateGroupTypingDisplay([], force: false) {
+        self.updateHeaderTexts()
+        self.updateProfileTexts()
+      } else {
+        self.scheduleGroupTypingHoldTick()
+      }
     }
-    guard !chatId.isEmpty else {
-      guard force || !groupTypingUserIds.isEmpty || directPeerTypingActive else { return }
-      groupTypingUserIds = []
-      directPeerTypingActive = false
-      updateHeaderTexts()
-      updateProfileTexts()
-      return
-    }
-    let next = ChatEngine.shared.typingUserIds(chatId: chatId)
-    guard force || next != groupTypingUserIds || directPeerTypingActive else { return }
-    groupTypingUserIds = next
-    directPeerTypingActive = false
-    updateHeaderTexts()
-    updateProfileTexts()
   }
 
-  private func refreshPinnedBannerFromEngine(force: Bool = false) {
-    let chatId = engineChatId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !chatId.isEmpty else {
-      guard force || pinnedBannerMessageId != nil || pinnedBannerBody != nil || !pinnedBannerView.isHidden else { return }
-      VibeDebugLog.log("[ChatMainView][Pin] clear banner: empty engineChatId force=%@", force ? "true" : "false")
-      pinnedBannerMessageId = nil
-      pinnedBannerTitle = nil
-      pinnedBannerBody = nil
-      pinnedBannerMediaUrl = nil
-      pinnedBannerFileName = nil
-      pinnedBannerIsFile = false
-      pinnedBannerView.isHidden = true
-      pinnedBannerView.alpha = 0.0
-      setNeedsLayout()
-      return
-    }
-
-    let payload = ChatEngine.shared.getPinnedMessages(["chatId": chatId])
-    applyPinnedBannerPayload(chatId: chatId, payload: payload, force: force)
+  private func clearGroupTypingDisplay() {
+    groupTypingHoldTimer?.invalidate()
+    groupTypingHoldTimer = nil
+    groupTypingLastSeenAt.removeAll()
+    groupTypingUserIds = []
   }
+
+
 
   private func applyPinnedBannerPayload(
     chatId: String,
@@ -2132,75 +2552,6 @@ public final class ChatMainView: UIView,
     return component.removingPercentEncoding ?? component
   }
 
-  private func refreshProfileSummaryFromEngine(force: Bool = false) {
-    let chatId = engineChatId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !chatId.isEmpty else {
-      if force || profileSummaryMessageCount != 0 || profileSummaryMediaCount != 0
-        || profileSummaryFileCount != 0 || profileSummaryLinkCount != 0
-        || profileSummaryHistoryLoaded || !profileSummaryRecentFiles.isEmpty
-        || !profileMediaItems.isEmpty
-        || !profileMusicItems.isEmpty || !profileFileItems.isEmpty || !profileLinkItems.isEmpty
-        || !profilePinnedItems.isEmpty
-      {
-        profileSummaryMessageCount = 0
-        profileSummaryMediaCount = 0
-        profileSummaryFileCount = 0
-        profileSummaryLinkCount = 0
-        profileSummaryRecentFiles = []
-        profileSummaryHistoryLoaded = false
-        profileMediaItems = []
-        profileMusicItems = []
-        profileFileItems = []
-        profileLinkItems = []
-        profilePinnedItems = []
-        rebuildProfileTabs()
-        profileTabContentNeedsReload = true
-        updateProfileTexts()
-      }
-      return
-    }
-
-    let summary = ChatEngine.shared.getChatProfileSummary(["chatId": chatId])
-    let nextMessageCount = (summary["totalMessages"] as? Int) ?? 0
-    let nextMediaCount = (summary["mediaCount"] as? Int) ?? 0
-    let nextFileCount = (summary["fileCount"] as? Int) ?? 0
-    let nextLinkCount = (summary["linkCount"] as? Int) ?? 0
-    let nextRecentFiles = (summary["recentFiles"] as? [String]) ?? []
-    let nextHistoryLoaded = (summary["historyLoaded"] as? Bool) ?? false
-    let rows = ChatEngine.shared.getChatRows(["chatId": chatId])
-    let parsed = buildProfileContent(rows: rows)
-
-    let summaryChanged =
-      nextMessageCount != profileSummaryMessageCount
-      || nextMediaCount != profileSummaryMediaCount
-      || nextFileCount != profileSummaryFileCount
-      || nextLinkCount != profileSummaryLinkCount
-      || nextHistoryLoaded != profileSummaryHistoryLoaded
-      || nextRecentFiles != profileSummaryRecentFiles
-    let contentChanged =
-      parsed.mediaItems != profileMediaItems
-      || parsed.musicItems != profileMusicItems
-      || parsed.fileItems != profileFileItems
-      || parsed.linkItems != profileLinkItems
-      || parsed.pinnedItems != profilePinnedItems
-
-    guard force || summaryChanged || contentChanged else { return }
-
-    profileSummaryMessageCount = nextMessageCount
-    profileSummaryMediaCount = nextMediaCount
-    profileSummaryFileCount = nextFileCount
-    profileSummaryLinkCount = nextLinkCount
-    profileSummaryRecentFiles = nextRecentFiles
-    profileSummaryHistoryLoaded = nextHistoryLoaded
-    profileMediaItems = parsed.mediaItems
-    profileMusicItems = parsed.musicItems
-    profileFileItems = parsed.fileItems
-    profileLinkItems = parsed.linkItems
-    profilePinnedItems = parsed.pinnedItems
-    rebuildProfileTabs()
-    profileTabContentNeedsReload = true
-    updateProfileTexts()
-  }
 
   private func buildProfileContent(rows: [[String: Any]]) -> (
     mediaItems: [ChatMainProfileMediaItem],
@@ -3014,62 +3365,125 @@ public final class ChatMainView: UIView,
     presenter.present(navigationController, animated: true)
   }
 
+  /// System light/dark for glass chrome chips only (not mask plate).
+  private var headerChromeIsDark: Bool {
+    let style =
+      window?.traitCollection.userInterfaceStyle
+      ?? traitCollection.userInterfaceStyle
+    if style == .unspecified {
+      return UIScreen.main.traitCollection.userInterfaceStyle == .dark
+    }
+    return style == .dark
+  }
+
+  /// Mask plate darkness follows **chat theme** (wallpaper), not system UI style.
+  /// Using system alone made dark chats still get light/gray materials → brown/gray wash.
+  private var headerMaskIsDark: Bool {
+    appearance.isDark
+  }
+
+  /// Soft header-mask wash: dark = pure black; light = desaturated theme tint (never pure white).
+  private func headerMaskWashColor(isDark: Bool) -> UIColor {
+    if isDark {
+      return UIColor.black
+    }
+    // Theme wallpaper tint — keep some chroma, no hardcoded white.
+    let themeBase =
+      appearance.wallpaperGradient.first
+      ?? UIColor.secondarySystemBackground.resolvedColor(
+        with: UITraitCollection(userInterfaceStyle: .light))
+    var r: CGFloat = 0
+    var g: CGFloat = 0
+    var b: CGFloat = 0
+    var a: CGFloat = 0
+    guard themeBase.getRed(&r, green: &g, blue: &b, alpha: &a) else {
+      return themeBase
+    }
+    // Mild desaturate toward cool-neutral — less aggressive so tint still reads.
+    let target: CGFloat = 0.88
+    let mix: CGFloat = 0.35
+    let inv = 1.0 - mix
+    return UIColor(
+      red: (r * inv) + (target * mix),
+      green: (g * inv) + (target * mix),
+      blue: (b * inv) + (target * mix),
+      alpha: 1.0
+    )
+  }
+
+  private func applyHeaderChromeSystemStyle() {
+    // Header chrome + mask both follow **chat theme** dark/light (not system UI style).
+    let themeDark = headerMaskIsDark
+    let themeStyle: UIUserInterfaceStyle = themeDark ? .dark : .light
+    headerContainer.overrideUserInterfaceStyle = themeStyle
+    profileHeaderContainer.overrideUserInterfaceStyle = themeStyle
+    headerMaskView.overrideUserInterfaceStyle = themeStyle
+    headerMaskBlurView.overrideUserInterfaceStyle = themeStyle
+    headerMaskBlurBoostView.overrideUserInterfaceStyle = themeStyle
+    [
+      backGlassView, titleGlassView, avatarGlassView, menuGlassView,
+      savedSearchCancelGlassView, rightActionsGlassView,
+      profileBackGlassView, profileMenuGlassView,
+    ].forEach { $0.overrideUserInterfaceStyle = themeStyle }
+
+    // Double-pass blur: thick base + chrome boost (one style alone is too soft).
+    headerMaskBlurView.effect =
+      UIBlurEffect(style: themeDark ? .systemThickMaterialDark : .systemThickMaterialLight)
+    headerMaskBlurBoostView.effect =
+      UIBlurEffect(style: themeDark ? .systemChromeMaterialDark : .systemChromeMaterialLight)
+    headerMaskOverlayView.backgroundColor =
+      themeDark
+      ? UIColor.black.withAlphaComponent(0.88)
+      : headerMaskWashColor(isDark: false).withAlphaComponent(0.56)
+  }
+
   private func refreshHeaderGlass() {
+    applyHeaderChromeSystemStyle()
+    let isDark = headerMaskIsDark
+
+    // Always show custom soft header mask (replaces system top edge API).
+    headerMaskView.isHidden = false
+    profileHeaderMaskView.isHidden = true
+
     if #available(iOS 26.0, *) {
-      headerMaskView.isHidden = true
-      profileHeaderMaskView.isHidden = true
+      func makeGlassEffect() -> UIGlassEffect {
+        let effect = UIGlassEffect(style: .regular)
+        effect.isInteractive = true
+        // No black/white plate tint — clear glass so chips don’t read as hard black.
+        effect.tintColor = .clear
+        return effect
+      }
 
-      // Liquid Glass samples/tints itself from whatever's rendered behind or inside it —
-      // the title glass in particular was picking up a blue cast once the subtitle started
-      // carrying colored (green/red) live-agent text and an animated shimmer mask. Pin
-      // every header glass effect's tint explicitly so the chrome always reads as neutral,
-      // regardless of what content sits on top of it.
-      let backEffect = UIGlassEffect()
-      backEffect.isInteractive = true
-      backEffect.tintColor = .clear
-      backGlassView.effect = backEffect
+      backGlassView.effect = makeGlassEffect()
+      titleGlassView.effect = nil // Title stays clear of glass chrome
+      avatarGlassView.effect = makeGlassEffect()
+      menuGlassView.effect = makeGlassEffect()
+      savedSearchCancelGlassView.effect = makeGlassEffect()
+      rightActionsGlassView.effect = makeGlassEffect()
+      profileBackGlassView.effect = makeGlassEffect()
+      profileMenuGlassView.effect = makeGlassEffect()
 
-      let titleEffect = UIGlassEffect()
-      titleEffect.isInteractive = true
-      titleEffect.tintColor = .clear
-      titleGlassView.effect = nil // Explicitly remove glass effect for title
+      let collection = chatListView.collectionView
+      // Custom header mask owns the top fade — hide system edge API there.
+      collection.topEdgeEffect.isHidden = true
+      collection.bottomEdgeEffect.isHidden = false
+      collection.bottomEdgeEffect.style = .soft
 
-      let avatarEffect = UIGlassEffect()
-      avatarEffect.isInteractive = true
-      avatarEffect.tintColor = .clear
-      avatarGlassView.effect = avatarEffect
-
-      let menuEffect = UIGlassEffect()
-      menuEffect.isInteractive = true
-      menuEffect.tintColor = .clear
-      menuGlassView.effect = menuEffect
-      let searchCancelEffect = UIGlassEffect()
-      searchCancelEffect.isInteractive = true
-      searchCancelEffect.tintColor = .clear
-      savedSearchCancelGlassView.effect = searchCancelEffect
-      
-      let rightActionsEffect = UIGlassEffect()
-      rightActionsEffect.isInteractive = true
-      rightActionsEffect.tintColor = .clear
-      rightActionsGlassView.effect = rightActionsEffect
-      
-      let profileBackEffect = UIGlassEffect()
-      profileBackEffect.isInteractive = true
-      profileBackEffect.tintColor = .clear
-      profileBackGlassView.effect = profileBackEffect
-      let profileMenuEffect = UIGlassEffect()
-      profileMenuEffect.isInteractive = true
-      profileMenuEffect.tintColor = .clear
-      profileMenuGlassView.effect = profileMenuEffect
+      profileScrollView.topEdgeEffect.isHidden = true
+      profileScrollView.bottomEdgeEffect.isHidden = false
+      profileScrollView.bottomEdgeEffect.style = .soft
     } else {
-      backGlassView.effect = UIBlurEffect(style: .systemMaterial)
-      titleGlassView.effect = UIBlurEffect(style: .systemMaterial)
-      avatarGlassView.effect = UIBlurEffect(style: .systemMaterial)
-      menuGlassView.effect = UIBlurEffect(style: .systemMaterial)
-      savedSearchCancelGlassView.effect = UIBlurEffect(style: .systemMaterial)
-      rightActionsGlassView.effect = UIBlurEffect(style: .systemMaterial)
-      profileBackGlassView.effect = UIBlurEffect(style: .systemMaterial)
-      profileMenuGlassView.effect = UIBlurEffect(style: .systemMaterial)
+      // Theme dark/light materials (chat appearance, not system-only).
+      let material: UIBlurEffect.Style =
+        isDark ? .systemMaterialDark : .systemMaterialLight
+      backGlassView.effect = UIBlurEffect(style: material)
+      titleGlassView.effect = UIBlurEffect(style: material)
+      avatarGlassView.effect = UIBlurEffect(style: material)
+      menuGlassView.effect = UIBlurEffect(style: material)
+      savedSearchCancelGlassView.effect = UIBlurEffect(style: material)
+      rightActionsGlassView.effect = UIBlurEffect(style: material)
+      profileBackGlassView.effect = UIBlurEffect(style: material)
+      profileMenuGlassView.effect = UIBlurEffect(style: material)
     }
   }
 
@@ -3095,8 +3509,37 @@ public final class ChatMainView: UIView,
     pendingNativePageLockUntil = CACurrentMediaTime() + 2.0
   }
 
+  /// `bringSubviewToFront` dirties the container's layout even when nothing moves.
+  /// These run every layout pass, so re-order only when the view isn't already on top.
+  private func bringToFrontIfNeeded(_ view: UIView, in container: UIView? = nil) {
+    let host = container ?? self
+    guard host.subviews.last !== view else { return }
+    host.bringSubviewToFront(view)
+  }
+
+  /// Header stack setters invalidate its Auto Layout engine even when the value is unchanged,
+  /// which turns the next `systemLayoutSizeFitting` into a full re-solve. Assign only on change.
+  private func setTextIfNeeded(_ label: UILabel, _ text: String) {
+    guard label.text != text else { return }
+    label.text = text
+  }
+
+  private func setFontIfNeeded(_ label: UILabel, _ font: UIFont) {
+    guard label.font != font else { return }
+    label.font = font
+  }
+
+  private func setHiddenIfNeeded(_ view: UIView, _ hidden: Bool) {
+    guard view.isHidden != hidden else { return }
+    view.isHidden = hidden
+  }
+
   private func layoutChrome() {
-    let safeTop = window?.safeAreaInsets.top ?? safeAreaInsets.top
+    // A Home mini-preview is already positioned inside the screen safe area.
+    // Reusing the window inset here pushes its centered header down a second time.
+    let safeTop: CGFloat = (previewHeaderCenterOnly || previewHeaderCompactLeading)
+      ? 0.0
+      : (window?.safeAreaInsets.top ?? safeAreaInsets.top)
     let headerHeight = safeTop + 60.0
     let contentY = safeTop + 8.0
     let headerContentWidth = max(0.0, bounds.width - 24.0)
@@ -3108,6 +3551,7 @@ public final class ChatMainView: UIView,
       headerContainer.frame = .zero
       headerMaskView.frame = .zero
       headerMaskBlurView.frame = .zero
+      headerMaskBlurBoostView.frame = .zero
       headerMaskOverlayView.frame = .zero
       headerMaskGradientLayer.frame = .zero
       headerContentView.frame = .zero
@@ -3127,36 +3571,81 @@ public final class ChatMainView: UIView,
       applyHeaderSearchPresentation()
     } else {
       headerContainer.frame = CGRect(x: 0, y: 0, width: bounds.width, height: headerHeight)
-      headerMaskView.frame = headerContainer.bounds
+      // Soft fade band extends below the chip row so blur eases out (not a hard edge).
+      let maskFadeExtra: CGFloat = 44.0
+      let maskHeight = headerHeight + maskFadeExtra
+      headerMaskView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: maskHeight)
       headerMaskBlurView.frame = headerMaskView.bounds
-      headerMaskOverlayView.frame = headerMaskBlurView.bounds
+      headerMaskBlurBoostView.frame = headerMaskView.bounds
+      // Sibling on top of blur stack (not inside contentView) so black tint is pure.
+      headerMaskOverlayView.frame = headerMaskView.bounds
       headerMaskGradientLayer.frame = headerMaskView.bounds
-      headerContainer.bringSubviewToFront(headerContentView)
+      bringToFrontIfNeeded(headerMaskOverlayView, in: headerMaskView)
+      bringToFrontIfNeeded(headerContentView, in: headerContainer)
 
       headerContentView.frame = CGRect(
         x: 12.0, y: contentY, width: max(0.0, bounds.width - 24.0), height: 44.0)
 
       let backWidth: CGFloat
-      if previewHeaderCenterOnly && !savedSearchExpanded {
+      if selectionModeActive {
+        // Always show cancel (xmark) glass during selection — never collapse to 0.
+        backWidth = 44.0
+      } else if (previewHeaderCenterOnly || previewHeaderCompactLeading) && !savedSearchExpanded {
         backWidth = 0.0
-      } else if selectionModeActive {
-        let size = backButton.sizeThatFits(CGSize(width: .greatestFiniteMagnitude, height: 44.0))
-        backWidth = max(size.width + 24.0, 44.0)
       } else {
         backWidth = headerUnreadCount > 0 ? 62.0 : 44.0
       }
       backGlassView.frame = CGRect(x: 0.0, y: 0.0, width: backWidth, height: 44.0)
       
-      let trailingHeaderFrame = CGRect(
-        x: max(0.0, headerContentView.bounds.width - 44.0), y: 0.0, width: 44.0, height: 44.0)
-        
       let subtitleDotWidth: CGFloat = chatSubtitleDotView.isHidden ? 0.0 : 10.0
       let requestedHeaderWidth = max(
         chatTitleLabel.intrinsicContentSize.width,
         chatSubtitleLabel.intrinsicContentSize.width + subtitleDotWidth
       )
-        
-      if previewHeaderCenterOnly && !savedSearchExpanded {
+
+      // Selection keeps the same geometry as normal chat (no title X/Y shift).
+      // Username/subtitle ↔ "Select messages" / "Selected N" is pure alpha fade.
+      // Trailing: blue checkmark (Saved Messages reuses the search trailing slot).
+      if selectionModeActive && currentPage == .chat && !savedSearchExpanded {
+        menuGlassView.frame = .zero
+        savedSearchCancelGlassView.frame = .zero
+        selectionDoneButton.frame.size = CGSize(width: 44.0, height: 44.0)
+        rightActionsGlassView.frame = CGRect(
+          x: headerContentView.bounds.width - 44.0,
+          y: 0.0,
+          width: 44.0,
+          height: 44.0
+        )
+        let glassMinX = backGlassView.frame.maxX + 8.0
+        // Avatar stays a 44 circle (fades content only — no expand / no translate).
+        if headerMode == .savedMessages {
+          avatarGlassView.frame = CGRect(
+            x: glassMinX, y: 0.0, width: 44.0, height: 44.0)
+        } else {
+          avatarGlassView.frame = CGRect(
+            x: glassMinX, y: 0.0, width: 44.0, height: 44.0)
+        }
+        let titleMinX = avatarGlassView.frame.maxX + 12.0
+        let titleMaxX = rightActionsGlassView.frame.minX - 8.0
+        titleGlassView.frame = CGRect(
+          x: titleMinX,
+          y: 0.0,
+          width: max(0.0, titleMaxX - titleMinX),
+          height: 44.0
+        )
+      } else if previewHeaderCompactLeading && !savedSearchExpanded {
+        menuGlassView.frame = .zero
+        savedSearchCancelGlassView.frame = .zero
+        rightActionsGlassView.frame = .zero
+        avatarGlassView.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
+        let titleX = avatarGlassView.frame.maxX + 10
+        titleGlassView.frame = CGRect(
+          x: titleX,
+          y: 0,
+          width: max(0, headerContentView.bounds.width - titleX),
+          height: 44
+        )
+      } else if previewHeaderCenterOnly && !savedSearchExpanded {
         avatarGlassView.frame = .zero
         menuGlassView.frame = .zero
         savedSearchCancelGlassView.frame = .zero
@@ -3170,7 +3659,10 @@ public final class ChatMainView: UIView,
         titleGlassView.frame = CGRect(x: centerX, y: 0.0, width: centerWidth, height: 44.0)
         
       } else if headerMode == .savedMessages || savedSearchExpanded {
-        avatarGlassView.frame = savedSearchExpanded ? .zero : trailingHeaderFrame
+        avatarGlassView.frame = savedSearchExpanded
+          ? .zero
+          : CGRect(
+            x: backGlassView.frame.maxX + 8.0, y: 0.0, width: 44.0, height: 44.0)
         let cancelSpacing: CGFloat = savedSearchExpanded ? 8.0 : 0.0
         let cancelWidth: CGFloat = savedSearchExpanded ? 44.0 : 0.0
         let searchWidth = savedSearchExpanded
@@ -3194,54 +3686,65 @@ public final class ChatMainView: UIView,
           )
           : .zero
         rightActionsGlassView.frame = .zero
-        
-        let centerSideInset = max(backGlassView.frame.maxX, headerContentView.bounds.width - avatarGlassView.frame.minX) + 10.0
-        let centerWidth = min(
-          maxCenterWidth,
-          max(120.0, headerContentView.bounds.width - (centerSideInset * 2.0))
-        )
-        let centerX = (headerContentView.bounds.width - centerWidth) * 0.5
-        titleGlassView.frame = CGRect(x: centerX, y: 0.0, width: centerWidth, height: 44.0)
+
+        if savedSearchExpanded {
+          titleGlassView.frame = .zero
+        } else {
+          let titleX = avatarGlassView.frame.maxX + 12.0
+          let titleMaxX = menuGlassView.frame.minX - 8.0
+          titleGlassView.frame = CGRect(
+            x: titleX,
+            y: 0.0,
+            width: max(0.0, min(maxCenterWidth, titleMaxX - titleX)),
+            height: 44.0
+          )
+        }
         
       } else {
-        // Move avatar to the left side
-        avatarGlassView.frame = CGRect(x: backGlassView.frame.maxX + 8.0, y: 0.0, width: 44.0, height: 44.0)
-        menuGlassView.frame = .zero
-        savedSearchCancelGlassView.frame = .zero
-        
-        // Setup right actions
+        // Setup right actions first (call/video — or selection checkmark).
         var visibleActionCount = 0
         if !callButton.isHidden { visibleActionCount += 1 }
         if !videoCallButton.isHidden { visibleActionCount += 1 }
         if !historyButton.isHidden { visibleActionCount += 1 }
         if !newChatButton.isHidden { visibleActionCount += 1 }
-        
+        if !selectionDoneButton.isHidden { visibleActionCount += 1 }
+
         let actionWidth: CGFloat = 44.0
         let actionSpacing: CGFloat = 0.0
-        let totalActionsWidth = CGFloat(visibleActionCount) * actionWidth + CGFloat(max(0, visibleActionCount - 1)) * actionSpacing
-        
+        let totalActionsWidth =
+          CGFloat(visibleActionCount) * actionWidth
+          + CGFloat(max(0, visibleActionCount - 1)) * actionSpacing
+
         rightActionsGlassView.frame = CGRect(
-          x: headerContentView.bounds.width - totalActionsWidth,
+          x: headerContentView.bounds.width - max(totalActionsWidth, 0.0),
           y: 0.0,
-          width: totalActionsWidth,
+          width: max(totalActionsWidth, 0.0),
           height: 44.0
         )
-        
+
         callButton.frame.size = CGSize(width: 44.0, height: 44.0)
         videoCallButton.frame.size = CGSize(width: 44.0, height: 44.0)
         historyButton.frame.size = CGSize(width: 44.0, height: 44.0)
         newChatButton.frame.size = CGSize(width: 44.0, height: 44.0)
-        
-        // Setup title outside of glass, right next to the avatar
+        selectionDoneButton.frame.size = CGSize(width: 44.0, height: 44.0)
+
+        menuGlassView.frame = .zero
+        savedSearchCancelGlassView.frame = .zero
+
+        // Normal chat chrome (selection handled in the early branch above).
+        let glassMinX = backGlassView.frame.maxX + 8.0
+        let glassMaxX =
+          rightActionsGlassView.frame.minX > 0
+          ? rightActionsGlassView.frame.minX - 8.0
+          : headerContentView.bounds.width - 8.0
+        avatarGlassView.frame = CGRect(
+          x: glassMinX, y: 0.0, width: 44.0, height: 44.0)
         let titleMinX = avatarGlassView.frame.maxX + 12.0
-        let titleMaxX = rightActionsGlassView.frame.minX > 0 ? rightActionsGlassView.frame.minX - 8.0 : headerContentView.bounds.width - 8.0
-        let availableWidth = max(0, titleMaxX - titleMinX)
-        let centerWidth = availableWidth
-        
+        let availableWidth = max(0, glassMaxX - titleMinX)
         titleGlassView.frame = CGRect(
           x: titleMinX,
           y: 0.0,
-          width: centerWidth,
+          width: availableWidth,
           height: 44.0
         )
       }
@@ -3249,8 +3752,7 @@ public final class ChatMainView: UIView,
       backButton.frame = backGlassView.bounds
       titleButton.frame = titleGlassView.bounds
       avatarButton.frame = avatarGlassView.bounds
-      avatarFallbackLabel.frame = avatarButton.bounds
-      if headerMode == .savedMessages {
+      if headerMode == .savedMessages || savedSearchExpanded {
         menuButton.frame = savedSearchExpanded
           ? CGRect(x: 10.0, y: 0.0, width: 20.0, height: 44.0)
           : CGRect(x: 0.0, y: 0.0, width: 44.0, height: 44.0)
@@ -3269,33 +3771,55 @@ public final class ChatMainView: UIView,
         savedSearchCancelButton.frame = .zero
       }
 
-      [backButton, avatarButton, titleButton, menuButton, savedSearchCancelButton, callButton, videoCallButton, historyButton, newChatButton].forEach {
+      [backButton, avatarButton, titleButton, menuButton, savedSearchCancelButton, callButton, videoCallButton, historyButton, newChatButton, selectionDoneButton].forEach {
         control in
-        control.layer.cornerRadius = control.bounds.height / 2.0
+        // Capsule when wide (selection pill), circle when 44×44.
+        control.layer.cornerRadius = min(control.bounds.width, control.bounds.height) / 2.0
+        control.layer.cornerCurve = .continuous
       }
       [backGlassView, avatarGlassView, titleGlassView, menuGlassView, savedSearchCancelGlassView, rightActionsGlassView]
         .forEach { view in
-          view.layer.cornerRadius = view.bounds.height / 2.0
+          view.layer.cornerRadius = min(view.bounds.width, view.bounds.height) / 2.0
+          view.layer.cornerCurve = .continuous
         }
 
-      avatarImageView.frame = avatarButton.bounds.insetBy(dx: 4.0, dy: 4.0)
-      avatarImageView.layer.cornerRadius = avatarImageView.bounds.height / 2.0
-      avatarImageView.clipsToBounds = true
-      avatarFallbackIconView.frame = avatarButton.bounds.insetBy(dx: 12.0, dy: 12.0)
-      checkmarkImageView.frame = avatarButton.bounds.insetBy(dx: 4.0, dy: 4.0)
+      // Avatar stays laid out; selection only fades its alpha (no zero frame).
+      avatarNode.frame = avatarButton.bounds.insetBy(dx: 4.0, dy: 4.0)
+      applySelectionDoneBlueTint()
 
       let horizontalInset: CGFloat = (headerMode == .savedMessages || savedSearchExpanded) ? 12.0 : 4.0
+      let titleInnerWidth = max(0.0, titleButton.bounds.width - (horizontalInset * 2.0))
       let stackSize = chatHeaderStack.systemLayoutSizeFitting(
-        CGSize(width: titleButton.bounds.width - (horizontalInset * 2.0), height: UIView.layoutFittingCompressedSize.height),
+        CGSize(width: titleInnerWidth, height: UIView.layoutFittingCompressedSize.height),
         withHorizontalFittingPriority: .required,
         verticalFittingPriority: .fittingSizeLevel
       )
-      chatHeaderStack.frame = CGRect(
+      // Username/subtitle and selection title share the same rect — only alpha swaps.
+      let titleContentFrame = CGRect(
         x: horizontalInset,
         y: (titleButton.bounds.height - stackSize.height) * 0.5,
-        width: titleButton.bounds.width - (horizontalInset * 2.0),
+        width: titleInnerWidth,
         height: stackSize.height
       )
+      chatHeaderStack.frame = titleContentFrame
+      if selectionModeActive, !selectionHeaderStack.isHidden {
+        let selSize = selectionHeaderStack.systemLayoutSizeFitting(
+          CGSize(
+            width: titleInnerWidth,
+            height: UIView.layoutFittingCompressedSize.height
+          ),
+          withHorizontalFittingPriority: .fittingSizeLevel,
+          verticalFittingPriority: .fittingSizeLevel
+        )
+        selectionHeaderStack.frame = CGRect(
+          x: horizontalInset,
+          y: (titleButton.bounds.height - selSize.height) * 0.5,
+          width: min(selSize.width, titleInnerWidth),
+          height: selSize.height
+        )
+      } else {
+        selectionHeaderStack.frame = .zero
+      }
       if subtitleShimmerActive {
         chatHeaderStack.layoutIfNeeded()
         applySubtitleShimmerFrame()
@@ -3308,7 +3832,7 @@ public final class ChatMainView: UIView,
     profileHeaderBlurView.frame = profileHeaderMaskView.bounds
     profileHeaderOverlayView.frame = profileHeaderBlurView.bounds
     profileHeaderMaskGradientLayer.frame = profileHeaderMaskView.bounds
-    profileHeaderContainer.bringSubviewToFront(profileHeaderContentView)
+    bringToFrontIfNeeded(profileHeaderContentView, in: profileHeaderContainer)
     profileHeaderContentView.frame = CGRect(
       x: 12.0, y: contentY, width: max(0.0, bounds.width - 24.0), height: 44.0)
     profileHeaderContentView.isUserInteractionEnabled = true
@@ -3355,6 +3879,21 @@ public final class ChatMainView: UIView,
     let searchActive = savedSearchExpanded && currentPage == .chat
     let controlsAlpha: CGFloat = searchActive ? 0.0 : 1.0
 
+    if previewHeaderCompactLeading && !searchActive {
+      backGlassView.alpha = 0.0
+      menuGlassView.alpha = 0.0
+      avatarGlassView.alpha = 1.0
+      savedSearchCancelGlassView.alpha = 0.0
+      savedSearchField.alpha = 0.0
+      savedSearchField.isUserInteractionEnabled = false
+      savedSearchCancelButton.isUserInteractionEnabled = false
+      savedSearchCancelGlassView.isUserInteractionEnabled = false
+      titleGlassView.alpha = 1.0
+      chatHeaderStack.alpha = 1.0
+      chatHeaderStack.transform = .identity
+      return
+    }
+
     if previewHeaderCenterOnly && !searchActive {
       backGlassView.alpha = 0.0
       menuGlassView.alpha = 0.0
@@ -3375,11 +3914,25 @@ public final class ChatMainView: UIView,
     menuGlassView.alpha = (searchActive || (headerMode == .savedMessages && currentPage == .chat))
       ? 1.0
       : 0.0
-    avatarGlassView.alpha = (currentPage == .chat && headerMode != .savedMessages && !searchActive)
-      ? 1.0
-      : 0.0
+    // Selection: avatar glass stays put; title content cross-fades in place.
+    if selectionModeActive {
+      avatarGlassView.alpha = 1.0
+      avatarGlassView.transform = .identity
+      chatHeaderStack.alpha = 0.0
+      chatHeaderStack.transform = .identity
+      selectionHeaderStack.alpha = 1.0
+      selectionHeaderStack.transform = .identity
+      titleGlassView.alpha = 1.0
+      titleGlassView.transform = .identity
+    } else {
+      avatarGlassView.alpha = (currentPage == .chat && !searchActive) ? 1.0 : 0.0
+      avatarGlassView.transform = .identity
+      chatHeaderStack.alpha = controlsAlpha
+      chatHeaderStack.transform = .identity
+      selectionHeaderStack.alpha = 0.0
+      selectionHeaderStack.transform = .identity
+    }
     backGlassView.transform = .identity
-    chatHeaderStack.alpha = controlsAlpha
     chatHeaderStack.transform = .identity
     savedSearchField.alpha = searchActive ? 1.0 : 0.0
     savedSearchCancelGlassView.alpha = searchActive ? 1.0 : 0.0
@@ -3402,12 +3955,14 @@ public final class ChatMainView: UIView,
       savedSearchExpanded = false
       savedSearchField.resignFirstResponder()
       savedSearchField.text = nil
+      chatListView.setSearchModeActive(false)
       chatListView.setSearchQuery("")
       return
     }
 
     let applyUpdates = {
       self.savedSearchExpanded = expanded
+      self.chatListView.setSearchModeActive(expanded)
       self.updateChatModeHeaderControls()
       self.layoutChrome()
     }
@@ -3443,7 +3998,9 @@ public final class ChatMainView: UIView,
   }
 
   private func layoutPages() {
-    let safeTop = window?.safeAreaInsets.top ?? safeAreaInsets.top
+    let safeTop: CGFloat = (previewHeaderCenterOnly || previewHeaderCompactLeading)
+      ? 0.0
+      : (window?.safeAreaInsets.top ?? safeAreaInsets.top)
     let headerHeight =
       externalNavigationHeaderEnabled && !savedSearchExpanded
       ? 0.0
@@ -3491,7 +4048,7 @@ public final class ChatMainView: UIView,
       width: bannerWidth,
       height: ChatPinnedBannerView.preferredHeight
     )
-    chatPage.bringSubviewToFront(pinnedBannerView)
+    bringToFrontIfNeeded(pinnedBannerView, in: chatPage)
 
     // Inbox banner stacks directly below the pinned banner (or in its slot when
     // there is no pinned message).
@@ -3505,7 +4062,7 @@ public final class ChatMainView: UIView,
       width: bannerWidth,
       height: ChatPinnedBannerView.preferredHeight
     )
-    chatPage.bringSubviewToFront(inboxBannerView)
+    bringToFrontIfNeeded(inboxBannerView, in: chatPage)
 
     if standaloneProfileMode {
       profilePage.frame = bounds
@@ -3541,9 +4098,7 @@ public final class ChatMainView: UIView,
     profileAvatarView.frame = CGRect(
       x: (width - avatarSize) * 0.5, y: headerHeight + 30.0, width: avatarSize, height: avatarSize)
     profileAvatarView.layer.cornerRadius = avatarSize * 0.5
-    profileAvatarImageView.frame = profileAvatarView.bounds
-    profileAvatarFallbackIconView.frame = profileAvatarView.bounds.insetBy(dx: 30.0, dy: 30.0)
-    profileAvatarFallbackLabel.frame = profileAvatarView.bounds
+    profileAvatarNode.frame = profileAvatarView.bounds
     let onlineDotSize: CGFloat = 20.0
     profileOnlineDotView.frame = CGRect(
       x: profileAvatarView.bounds.width - onlineDotSize - 4.0,
@@ -3694,7 +4249,7 @@ public final class ChatMainView: UIView,
   private func applyTheme() {
     let text = appearance.textColorThem
     let secondary = appearance.timeColorThem.withAlphaComponent(0.85)
-    let chatBackground = appearance.wallpaperGradient.first ?? UIColor.black
+    let chatBackground = appearance.wallpaperBase
     let isDarkTheme = appearance.isDark
     let profileBackground = isDarkTheme ? Self.themeDarkBg : Self.themeLightBg
     let profileCardBg = isDarkTheme ? Self.themeDarkCard : Self.themeLightCard
@@ -3707,20 +4262,17 @@ public final class ChatMainView: UIView,
       ? UIColor(white: 1.0, alpha: 0.06) : UIColor(white: 0.0, alpha: 0.04)
 
     backgroundColor = .clear
-    headerMaskBlurView.effect =
-      UIBlurEffect(style: isDarkTheme ? .systemThickMaterialDark : .systemThickMaterialLight)
-    headerMaskOverlayView.backgroundColor =
-      chatBackground.withAlphaComponent(isDarkTheme ? 0.78 : 0.70)
-    rootWallpaperLayer.isHidden = appearance.backgroundMode == "transparent"
-    rootWallpaperLayer.colors = appearance.wallpaperGradient.map(\.cgColor)
-    rootWallpaperLayer.startPoint = CGPoint(x: 0.0, y: 0.0)
-    rootWallpaperLayer.endPoint = CGPoint(x: 1.0, y: 1.0)
-    rootWallpaperLayer.opacity = Float(max(0.0, min(1.0, appearance.wallpaperOpacity)))
-    backGlassView.contentView.backgroundColor = chatBackground.withAlphaComponent(0.10)
+    // Gradient, pattern, mask and raster all live in the wallpaper view now.
+    wallpaperView.apply(appearance)
+    // Glass contentViews stay clear — system light/dark tint is on UIGlassEffect / mask only.
+    // Do NOT use wallpaper or bubble colors here (that recolored chrome with list content).
+    backGlassView.contentView.backgroundColor = .clear
     titleGlassView.contentView.backgroundColor = .clear
-    avatarGlassView.contentView.backgroundColor = appearance.bubbleThemColor.withAlphaComponent(0.22)
-    menuGlassView.contentView.backgroundColor = chatBackground.withAlphaComponent(0.10)
-    savedSearchCancelGlassView.contentView.backgroundColor = chatBackground.withAlphaComponent(0.10)
+    avatarGlassView.contentView.backgroundColor = .clear
+    menuGlassView.contentView.backgroundColor = .clear
+    savedSearchCancelGlassView.contentView.backgroundColor = .clear
+    rightActionsGlassView.contentView.backgroundColor = .clear
+    // Glass chips: system style. Mask: chat-theme darkness + thick blur + pure black/tint.
     refreshHeaderGlass()
 
     profileHeaderContainer.backgroundColor = .clear
@@ -3731,7 +4283,11 @@ public final class ChatMainView: UIView,
     profileBackGlassView.contentView.backgroundColor = profileCardBg.withAlphaComponent(0.68)
     profileMenuGlassView.contentView.backgroundColor = profileCardBg.withAlphaComponent(0.68)
 
-    backButton.tintColor = text
+    if selectionModeActive, selectionShowsClearChat {
+      backButton.tintColor = .systemRed
+    } else {
+      backButton.tintColor = text
+    }
     updateBackButtonContent()
     menuButton.tintColor =
       headerMode == .savedMessages
@@ -3751,12 +4307,16 @@ public final class ChatMainView: UIView,
     [callButton, videoCallButton, historyButton, newChatButton].forEach { btn in
       btn.tintColor = actionTint
     }
+    // Selection Done is a filled blue circle with white check — never inherit text tint.
+    applySelectionDoneBlueTint()
     
     chatTitleLabel.textColor = text
     profileTitleLabel.textColor = text
     chatSubtitleLabel.textColor = secondary
     profileSubtitleLabel.textColor = secondary
-    avatarFallbackIconView.tintColor = .white
+    selectionTitleLabel.textColor = text
+    // Counter sits beside "Selected" — same weight/color for a single reading unit.
+    selectionCountLabel.textColor = text
     pinnedBannerView.applyTheme(
       textColor: text,
       surfaceColor: chatBackground,
@@ -3775,31 +4335,16 @@ public final class ChatMainView: UIView,
     agentScrollView.backgroundColor = profileBackground
     agentContentView.backgroundColor = profileBackground
     applyProfileWallpaperAppearance()
-    profileAvatarView.backgroundColor = profileCardBg
-    profileAvatarFallbackIconView.tintColor = text
-    let showsProfilePresence = shouldShowDirectPresence()
-    profileOnlineDotView.isHidden = !showsProfilePresence
-    profileOnlineDotView.backgroundColor =
-      showsProfilePresence && isOnline
-      ? UIColor(red: 83.0 / 255.0, green: 224.0 / 255.0, blue: 138.0 / 255.0, alpha: 1.0)
-      : appearance.timeColorThem.withAlphaComponent(0.32)
-    profileOnlineDotView.layer.borderColor = profileBackground.cgColor
+    profileAvatarView.backgroundColor = .clear
     let profileGoldColor = UIColor(red: 244 / 255, green: 182 / 255, blue: 53 / 255, alpha: 1)
     profileNameLabel.textColor = bridgeProvider.isEmpty ? text : profileGoldColor
-    if !bridgeProvider.isEmpty {
-      profileHandleLabel.textColor = profileGoldColor.withAlphaComponent(0.92)
-    } else if showsProfilePresence && isOnline {
-      profileHandleLabel.textColor =
-        UIColor(red: 83.0 / 255.0, green: 224.0 / 255.0, blue: 138.0 / 255.0, alpha: 1.0)
-    } else {
-      profileHandleLabel.textColor = secondary
-    }
+    applyPresenceTheme()
     profileBioLabel.textColor = secondary
 
-    profileMuteButton.applyTheme(foreground: text, background: actionBg)
-    profileSearchButton.applyTheme(foreground: text, background: actionBg)
-    profileAudioCallButton.applyTheme(foreground: text, background: actionBg)
-    profileVideoCallButton.applyTheme(foreground: text, background: actionBg)
+    profileMuteButton.applyTheme(foreground: text, background: actionBg, isDark: isDarkTheme)
+    profileSearchButton.applyTheme(foreground: text, background: actionBg, isDark: isDarkTheme)
+    profileAudioCallButton.applyTheme(foreground: text, background: actionBg, isDark: isDarkTheme)
+    profileVideoCallButton.applyTheme(foreground: text, background: actionBg, isDark: isDarkTheme)
 
     profileIdentityCard.backgroundColor = profileCardBg
     profileUsernameRow.applyTheme(
@@ -3837,6 +4382,29 @@ public final class ChatMainView: UIView,
     )
   }
 
+  /// Presence-only styling (dot, border, handle color) — avoids full glass rebuilds on online/last-seen.
+  private func applyPresenceTheme() {
+    let secondary = appearance.timeColorThem.withAlphaComponent(0.85)
+    let isDarkTheme = appearance.isDark
+    let profileBackground = isDarkTheme ? Self.themeDarkBg : Self.themeLightBg
+    let showsProfilePresence = shouldShowDirectPresence()
+    profileOnlineDotView.isHidden = !showsProfilePresence
+    profileOnlineDotView.backgroundColor =
+      showsProfilePresence && isOnline
+      ? UIColor(red: 83.0 / 255.0, green: 224.0 / 255.0, blue: 138.0 / 255.0, alpha: 1.0)
+      : appearance.timeColorThem.withAlphaComponent(0.32)
+    profileOnlineDotView.layer.borderColor = profileBackground.cgColor
+    let profileGoldColor = UIColor(red: 244 / 255, green: 182 / 255, blue: 53 / 255, alpha: 1)
+    if !bridgeProvider.isEmpty {
+      profileHandleLabel.textColor = profileGoldColor.withAlphaComponent(0.92)
+    } else if showsProfilePresence && isOnline {
+      profileHandleLabel.textColor =
+        UIColor(red: 83.0 / 255.0, green: 224.0 / 255.0, blue: 138.0 / 255.0, alpha: 1.0)
+    } else {
+      profileHandleLabel.textColor = secondary
+    }
+  }
+
   private func applyProfileWallpaperAppearance() {
     profileWallpaperLayer.colors = nil
     profileWallpaperLayer.locations = nil
@@ -3850,20 +4418,24 @@ public final class ChatMainView: UIView,
     profileWallpaperPatternMaskLayer.contents = nil
   }
 
-  private func resolvedWallpaperMaskImage(for key: String) -> CGImage? {
-    ChatWallpaperMaskStore.image(
-      forKey: key,
-      bundles: [Bundle.main, Bundle(for: ChatMainView.self), Bundle(for: ChatListView.self)]
-    )
-  }
 
   private func updateHeaderTexts() {
-    // The header title is always the plain contact/agent name — like any other DM, no
-    // model picker. Model/thinking/speed selection lives in the run-options surface, not
-    // here; the header's only job is to say who this chat is with and what's happening.
+    // Selection owns the title glass ("Select messages" / "Selected N").
+    // Don't let Ready/typing presence rewrite the header mid-select.
+    if selectionModeActive {
+      updateSelectionTitleContent(count: selectionCount, animated: false)
+      return
+    }
+    let bridgeHeaderConfiguration = resolvedBridgeHeaderConfiguration()
+    let bridgeConfigurationSubtitle = activeBridgeConfigurationSubtitle(
+      bridgeHeaderConfiguration)
+    // The primary line is the stable agent identity. Model + effort + repository live
+    // together below it and never compete with an asynchronously-updated chat topic.
     let resolvedTitle: String =
       if headerMode == .savedMessages {
         chatTitleText.isEmpty ? "Saved Messages" : chatTitleText
+      } else if !isGroupOrChannel, !bridgeProvider.isEmpty {
+        AgentBridgeSelectionStore.defaultModelTitle(provider: bridgeProvider)
       } else {
         chatTitleText.isEmpty ? "Chat" : chatTitleText
       }
@@ -3871,24 +4443,24 @@ public final class ChatMainView: UIView,
     // agent is blocked on the user, which is the most actionable thing to surface.
     let resolvedApproval =
       (!bridgeProvider.isEmpty && agentAwaitingApproval) ? "Waiting for approval" : nil
-    let resolvedAgentProgress = resolvedAgentProgressSubtitle()
-    // Idle bridge chats name the session this thread is on (the History panel's title
-    // for it) so the user knows where they are; only a truly fresh thread — no session
-    // loaded, resumed, or live-tailed — falls back to the "Start session" action. Both
-    // double as the entry point into the same history sheet the live/approval states
-    // open on tap (see handleTitlePressed) — there's no separate "device connected"
-    // read anymore, the leading dot already carries that as a color. While a run is
-    // active this branch never wins: the live agent-progress subtitle above it renders
-    // the working payload (Thinking / Reading …) as before.
-    let trimmedSessionTopic =
-      (bridgeSessionTopic ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    let bridgeIdleAction: String? =
-      (!bridgeProvider.isEmpty && headerMode != .savedMessages)
-      ? (trimmedSessionTopic.isEmpty ? "Start session" : trimmedSessionTopic)
-      : nil
+    // The built-in VibeAgent transport owns a compact canonical activity state.
+    // Its detailed progress-node label stays in the transcript and must never
+    // replace Thinking/Working/Typing/Ready in the header.
+    let resolvedAgentProgress =
+      builtInAgentChatMode ? nil : resolvedAgentProgressSubtitle()
+    // A History pick may briefly have no session metadata. Show Loading only during
+    // that explicit fetch; once metadata arrives, model/repo replaces it—never topic.
+    let historySessionLoading = chatListView.isBridgeHistorySessionLoading()
+    let bridgeIdleAction: String? = {
+      guard !bridgeProvider.isEmpty, headerMode != .savedMessages else { return nil }
+      if historySessionLoading { return "Loading…" }
+      return bridgeConfigurationSubtitle.isEmpty ? "Start session" : nil
+    }()
     let resolvedDirectTyping = resolvedDirectTypingSubtitle()
     let groupTypingSubtitle = resolvedGroupTypingSubtitle()
-    let connectionSubtitle = defersEngineStateRefreshes ? nil : resolvedEngineConnectionSubtitle()
+    // Synced with Home principal: Connecting → Updating (spinner left + text).
+    let connectionPhase =
+      defersEngineStateRefreshes ? ConnectionHeaderPhase.none : resolvedConnectionHeaderPhase()
     let engineSubtitle = defersEngineStateRefreshes ? nil : resolvedEnginePresenceSubtitle()
     let trimmedSubtitle = chatSubtitleText.trimmingCharacters(in: .whitespacesAndNewlines)
     let subtitleLower = trimmedSubtitle.lowercased()
@@ -3897,21 +4469,33 @@ public final class ChatMainView: UIView,
       resolvedSubtitle = ""
     } else if let resolvedApproval {
       resolvedSubtitle = resolvedApproval
+    } else if connectionPhase == .connecting {
+      // Offline / socket down — never show "Updating" here.
+      resolvedSubtitle = "Connecting"
+    } else if connectionPhase == .updating,
+      resolvedAgentProgress == nil,
+      resolvedDirectTyping == nil,
+      groupTypingSubtitle == nil
+    {
+      // List/history catch-up while connected; yield to live typing/agent work.
+      resolvedSubtitle = "Updating"
     } else if isGroupOrChannel, let groupTypingSubtitle {
       // In a group the agents run in parallel, so surface "Claude & Codex typing…"
       // (all active participants) instead of a single agent's working/thinking label.
       // DMs keep the detailed agent-progress subtitle (the branch just below).
       resolvedSubtitle = groupTypingSubtitle
-    } else if !isGroupOrChannel, let resolvedAgentProgress {
-      resolvedSubtitle = resolvedAgentProgress
-    } else if let bridgeIdleAction {
+    } else if !isGroupOrChannel, !bridgeProvider.isEmpty, let bridgeIdleAction {
       resolvedSubtitle = bridgeIdleAction
+    } else if !isGroupOrChannel, !bridgeProvider.isEmpty {
+      resolvedSubtitle = bridgeConfigurationSubtitle
+    } else if !isGroupOrChannel, bridgeProvider.isEmpty, let resolvedAgentProgress {
+      resolvedSubtitle = resolvedAgentProgress
     } else if let resolvedDirectTyping {
       resolvedSubtitle = resolvedDirectTyping
     } else if let groupTypingSubtitle {
       resolvedSubtitle = groupTypingSubtitle
-    } else if let connectionSubtitle {
-      resolvedSubtitle = connectionSubtitle
+    } else if connectionPhase == .updating {
+      resolvedSubtitle = "Updating"
     } else if let engineSubtitle {
       resolvedSubtitle = engineSubtitle
     } else if isOnline && shouldShowDirectPresence()
@@ -3919,10 +4503,20 @@ public final class ChatMainView: UIView,
         || subtitleLower == "offline")
     {
       resolvedSubtitle = "online"
+    } else if isGroupOrChannel {
+      // At rest: singular/plural member/subscriber count. Typing + connection
+      // already took precedence above.
+      let countSubtitle = resolvedGroupMemberCountSubtitle()
+      if !trimmedSubtitle.isEmpty,
+        !Self.isGenericGroupRestSubtitle(trimmedSubtitle, isChannel: isChannel)
+      {
+        resolvedSubtitle = trimmedSubtitle
+      } else {
+        resolvedSubtitle = countSubtitle
+      }
     } else if trimmedSubtitle.isEmpty
       && headerMode != .savedMessages
       && bridgeProvider.isEmpty
-      && !isGroupOrChannel
       && !enginePeerUserId.isEmpty
     {
       // shouldShowDirectPresence() stays closed until the peer has actually replied — that
@@ -3934,41 +4528,81 @@ public final class ChatMainView: UIView,
       resolvedSubtitle = trimmedSubtitle
     }
 
-    chatTitleLabel.text = resolvedTitle
-    chatSubtitleLabel.text = resolvedSubtitle
-    chatSubtitleLabel.isHidden = resolvedSubtitle.isEmpty
-
-    // Bridge (agent) chats get a small leading dot: solid green/red for connected state,
-    // breathing while blocked on an approval (a static state that needs the user). Live
-    // agent progress instead shimmers the subtitle text itself (see
-    // setSubtitleTextShimmering) so the dot stays a steady "still connected" read.
-    // Everything here is a friendly state, never the raw tool/command payload the bridge
-    // streams internally.
-    let showsBridgeDot = !bridgeProvider.isEmpty && !resolvedSubtitle.isEmpty
-    chatSubtitleDotView.isHidden = !showsBridgeDot
-    if showsBridgeDot {
-      let dotColor: UIColor
-      if resolvedApproval != nil {
-        dotColor = UIColor(red: 1.0, green: 0.62, blue: 0.04, alpha: 1.0)
-      } else if resolvedAgentProgress != nil || AgentPairingService.lastConnected {
-        dotColor = UIColor(red: 83.0 / 255.0, green: 224.0 / 255.0, blue: 138.0 / 255.0, alpha: 1.0)
-      } else {
-        dotColor = UIColor(red: 1.0, green: 0.27, blue: 0.27, alpha: 1.0)
-      }
-      chatSubtitleDotView.backgroundColor = dotColor
-      setSubtitleDotPulsing(resolvedApproval != nil)
-    } else {
+    setTextIfNeeded(chatTitleLabel, resolvedTitle)
+    setTextIfNeeded(chatSubtitleLabel, resolvedSubtitle)
+    // Line spinner + Connecting/Updating text — no status dot on connection chrome.
+    // Spinner slot stays in layout (alpha only) so subtitle text doesn't jump.
+    let showsConnectionChrome =
+      connectionPhase != .none
+      && (resolvedSubtitle == "Connecting" || resolvedSubtitle == "Updating")
+    if showsConnectionChrome {
+      chatConnectingSpinner.color = appearance.timeColorThem.withAlphaComponent(0.9)
+      setHiddenIfNeeded(chatConnectingSpinner, false)
+      chatConnectingSpinner.startAnimating()
+      chatConnectingSpinner.alpha = 1
+      setHiddenIfNeeded(chatSubtitleLabel, false)
+      // Connection chrome: never show the bridge/status colored dot.
+      setHiddenIfNeeded(chatSubtitleDotView, true)
       setSubtitleDotPulsing(false)
+    } else {
+      chatConnectingSpinner.stopAnimating()
+      // Collapse the slot: an invisible spinner kept every subtitle indented
+      // 15pt off the title's leading edge. The small text shift when
+      // Connecting chrome appears is the lesser evil.
+      setHiddenIfNeeded(chatConnectingSpinner, true)
+      chatConnectingSpinner.alpha = 0
+      setHiddenIfNeeded(chatSubtitleLabel, resolvedSubtitle.isEmpty)
     }
-    // Groups shimmer on the named typing label (their live signal); DMs on agent progress.
-    setSubtitleTextShimmering(
-      isGroupOrChannel ? groupTypingSubtitle != nil : resolvedAgentProgress != nil)
 
-    chatHeaderStack.spacing = resolvedSubtitle.isEmpty ? 0.0 : -1.0
-    profileTitleLabel.text = profileNameText.isEmpty ? resolvedTitle : profileNameText
-    profileSubtitleLabel.text = isGroupOrChannel ? "Group Profile" : "Profile"
-    profileSubtitleLabel.isHidden =
-      profileSubtitleLabel.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? false
+    let showsStableBridgeConfiguration =
+      !isGroupOrChannel && !bridgeProvider.isEmpty && resolvedApproval == nil
+        && !showsConnectionChrome && !bridgeConfigurationSubtitle.isEmpty
+        && resolvedSubtitle == bridgeConfigurationSubtitle
+    // The stable configuration matches the local CLI header and needs neither a status
+    // dot nor shimmer, whether the session is active or idle. Approval/loading chrome
+    // remains visually distinct.
+    let showsBridgeDot =
+      !showsConnectionChrome && !bridgeProvider.isEmpty && !resolvedSubtitle.isEmpty
+        && !showsStableBridgeConfiguration
+    if !showsConnectionChrome {
+      setHiddenIfNeeded(chatSubtitleDotView, !showsBridgeDot)
+      if showsBridgeDot {
+        let dotColor: UIColor
+        if resolvedApproval != nil {
+          dotColor = UIColor(red: 1.0, green: 0.62, blue: 0.04, alpha: 1.0)
+        } else if resolvedAgentProgress != nil || AgentPairingService.lastConnected {
+          dotColor = UIColor(red: 83.0 / 255.0, green: 224.0 / 255.0, blue: 138.0 / 255.0, alpha: 1.0)
+        } else {
+          dotColor = UIColor(red: 1.0, green: 0.27, blue: 0.27, alpha: 1.0)
+        }
+        chatSubtitleDotView.backgroundColor = dotColor
+        setSubtitleDotPulsing(resolvedApproval != nil)
+      } else {
+        setSubtitleDotPulsing(false)
+      }
+    }
+    // A direct bridge header is deliberately static. Group typing remains animated.
+    setSubtitleTextShimmering(isGroupOrChannel && groupTypingSubtitle != nil)
+
+    setFontIfNeeded(
+      chatSubtitleLabel,
+      showsStableBridgeConfiguration
+        ? UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        : UIFont.systemFont(ofSize: 12, weight: .medium))
+
+    let headerStackSpacing: CGFloat = resolvedSubtitle.isEmpty ? 0.0 : -1.0
+    if chatHeaderStack.spacing != headerStackSpacing {
+      chatHeaderStack.spacing = headerStackSpacing
+    }
+    setTextIfNeeded(profileTitleLabel, profileNameText.isEmpty ? resolvedTitle : profileNameText)
+    let profileSubtitle =
+      isGroupOrChannel
+      ? (isChannel ? "Channel Profile" : "Group Profile")
+      : "Profile"
+    setTextIfNeeded(profileSubtitleLabel, profileSubtitle)
+    setHiddenIfNeeded(
+      profileSubtitleLabel,
+      profileSubtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     chatSubtitleLabel.textColor =
       {
         if headerMode == .savedMessages {
@@ -3976,6 +4610,9 @@ public final class ChatMainView: UIView,
         }
         if resolvedApproval != nil {
           return UIColor(red: 1.0, green: 0.62, blue: 0.04, alpha: 1.0)
+        }
+        if showsStableBridgeConfiguration {
+          return appearance.timeColorThem.withAlphaComponent(0.85)
         }
         // Red/green is reserved for an actually-live session (progress streaming in) —
         // the idle "Start session" label and everything else below stays plain text, no
@@ -3987,18 +4624,132 @@ public final class ChatMainView: UIView,
         }
         if resolvedDirectTyping != nil
           || groupTypingSubtitle != nil
-          || (connectionSubtitle == nil && bridgeIdleAction == nil && isOnline && shouldShowDirectPresence())
+          || (bridgeIdleAction == nil && isOnline && shouldShowDirectPresence())
         {
           return UIColor(red: 83.0 / 255.0, green: 224.0 / 255.0, blue: 138.0 / 255.0, alpha: 1.0)
         }
         if bridgeIdleAction != nil, resolvedSubtitle == bridgeIdleAction {
           return appearance.timeColorThem.withAlphaComponent(0.85)
         }
-        if connectionSubtitle != nil {
-          return appearance.textColorThem.withAlphaComponent(0.9)
+        if showsConnectionChrome {
+          return appearance.timeColorThem.withAlphaComponent(0.9)
         }
         return appearance.timeColorThem.withAlphaComponent(0.85)
       }()
+    if showsConnectionChrome {
+      chatConnectingSpinner.color = chatSubtitleLabel.textColor
+    }
+  }
+
+  private func resolvedBridgeHeaderConfiguration() -> (
+    modelLabel: String?, effortLabel: String?, status: String?, repoLabel: String?
+  ) {
+    guard !bridgeProvider.isEmpty, headerMode != .savedMessages else {
+      return (nil, nil, nil, nil)
+    }
+    let visible = chatListView.visibleBridgeRunConfiguration(provider: bridgeProvider)
+    let historyScoped = chatListView.bridgeHistorySessionId() != nil
+    let options = AgentBridgeSelectionStore.selectedRunOptions(provider: bridgeProvider)
+    let modelCandidates: [String?] = historyScoped
+      ? [bridgeSessionModel, visible.model]
+      : [visible.model, options.model]
+    let concreteModel = modelCandidates.lazy.compactMap(concreteBridgeModel).first
+    if let concreteModel {
+      bridgeLastKnownRealModel = concreteModel
+    }
+    let model = concreteModel ?? bridgeLastKnownRealModel
+    let effort: String? = {
+      if historyScoped { return bridgeSessionReasoningEffort ?? visible.reasoningEffort }
+      if let reported = visible.reasoningEffort { return reported }
+      return AgentBridgeRunOptions.effectiveEffort(
+        provider: bridgeProvider,
+        intelligence: options.intelligence,
+        speed: options.speed
+      )
+    }()
+    let modelLabel: String? = model.map { concreteModel in
+      var label = AgentBridgeSelectionStore.modelTitle(
+        provider: bridgeProvider, model: concreteModel)
+      if bridgeProvider == "claude", label.lowercased().hasPrefix("claude ") {
+        label = String(label.dropFirst("Claude ".count))
+      }
+      return label
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .replacingOccurrences(of: " ", with: "-")
+    }
+    let effortLabel = effort
+      .flatMap(AgentBridgeIntelligenceLevel.fromProviderEffort)
+      .map { level in (level == .extraHigh ? "xhigh" : level.title.lowercased()) }
+
+    let selectedRepo = AgentBridgeSelectionStore.selectedRepository(chatId: engineChatId)
+    let repoName = historyScoped
+      ? firstNonEmptyHeaderValue(bridgeSessionProjectName, visible.repoName, selectedRepo?.name)
+      : firstNonEmptyHeaderValue(visible.repoName, selectedRepo?.name)
+    let cwd = historyScoped
+      ? firstNonEmptyHeaderValue(bridgeSessionProjectPath, visible.cwd, selectedRepo?.cwd, selectedRepo?.path)
+      : firstNonEmptyHeaderValue(visible.cwd, selectedRepo?.cwd, selectedRepo?.path)
+    let repoLabel = compactBridgeRepositoryLabel(repoName: repoName, cwd: cwd)
+    return (modelLabel, effortLabel, visible.status, repoLabel)
+  }
+
+  private func activeBridgeConfigurationSubtitle(
+    _ configuration: (
+      modelLabel: String?, effortLabel: String?, status: String?, repoLabel: String?
+    )
+  ) -> String {
+    let primary = [configuration.modelLabel, configuration.effortLabel]
+      .compactMap { value -> String? in
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+      }
+      .joined(separator: " ")
+    let repo = configuration.repoLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !primary.isEmpty && !repo.isEmpty { return "\(primary) · \(repo)" }
+    if !primary.isEmpty { return primary }
+    if !repo.isEmpty { return repo }
+    return ""
+  }
+
+  /// Provider labels are identity fallbacks, not model ids. Treating one as a model
+  /// lets a sparse late snapshot regress `opus-4.8 max · ~/Vibe` back to `claude max`.
+  private func concreteBridgeModel(_ rawValue: String?) -> String? {
+    let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !value.isEmpty else { return nil }
+    let normalized = value.lowercased()
+    let providerFallback = AgentBridgeSelectionStore.defaultModelTitle(provider: bridgeProvider)
+      .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard normalized != bridgeProvider.lowercased(), normalized != providerFallback,
+      normalized != "default", normalized != "auto"
+    else {
+      return nil
+    }
+    return value
+  }
+
+  private func firstNonEmptyHeaderValue(_ values: String?...) -> String? {
+    for value in values {
+      let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      if !trimmed.isEmpty { return trimmed }
+    }
+    return nil
+  }
+
+  private func compactBridgeRepositoryLabel(repoName: String?, cwd: String?) -> String? {
+    let path = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let home = NSHomeDirectory().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    if !path.isEmpty {
+      let normalized = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+      if normalized == home { return "~" }
+      if normalized.hasPrefix(home + "/") {
+        return "~/" + String(normalized.dropFirst(home.count + 1))
+      }
+    }
+    let name = repoName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !name.isEmpty { return "~/\(name)" }
+    guard !path.isEmpty else { return nil }
+    let leaf = URL(fileURLWithPath: path).lastPathComponent
+    return leaf.isEmpty ? path : leaf
   }
 
   /// Drives the header's leading status dot: a soft breathing opacity loop while the
@@ -4119,11 +4870,7 @@ public final class ChatMainView: UIView,
     let resolvedTitle = chatTitleText.isEmpty ? "Chat" : chatTitleText
     profileNameLabel.text = profileNameText.isEmpty ? resolvedTitle : profileNameText
     if isGroupOrChannel {
-      let fallbackGroupHandle: String = {
-        let count = resolvedGroupMemberCount()
-        if count > 0 { return "\(count) members" }
-        return "group chat"
-      }()
+      let fallbackGroupHandle = resolvedGroupMemberCountSubtitle()
       profileHandleLabel.text = profileHandleText.isEmpty ? fallbackGroupHandle : profileHandleText
     } else {
       let fallbackHandle =
@@ -4141,7 +4888,7 @@ public final class ChatMainView: UIView,
     if isGroupOrChannel {
       let showsAgentRow = standaloneProfileMode && isGroupOrChannel
       profileUsernameRow.configure(
-        title: "Members",
+        title: isChannel ? "Subscribers" : "Members",
         subtitle: resolvedGroupMembersRowSubtitle(),
         titleColor: appearance.bubbleMeGradient.last ?? appearance.textColorMe,
         showsSeparator: true,
@@ -4233,6 +4980,27 @@ public final class ChatMainView: UIView,
     return Set(groupMemberOrder + groupTypingUserIds.map { $0.uppercased() }).count
   }
 
+  /// Singular/plural rest subtitle for groups/channels.
+  private func resolvedGroupMemberCountSubtitle() -> String {
+    let count = resolvedGroupMemberCount()
+    if isChannel {
+      if count == 1 { return "1 subscriber" }
+      return "\(count) subscribers"
+    }
+    if count == 1 { return "1 member" }
+    return "\(count) members"
+  }
+
+  /// Host may seed a generic "channel"/"group" label; prefer live count instead.
+  private static func isGenericGroupRestSubtitle(_ text: String, isChannel: Bool) -> Bool {
+    let lower = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if lower.isEmpty { return true }
+    if isChannel {
+      return lower == "channel" || lower == "subscribers" || lower == "0 subscribers"
+    }
+    return lower == "group" || lower == "group chat" || lower == "members" || lower == "0 members"
+  }
+
   private func resolvedGroupMemberDisplayName(_ normalizedUserId: String) -> String {
     if normalizedUserId.starts(with: "00000000-0000-0000-0000-000000000001")
       || normalizedUserId == "SYSTEM"
@@ -4256,32 +5024,35 @@ public final class ChatMainView: UIView,
   private func resolvedGroupTypingSubtitle() -> String? {
     let normalizedTypingUsers = Array(Set(groupTypingUserIds.map { $0.uppercased() }))
     guard !normalizedTypingUsers.isEmpty else { return nil }
-    // Name the typers (Claude / Codex / people) instead of a bare "typing…", so a
-    // group where both agents are running in parallel reads "Claude & Codex typing…".
-    // An agent typer with an explicitly picked model shows it ("Claude · Opus 4.8").
+    // Keep the subtitle short and STABLE: first names only, in a fixed provider order
+    // (Claude, Codex, Grok, Agy, then humans alphabetically). No model suffix here —
+    // during a fan-out the typing set changes constantly, and a label that swaps
+    // content/width on every change reads as flicker, not status.
+    // 3+ typers → "Claude, Codex +2 typing…".
     let names: [String] =
       normalizedTypingUsers
-      .compactMap { id -> String? in
-        let name = groupMemberDisplayNameByUserId[id]?
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let name, !name.isEmpty else { return nil }
-        let provider: String? =
+      .compactMap { id -> (rank: Int, name: String)? in
+        var name =
+          groupMemberDisplayNameByUserId[id]?
+          .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if name.isEmpty {
+          name = resolvedGroupMemberDisplayName(id)
+        }
+        guard !name.isEmpty else { return nil }
+        // Short display: first token only ("Claude Code" → "Claude").
+        let shortName = name.split(separator: " ").first.map(String.init) ?? name
+        let rank: Int =
           switch id {
-          case "11111111-1111-1111-1111-111111111111": "claude"
-          case "22222222-2222-2222-2222-222222222222": "codex"
-          case "33333333-3333-3333-3333-333333333333": "grok"
-          default: nil
-        }
-        if let provider,
-          let model = AgentBridgeSelectionStore.selectedRunOptions(provider: provider).model,
-          let title = AgentBridgeSelectionStore.modelChoices(provider: provider)
-            .first(where: { $0.value == model })?.title
-        {
-          return "\(name) · \(title)"
-        }
-        return name
+          case "11111111-1111-1111-1111-111111111111": 0  // claude
+          case "22222222-2222-2222-2222-222222222222": 1  // codex
+          case "33333333-3333-3333-3333-333333333333": 2  // grok
+          case "44444444-4444-4444-4444-444444444444": 3  // agy
+          default: 4
+          }
+        return (rank, shortName)
       }
-      .sorted()
+      .sorted { $0.rank != $1.rank ? $0.rank < $1.rank : $0.name < $1.name }
+      .map(\.name)
 
     switch names.count {
     case 0:
@@ -4291,6 +5062,7 @@ public final class ChatMainView: UIView,
     case 2:
       return "\(names[0]) & \(names[1]) typing…"
     default:
+      // Cap at two named agents; remainder as +N.
       return "\(names[0]), \(names[1]) +\(names.count - 2) typing…"
     }
   }
@@ -4345,12 +5117,19 @@ public final class ChatMainView: UIView,
     }
     let labels = orderedUserIds.map { resolvedGroupMemberDisplayName($0) }
     let totalCount = max(resolvedGroupMemberCount(), labels.count)
+    let countLabel: String = {
+      if isChannel {
+        return totalCount == 1 ? "1 subscriber" : "\(totalCount) subscribers"
+      }
+      return totalCount == 1 ? "1 member" : "\(totalCount) members"
+    }()
     guard !labels.isEmpty else {
-      return totalCount > 0 ? "\(totalCount) members" : "No members"
+      if totalCount > 0 { return countLabel }
+      return isChannel ? "No subscribers" : "No members"
     }
     let shown = labels.prefix(5)
     let suffix = labels.count > shown.count ? " +\(labels.count - shown.count)" : ""
-    return "\(totalCount) members: \(shown.joined(separator: ", "))\(suffix)"
+    return "\(countLabel): \(shown.joined(separator: ", "))\(suffix)"
   }
 
   private func shouldShowDirectPresence() -> Bool {
@@ -4408,219 +5187,98 @@ public final class ChatMainView: UIView,
     guard shouldShowDirectPresence() else { return nil }
     if isOnline { return "online" }
     guard let lastSeen = engineLastSeenTimestampMs else { return "last seen recently" }
-    return formatLastSeenSubtitle(lastSeen)
+    return Self.formatLastSeenSubtitle(lastSeen)
   }
 
-  private func resolvedEngineConnectionSubtitle() -> String? {
-    guard shouldShowDirectPresence() else { return nil }
-    if isOnline { return nil }
+  private enum ConnectionHeaderPhase {
+    case none
+    case connecting
+    case updating
+  }
 
+  /// Connecting only for network-off / blocked-to-server. Updating for history catch-up.
+  /// Bootstrap / mid-configure must not flash "Connecting".
+  private func resolvedConnectionHeaderPhase() -> ConnectionHeaderPhase {
+    if isOfflineOrBlockedToServerForHeader() {
+      return .connecting
+    }
+    if isHistoryOrCatchUpUpdating() {
+      return .updating
+    }
+    return .none
+  }
+
+  private func isEngineConnectedForHeader() -> Bool {
     let status = ChatEngine.shared.getStatus()
-    let connected = (status["connected"] as? Bool) == true
-    if connected { return nil }
-
+    if (status["connected"] as? Bool) == true { return true }
     let stateValue =
       (status["state"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased() ?? ""
-
-    if stateValue == "native-socket-open" || stateValue == "connected-shadow" {
-      return nil
-    }
-
-    switch stateValue {
-    case "connecting-native-presence":
-      return nil
-    case "configured", "configured-native-bootstrap", "native-config-missing":
-      return "updating..."
-    case "native-socket-closed", "disconnected":
-      return "waiting for network"
-    default:
-      if stateValue.contains("connect") { return nil }
-      if stateValue.contains("config") || stateValue.contains("bootstrap")
-        || stateValue.contains("update")
-      {
-        return "updating..."
-      }
-      return "connection issue"
-    }
+    return stateValue == "native-socket-open" || stateValue == "connected-shadow"
   }
 
-  private func formatLastSeenSubtitle(_ timestampMs: Int64) -> String {
+  private func isOfflineOrBlockedToServerForHeader() -> Bool {
+    if isEngineConnectedForHeader() { return false }
+    let status = ChatEngine.shared.getStatus()
+    let stateValue =
+      (status["state"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased() ?? ""
+    // A closed/configuring chat socket is not proof that the device cannot reach the
+    // service: Home may be healthy over HTTP/LAN while no chat topic currently demands
+    // a socket. Treating those bootstrap states as network failure made every otherwise
+    // healthy header say "Connecting". Only the transport's explicit offline verdict is
+    // allowed to replace presence; history catch-up has its separate "Updating" phase.
+    return stateValue == "offline"
+  }
+
+  /// True while history / session payload is applying for this chat (Updating only).
+  private func isHistoryOrCatchUpUpdating() -> Bool {
+    if chatListView.isBridgeHistorySessionLoading() { return true }
+    let chatId = engineChatId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !chatId.isEmpty, ChatEngine.shared.isChatHistoryLoading(chatId: chatId) {
+      return true
+    }
+    return isHistoryLoadingSpinnerActive()
+  }
+
+  private func isHistoryLoadingSpinnerActive() -> Bool {
+    false
+  }
+
+
+
+  /// Relative last-seen for the chat header. Clock time lives on messages, not here.
+  static func formatLastSeenSubtitle(_ timestampMs: Int64) -> String {
+    guard timestampMs > 0 else { return "last seen recently" }
     let date = Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000.0)
-    let calendar = Calendar.current
     let now = Date()
-    let timePart = Self.lastSeenTimeFormatter.string(from: date)
-    if calendar.isDateInToday(date) {
-      return "last seen at \(timePart)"
+    if now.timeIntervalSince(date) < 60 {
+      return "last seen just now"
     }
-    if calendar.isDateInYesterday(date) {
-      return "last seen yesterday at \(timePart)"
-    }
-
-    let startOfLastSeenDay = calendar.startOfDay(for: date)
-    let startOfToday = calendar.startOfDay(for: now)
-    let daysAgo =
-      calendar.dateComponents([.day], from: startOfLastSeenDay, to: startOfToday).day
-      ?? Int.max
-
-    if daysAgo < 7 {
-      let weekday = Self.lastSeenWeekdayFormatter.string(from: date).lowercased()
-      return "last seen \(weekday) at \(timePart)"
-    }
-    if daysAgo < 14 {
-      return "last seen last week"
-    }
-
-    let dayPart = Self.lastSeenDateFormatter.string(from: date)
-    return "last seen \(dayPart) at \(timePart)"
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .short
+    let relative = formatter.localizedString(for: date, relativeTo: now)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !relative.isEmpty else { return "last seen recently" }
+    return "last seen \(relative)"
   }
 
   private func updateAvatarViews() {
-    avatarResolveGeneration &+= 1
-    let generation = avatarResolveGeneration
-    avatarLoadTask?.cancel()
-    avatarLoadTask = nil
-
-    if headerMode == .savedMessages {
-      avatarImageView.isHidden = true
-      profileAvatarImageView.isHidden = true
-      avatarFallbackIconView.isHidden = false
-      avatarFallbackLabel.isHidden = true
-      profileAvatarFallbackIconView.isHidden = false
-      profileAvatarFallbackLabel.isHidden = true
-      
-      avatarFallbackIconView.image = UIImage(systemName: "bookmark.fill")
-      avatarFallbackIconView.tintColor = .white
-
-      profileAvatarFallbackIconView.image = UIImage(systemName: "bookmark.fill")
-      profileAvatarFallbackIconView.tintColor = .white
-
-      let gradientStart =
-        appearance.isDark
-        ? UIColor(red: 77 / 255, green: 217 / 255, blue: 229 / 255, alpha: 1)
-        : UIColor(red: 43 / 255, green: 165 / 255, blue: 181 / 255, alpha: 1)
-      let gradientEnd =
-        appearance.isDark
-        ? UIColor(red: 43 / 255, green: 165 / 255, blue: 181 / 255, alpha: 1)
-        : UIColor(red: 0 / 255, green: 122 / 255, blue: 124 / 255, alpha: 1)
-
-      // Header Gradient - Removed so header avatar stays translucent glass
-
-      // Profile Gradient
-      var pGradient = profileAvatarView.layer.sublayers?.first(where: { $0.name == "savedMessagesGradient" }) as? CAGradientLayer
-      if pGradient == nil {
-        pGradient = CAGradientLayer()
-        pGradient?.name = "savedMessagesGradient"
-        profileAvatarView.layer.insertSublayer(pGradient!, at: 0)
-      }
-      pGradient?.colors = [gradientStart.cgColor, gradientEnd.cgColor]
-      pGradient?.startPoint = CGPoint(x: 0.5, y: 0)
-      pGradient?.endPoint = CGPoint(x: 0.5, y: 1)
-      profileAvatarView.backgroundColor = .clear
-      return
-    }
-
-    // Reset default fallback icons for other cases
-    avatarGlassView.contentView.layer.sublayers?.removeAll(where: { $0.name == "savedMessagesGradient" })
-    avatarGlassView.contentView.layer.sublayers?.removeAll(where: { $0.name == "userAvatarGradient" })
-    profileAvatarView.layer.sublayers?.removeAll(where: { $0.name == "savedMessagesGradient" })
-    profileAvatarView.layer.sublayers?.removeAll(where: { $0.name == "userAvatarGradient" })
-
-    avatarFallbackIconView.isHidden = true
-    avatarFallbackLabel.isHidden = false
-    let initials = ChatHomeCardCell.getFallbackInitials(from: chatTitleLabel.text ?? "")
-    avatarFallbackLabel.text = initials
-    
-    applyUserAvatarGradient()
-
-    profileAvatarFallbackIconView.isHidden = true
-    profileAvatarFallbackLabel.isHidden = false
-    profileAvatarFallbackLabel.text = initials
-
-    let rawAvatar = avatarUri
-    let peerUserId = enginePeerUserIdRaw
-    let chatId = engineChatId
-    let preferPushAvatar = !isGroupOrChannel
-    if rawAvatar.isEmpty && (!preferPushAvatar || peerUserId.isEmpty) {
-      displayedAvatarUri = nil
-      avatarImageView.image = nil
-      profileAvatarImageView.image = nil
-      avatarImageView.isHidden = true
-      profileAvatarImageView.isHidden = true
-      showHeaderAvatarFallback(true)
-      return
-    }
-
-    let resolvedUri =
-      ChatAvatarURLResolver.resolve(
-        rawAvatar: rawAvatar,
-        peerUserId: peerUserId,
-        chatId: chatId,
-        preferPushAvatar: preferPushAvatar
-      ) ?? ""
-    startAvatarLoad(resolvedUri: resolvedUri, generation: generation)
-  }
-
-  private func applyUserAvatarGradient() {
-    let colors = userAvatarGradientColors()
-
-    // Header avatar: a filled gradient circle with initials — the SAME gradient
-    // source as the home cell / profile (`userAvatarGradientColors()` →
-    // `ChatProfileAppearanceStore.avatarColors`). Sits in the glass view's
-    // contentView (clipped to the circle by the glass view) so in the no-photo
-    // fallback the whole tile reads as gradient + letters, not a bare letter on
-    // glass. Hidden whenever a photo is showing (see `showHeaderAvatarFallback`)
-    // so a loaded picture keeps its clean glass ring instead of a gradient one.
-    var headerGradient =
-      avatarGlassView.contentView.layer.sublayers?.first(where: { $0.name == "userAvatarGradient" })
-      as? CAGradientLayer
-    if headerGradient == nil {
-      headerGradient = CAGradientLayer()
-      headerGradient?.name = "userAvatarGradient"
-      headerGradient?.masksToBounds = true
-      avatarGlassView.contentView.layer.insertSublayer(headerGradient!, at: 0)
-    }
-    headerGradient?.colors = [colors.0.cgColor, colors.1.cgColor]
-    headerGradient?.startPoint = CGPoint(x: 0.0, y: 0.0)
-    headerGradient?.endPoint = CGPoint(x: 1.0, y: 1.0)
-    // Inset to match avatarImageView's sizing (avatarButton.bounds.insetBy(dx: 4, dy: 4))
-    // so the gradient circle matches the photo size, not the full glass wrapper.
-    let insetBounds = avatarGlassView.contentView.bounds.insetBy(dx: 4.0, dy: 4.0)
-    headerGradient?.frame = insetBounds
-    headerGradient?.cornerRadius = insetBounds.height / 2.0
-    headerGradient?.isHidden = avatarFallbackLabel.isHidden
-    avatarGlassView.contentView.backgroundColor = .clear
-
-    var profileGradient =
-      profileAvatarView.layer.sublayers?.first(where: { $0.name == "userAvatarGradient" })
-      as? CAGradientLayer
-    if profileGradient == nil {
-      profileGradient = CAGradientLayer()
-      profileGradient?.name = "userAvatarGradient"
-      profileAvatarView.layer.insertSublayer(profileGradient!, at: 0)
-    }
-    profileGradient?.colors = [colors.0.cgColor, colors.1.cgColor]
-    profileGradient?.startPoint = CGPoint(x: 0.0, y: 0.0)
-    profileGradient?.endPoint = CGPoint(x: 1.0, y: 1.0)
-    profileGradient?.frame = profileAvatarView.bounds
-    profileAvatarView.backgroundColor = .clear
-  }
-
-  /// Toggle the no-photo fallback for the header + profile avatars as one unit.
-  /// Outside Saved Messages the fallback is ALWAYS gradient + initials — the
-  /// person glyph is never used — and the initials hide whenever a photo shows,
-  /// so an avatar is never a letter sitting on top of a picture.
-  private func showHeaderAvatarFallback(_ show: Bool) {
-    avatarFallbackIconView.isHidden = true
-    profileAvatarFallbackIconView.isHidden = true
-    avatarFallbackLabel.isHidden = !show
-    profileAvatarFallbackLabel.isHidden = !show
-    // Header gradient tile shows only in the no-photo fallback (behind the
-    // initials); a loaded photo hides it so the glass ring stays clean.
-    avatarGlassView.contentView.layer.sublayers?
-      .first(where: { $0.name == "userAvatarGradient" })?
-      .isHidden = !show
+    let descriptor = ChatAvatarDescriptor(
+      title: builtInAgentChatMode ? profileNameText : chatTitleText,
+      rawAvatarURI: avatarUri,
+      peerUserId: enginePeerUserIdRaw,
+      chatId: engineChatId,
+      kind: headerMode == .savedMessages ? .savedMessages : .standard,
+      isGroup: isGroupOrChannel,
+      members: groupAvatarMembers,
+      preferPushAvatar: !isGroupOrChannel,
+      gradientColors: headerMode == .savedMessages ? nil : userAvatarGradientColors()
+    )
+    avatarNode.configure(with: descriptor, isDark: appearance.isDark, renderingSide: 36)
+    profileAvatarNode.configure(with: descriptor, isDark: appearance.isDark, renderingSide: 118)
   }
 
   private static func color(fromHex hex: String) -> UIColor? {
@@ -4659,67 +5317,22 @@ public final class ChatMainView: UIView,
         return (startColor, endColor)
       }
     }
-    
+
     return ChatProfileAppearanceStore.avatarColors(
-      title: chatTitleLabel.text ?? "",
+      title: chatTitleText,
       peerUserId: enginePeerUserIdRaw,
       chatId: engineChatId
     )
   }
 
-  private func startAvatarLoad(resolvedUri: String, generation: UInt) {
-    guard avatarResolveGeneration == generation else { return }
-    guard !resolvedUri.isEmpty else {
-      displayedAvatarUri = nil
-      avatarImageView.image = nil
-      profileAvatarImageView.image = nil
-      avatarImageView.isHidden = true
-      profileAvatarImageView.isHidden = true
-      showHeaderAvatarFallback(true)
-      return
-    }
-
-    if let cached = ChatAvatarImageStore.cached(for: resolvedUri) {
-      displayedAvatarUri = resolvedUri
-      avatarImageView.image = cached
-      profileAvatarImageView.image = cached
-      avatarImageView.isHidden = false
-      profileAvatarImageView.isHidden = false
-      showHeaderAvatarFallback(false)
-      return
-    }
-
-    if displayedAvatarUri != resolvedUri {
-      // Keep gradient + initials up while the photo loads.
-      avatarImageView.image = nil
-      profileAvatarImageView.image = nil
-      avatarImageView.isHidden = true
-      profileAvatarImageView.isHidden = true
-      showHeaderAvatarFallback(true)
-    }
-
-    let task = Task { [weak self] in
-      let image = await ChatAvatarImageStore.load(from: resolvedUri)
-      guard !Task.isCancelled else { return }
-      await MainActor.run {
-        guard let self, self.avatarResolveGeneration == generation else { return }
-        self.avatarLoadTask = nil
-        guard let image else { return }
-        self.displayedAvatarUri = resolvedUri
-        self.avatarImageView.image = image
-        self.profileAvatarImageView.image = image
-        self.avatarImageView.isHidden = false
-        self.profileAvatarImageView.isHidden = false
-        self.showHeaderAvatarFallback(false)
-      }
-    }
-    avatarLoadTask = task
-  }
-
   // MARK: - In-place agent runtime host
 
-  private func applyPageState(animated: Bool, emitEvent: Bool) {
-    updateHeaderTexts()
+  /// `fromLayout` marks the call made by `layoutSubviews`: chrome is already laid out and
+  /// header text is owned by state setters, so re-running either would re-dirty this pass.
+  private func applyPageState(animated: Bool, emitEvent: Bool, fromLayout: Bool = false) {
+    if !fromLayout {
+      updateHeaderTexts()
+    }
 
     if standaloneProfileMode {
       currentPage = .profile
@@ -4739,7 +5352,7 @@ public final class ChatMainView: UIView,
       pinnedBannerView.alpha = 0.0
       inboxBannerView.alpha = 0.0
       avatarGlassView.alpha = 0.0
-      bringSubviewToFront(profileHeaderContainer)
+      bringToFrontIfNeeded(profileHeaderContainer)
       applyHeaderGlassMorph(chatFactor: 0.0)
       if emitEvent {
         onNativeEvent(["type": "mainPageChanged", "page": currentPage.rawValue])
@@ -4766,7 +5379,7 @@ public final class ChatMainView: UIView,
 
     let chatHeaderAlpha: CGFloat = isChat ? 1.0 : 0.0
     let profileHeaderAlpha: CGFloat = isChat ? 0.0 : 1.0
-    let avatarAlpha: CGFloat = (isChat && headerMode != .savedMessages) ? 1.0 : 0.0
+    let avatarAlpha: CGFloat = isChat ? 1.0 : 0.0
     let menuAlpha: CGFloat = (isChat && headerMode == .savedMessages) ? 1.0 : 0.0
     let chatHeaderTransform =
       isChat
@@ -4780,14 +5393,14 @@ public final class ChatMainView: UIView,
       profilePage.alpha = 1.0
       profilePage.isHidden = false
       profileHeaderContainer.isHidden = false
-      bringSubviewToFront(profileHeaderContainer)
+      bringToFrontIfNeeded(profileHeaderContainer)
     }
     if isAgent && agentPage.isHidden {
       agentPage.transform = agentOffscreenRight
       agentPage.alpha = 1.0
       agentPage.isHidden = false
       profileHeaderContainer.isHidden = false
-      bringSubviewToFront(profileHeaderContainer)
+      bringToFrontIfNeeded(profileHeaderContainer)
     }
 
     headerContainer.isUserInteractionEnabled = isChat
@@ -4800,11 +5413,13 @@ public final class ChatMainView: UIView,
     let agentTargetTransform = isAgent ? CGAffineTransform.identity : agentOffscreenRight
 
     let apply = {
-      self.layoutChrome()
+      if !fromLayout {
+        self.layoutChrome()
+      }
       if isChat {
-        self.bringSubviewToFront(self.headerContainer)
+        self.bringToFrontIfNeeded(self.headerContainer)
       } else {
-        self.bringSubviewToFront(self.profileHeaderContainer)
+        self.bringToFrontIfNeeded(self.profileHeaderContainer)
       }
       self.profilePage.transform = profileTargetTransform
       self.agentPage.transform = agentTargetTransform
@@ -4954,13 +5569,22 @@ public final class ChatMainView: UIView,
     return true
   }
 
-  func clearMessageSelection() {
-    chatListView.clearMessageSelection()
+  func clearMessageSelection(animated: Bool = true) {
+    chatListView.clearMessageSelection(animated: animated)
+  }
+
+  func applyPendingForwardDraft(title: String, preview: String) {
+    chatListView.applyPendingForwardDraft(title: title, preview: preview)
   }
 
   @objc private func handleBackPressed() {
     if selectionModeActive {
-      chatListView.clearMessageSelection()
+      if selectionShowsClearChat {
+        // Direct chat: left trash → functional Clear Chat (engine + server).
+        handleSelectionClearChatPressed()
+      } else {
+        chatListView.clearMessageSelection()
+      }
       return
     }
     if profileMembersNode.isPresented {
@@ -4977,7 +5601,7 @@ public final class ChatMainView: UIView,
 
   @objc private func handleAvatarPressed() {
     if selectionModeActive {
-      chatListView.clearMessageSelection()
+      // Avatar is inert in selection — Done (checkmark) or Cancel (X) exit mode.
       return
     }
     guard headerMode != .savedMessages else { return }
@@ -4985,30 +5609,70 @@ public final class ChatMainView: UIView,
     onNativeEvent(["type": "headerAvatarPressed"])
   }
 
-  /// Bridge chats repurpose the title/subtitle tap: instead of opening the profile (still
-  /// reachable via the avatar), it opens the session history sheet — live task or a picked
-  /// past session, or just a place to land when the header reads "Start session". Non-agent
-  /// chats keep the old behavior of the title opening the profile like the avatar does.
+  /// Bridge chats repurpose the title/subtitle tap for session history. The
+  /// built-in VibeAgent uses it for model selection. Avatar taps remain the
+  /// identity/profile route in both cases.
   @objc private func handleTitlePressed() {
     if selectionModeActive {
-      chatListView.clearMessageSelection()
       return
     }
     guard headerMode != .savedMessages else { return }
     guard currentPage == .chat else { return }
     if !bridgeProvider.isEmpty {
       onNativeEvent(["type": "agentSessionPressed", "provider": bridgeProvider])
+    } else if builtInAgentChatMode {
+      onNativeEvent(["type": "agentModelPressed"])
     } else {
       onNativeEvent(["type": "headerAvatarPressed"])
     }
   }
 
+  @objc private func handlePrimaryTrailingActionPressed() {
+    if ownedStandaloneAgentMode {
+      onNativeEvent(["type": "headerAvatarPressed"])
+    } else {
+      onNativeEvent(["type": "headerAudioCallPressed"])
+    }
+  }
+
   @objc private func handleHistoryPressed() {
-    chatListView.presentBridgeHistorySurface(provider: bridgeProvider)
+    // Built-in Vibe AI: conversation History (server + local chat ids).
+    if builtInAgentChatMode {
+      onNativeEvent(["type": "agentHistoryPressed"])
+      return
+    }
+    // Agent DM: single provider. Multi-agent group: pick among member agents first
+    // (or open the only one). History must open the report/session conversation.
+    if !bridgeProvider.isEmpty {
+      chatListView.presentBridgeHistorySurface(provider: bridgeProvider)
+      return
+    }
+    chatListView.presentGroupBridgeHistorySurface()
   }
 
   @objc private func handleNewChatPressed() {
+    // Built-in Vibe AI: start a blank conversation; prior chats stay in History.
+    if builtInAgentChatMode {
+      onNativeEvent(["type": "agentNewChatPressed"])
+      return
+    }
     chatListView.startNewBridgeSession()
+    // Drop the History-session title so the idle header returns to "Start session"
+    // instead of the previous pick's topic / "Loading…".
+    if bridgeSessionTopic != nil {
+      bridgeSessionTopic = nil
+    }
+    bridgeSessionModel = nil
+    bridgeLastKnownRealModel = nil
+    bridgeSessionReasoningEffort = nil
+    bridgeSessionProjectName = nil
+    bridgeSessionProjectPath = nil
+    updateHeaderTexts()
+    // A history session can be opened while the bridge-connect gate owns the input
+    // state. Starting a fresh session from that already-connected chat must restore
+    // the native composer; otherwise the view is left as an unusable blank surface.
+    chatListView.setInputBarEnabled(true)
+    chatListView.setNativeSendEnabled(true)
   }
 
   @objc private func handleMenuPressed() {
@@ -5106,33 +5770,6 @@ public final class ChatMainView: UIView,
     onNativeEvent(["type": "headerAgentPressed"])
   }
 
-  private func presentMembersPage() {
-    guard isGroupOrChannel else { return }
-    if currentPage != .profile {
-      currentPage = .profile
-      applyPageState(animated: true, emitEvent: false)
-    }
-
-    var seen = Set<String>()
-    var members: [ChatMainProfileMembersItem] = []
-    for rawId in groupMemberOrder {
-      let normalized = rawId.uppercased()
-      guard seen.insert(normalized).inserted else { continue }
-      let role = (groupMemberRoleByUserId[normalized] ?? "member").lowercased()
-      let isAdmin = role == "owner" || role == "admin"
-      members.append(
-        .init(
-          userId: normalized,
-          name: resolvedGroupMemberDisplayName(normalized),
-          roleLabel: role == "owner" ? "Owner" : (isAdmin ? "Admin" : "Member"),
-          isAdmin: isAdmin
-        )
-      )
-    }
-    profileMembersNode.setMembers(members)
-    setProfileMembersVisible(true, animated: true)
-    setNeedsLayout()
-  }
 
   // MARK: - Agent Config
 
@@ -5152,6 +5789,7 @@ public final class ChatMainView: UIView,
 
   func setIsGroupOrChannel(_ value: Bool) {
     isGroupOrChannel = value
+    if !value { isChannel = false }
     chatListView.setIsGroupOrChannel(value)
     refreshAgentCardVisibility()
     if !defersEngineStateRefreshes {
@@ -5162,6 +5800,23 @@ public final class ChatMainView: UIView,
     updateAvatarViews()
   }
 
+  func setChannelShareLink(_ value: String) {
+    chatListView.setChannelShareLink(value)
+  }
+
+  /// Broadcast channel vs multi-member group. Forwarded so History loading can
+  /// pick skeleton (channel) vs modern spinner (direct / group).
+  func setIsChannel(_ value: Bool) {
+    let next = value && isGroupOrChannel
+    let changed = isChannel != next
+    isChannel = next
+    chatListView.setIsChannel(next)
+    if changed {
+      updateHeaderTexts()
+      updateProfileTexts()
+    }
+  }
+
   private func getAgentDocuments() -> [(id: String, name: String, url: String)] {
     return profileFileItems.compactMap { item in
       let url = item.mediaUrl ?? ""
@@ -5170,12 +5825,6 @@ public final class ChatMainView: UIView,
       }
       return nil
     }
-  }
-
-  func setAgentConfig(_ config: [String: Any]?) {
-    let normalized = normalizedAgentConfig(config, fallbackChatId: engineChatId)
-    agentConfig = normalized
-    refreshAgentCardVisibility()
   }
 
   private func refreshAgentCardVisibility() {
@@ -5380,6 +6029,27 @@ public final class ChatMainView: UIView,
       hands.addLine(to: CGPoint(x: 34.95 * scale, y: 32.35 * scale))
       hands.addLine(to: CGPoint(x: 43.26 * scale, y: 38.72 * scale))
       cgContext.addPath(hands.cgPath)
+      cgContext.strokePath()
+    }.withRenderingMode(.alwaysTemplate)
+  }
+
+  /// Minimal two-stroke menu used for an owned agent's settings route. Drawn in
+  /// Core Graphics so it stays template-tintable and keeps true rounded 1.5pt
+  /// strokes instead of borrowing a three-line or filter-shaped SF Symbol.
+  private func createAgentSettingsMenuIcon() -> UIImage {
+    let size = CGSize(width: 22, height: 22)
+    let format = UIGraphicsImageRendererFormat()
+    format.opaque = false
+    format.scale = window?.screen.scale ?? traitCollection.displayScale
+    return UIGraphicsImageRenderer(size: size, format: format).image { context in
+      let cgContext = context.cgContext
+      cgContext.setStrokeColor(UIColor.black.cgColor)
+      cgContext.setLineWidth(1.5)
+      cgContext.setLineCap(.round)
+      cgContext.move(to: CGPoint(x: 3.0, y: 7.5))
+      cgContext.addLine(to: CGPoint(x: 19.0, y: 7.5))
+      cgContext.move(to: CGPoint(x: 3.0, y: 14.5))
+      cgContext.addLine(to: CGPoint(x: 19.0, y: 14.5))
       cgContext.strokePath()
     }.withRenderingMode(.alwaysTemplate)
   }

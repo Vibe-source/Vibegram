@@ -1,0 +1,18 @@
+{
+  "id": 80,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "View-once cover has no left-right sheen. Free-float particles wander with two-lobe motion and time-pulsed contrast; 360 larger orbs, not grain. Key-mask stream mode unchanged.",
+  "selector": "ios/ChatModule/ChatViewOnceShineCoverView.swift::ChatViewOnceShineCoverView",
+  "path": "ios/ChatModule/ChatViewOnceShineCoverView.swift",
+  "fqn": "ChatViewOnceShineCoverView",
+  "line": 37,
+  "anchor_hash": "7c3bf0c1b0522944aafced9134da6871afa32acf029e5f0b13eb428e5eb91923",
+  "branch": "main",
+  "commit": "976f6743c48673d437c1888db94b2627a35089b5",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787823382,
+  "updated_at": 1787823382
+}

@@ -1,0 +1,45 @@
+{
+  "session": "01a03eba-a137-78b2-a4e6-67b025875745",
+  "task": "fix the voice not einitlay o ope is closing its…",
+  "steps": [
+    {
+      "what": "Attachment send button active (accent) color when image is picked",
+      "id": "a",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Outgoing media insert: slide with list, no overlay sitting on top",
+      "id": "b",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Spinner centered on the image cell during send",
+      "id": "c",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Build and install Vibe",
+      "id": "d",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787761603
+}

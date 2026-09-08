@@ -1,0 +1,18 @@
+{
+  "id": 98,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "SwiftUI profile host must mount on first real layout, not at init. ChatProfileRootController builds ChatProfileMainView in its property initializer, so a synchronous mount lands at bounds .zero with no parent VC and no safe area — the nav bar and hero then re-lay out mid-push (the header shift). renderSwiftUIProfile now guards on non-zero bounds; layoutSubviews mounts and attaches.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787847763,
+  "updated_at": 1787847763
+}

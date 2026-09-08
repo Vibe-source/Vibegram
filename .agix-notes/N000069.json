@@ -1,0 +1,18 @@
+{
+  "id": 69,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "Video-note expand: snap layout+offset, spring-scale the circle from bottom-center. Size min(360, rowWidth-40). Collapse still clamp-only (N000057).",
+  "selector": "ios/ChatModule/ChatListView.swift::ChatListView.reloadAgentTurnStateRow",
+  "path": "ios/ChatModule/ChatListView.swift",
+  "fqn": "ChatListView.reloadAgentTurnStateRow",
+  "line": 14420,
+  "anchor_hash": "c634d2f41c319eaac770b8ada756635423f3d4220da272b7a481e35141d1bc02",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787764510,
+  "updated_at": 1787764510
+}

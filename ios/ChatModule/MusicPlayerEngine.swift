@@ -132,6 +132,20 @@ final class NativeMusicPlayerEngine: NSObject {
     }
   }
 
+  /// Cycles 1× → 1.5× → 2× → 1× (mirrors `VoiceBubblePlaybackCoordinator.cyclePlaybackRate`).
+  func cyclePlaybackRate() {
+    DispatchQueue.main.async {
+      let rates: [Double] = [1.0, 1.5, 2.0]
+      let index = rates.firstIndex(where: { abs($0 - self.playbackRate) < 0.05 }) ?? 0
+      let nextRate = rates[(index + 1) % rates.count]
+      self.playbackRate = nextRate
+      if self.isPlaying {
+        self.player?.rate = Float(nextRate)
+      }
+      self.publishState()
+    }
+  }
+
   func setQueueOrderMode(_ value: NativeMusicPlayerQueueOrderMode) {
     DispatchQueue.main.async {
       guard self.queueOrderMode != value else { return }
@@ -292,27 +306,10 @@ final class NativeMusicPlayerEngine: NSObject {
       }
       self.currentPositionMs = 0.0
       self.currentDurationMs = (track.durationSeconds ?? 0.0) * 1000.0
-
-      if self.store.hasLocalPlaybackFile(for: track) || self.resolveRemoteDownloadURL(for: track) == nil {
-        self.isPlaying = true
-        self.preparePlaybackForCurrentTrack()
-        return
-      }
-
-      self.isPlaying = false
-      self.publishState()
-      self.downloadTrack(track.toPayload()) { [weak self] result in
-        guard let self else { return }
-        DispatchQueue.main.async {
-          guard (result["success"] as? Bool) == true else {
-            self.publishState()
-            return
-          }
-          guard self.currentTrackId == track.trackId else { return }
-          self.isPlaying = true
-          self.preparePlaybackForCurrentTrack()
-        }
-      }
+      // Stream immediately when needed; auto-download / prefetch still run inside prepare.
+      // Waiting for cache completion would regress backend-stream-only tracks.
+      self.isPlaying = true
+      self.preparePlaybackForCurrentTrack()
     }
   }
 
@@ -348,6 +345,31 @@ final class NativeMusicPlayerEngine: NSObject {
     configureAudioSessionIfNeeded()
     cleanupPlayer()
 
+    // Backend /api/music/stream URLs sit behind api auth — AVPlayer can't attach the
+    // bearer, so resolve them to the public CDN/direct URL first (memoized per session).
+    if let videoId = ChatMusicStreamResolver.videoId(fromBackendStreamURL: resolvedURL) {
+      if let publicURL = ChatMusicStreamResolver.shared.cachedResolvedURL(forVideoId: videoId) {
+        attachPlayer(url: publicURL, track: track)
+        return
+      }
+      publishState()
+      ChatMusicStreamResolver.shared.resolve(
+        videoId: videoId,
+        headers: authHeadersProvider.headers()
+      ) { [weak self] publicURL in
+        guard let self,
+          self.currentTrackId == track.trackId,
+          self.currentSourceURLKey == sourceKey
+        else { return }
+        self.attachPlayer(url: publicURL ?? resolvedURL, track: track)
+      }
+      return
+    }
+
+    attachPlayer(url: resolvedURL, track: track)
+  }
+
+  private func attachPlayer(url resolvedURL: URL, track: NativeMusicPlayerTrack) {
     let item = AVPlayerItem(url: resolvedURL)
     let player = AVPlayer(playerItem: item)
     player.automaticallyWaitsToMinimizeStalling = true
@@ -547,11 +569,10 @@ final class NativeMusicPlayerEngine: NSObject {
     {
       return fileURL
     }
+    // Prefer direct preview/stream URLs, then backend /api/music/stream/:videoId.
+    // Both are also eligible for download + upcoming prefetch via resolveRemoteDownloadURL.
     if let remoteURL = resolveRemoteDownloadURL(for: track) {
       return remoteURL
-    }
-    if let fallback = resolveBackendStreamURL(for: track) {
-      return fallback
     }
     return nil
   }
@@ -563,14 +584,27 @@ final class NativeMusicPlayerEngine: NSObject {
     if let streamURL = resolveNetworkURL(from: track.streamURL) {
       return streamURL
     }
-    return nil
+    // Backend proxy is cacheable (auth headers applied in startDownload), not stream-only.
+    guard let backendURL = resolveBackendStreamURL(for: track) else { return nil }
+    // Prefer the already-resolved public URL: it has a real Content-Length for byte
+    // progress and survives the backend cache-fill failing (where /stream 500s).
+    if let videoId = ChatMusicStreamResolver.videoId(fromBackendStreamURL: backendURL),
+      let publicURL = ChatMusicStreamResolver.shared.cachedResolvedURL(forVideoId: videoId)
+    {
+      return publicURL
+    }
+    return backendURL
   }
 
   private func resolveBackendStreamURL(for track: NativeMusicPlayerTrack) -> URL? {
+    // Skip voice notes — they use local files and must not hit the music proxy.
+    if track.source == "chat-voice" { return nil }
     let candidate = track.videoId ?? track.id
     guard let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
       return nil
     }
+    // Message-id shaped track ids (UUIDs) are not YouTube video ids.
+    if value.count > 20, value.contains("-") { return nil }
     return URL(
       string: "https://api.vibegram.io/api/music/stream/\(value)")
   }
@@ -586,8 +620,17 @@ final class NativeMusicPlayerEngine: NSObject {
   private func startDownload(track: NativeMusicPlayerTrack, remoteURL: URL) {
     if downloadTasks[track.trackId] != nil { return }
     let destinationURL = store.cacheDestinationURL(for: track, remoteURL: remoteURL)
+    // Every re-download of a track the device already had went unexplained because nothing
+    // recorded WHY the store thought it had no file. `localURI` is what it believed it had.
+    NSLog(
+      "[MusicCache] DOWNLOAD trackId=%@ title=%@ remote=%@ localURI=%@",
+      track.trackId, track.title, remoteURL.absoluteString, track.localURI ?? "nil")
     var request = URLRequest(url: remoteURL)
+    let host = remoteURL.host?.lowercased() ?? ""
+    let isOwnHost = host == "vibegram.io" || host.hasSuffix(".vibegram.io")
     for (key, value) in authHeadersProvider.headers() {
+      // Never leak the API bearer to third-party/CDN hosts (Supabase, direct sources).
+      if key == "Authorization" && !isOwnHost { continue }
       request.setValue(value, forHTTPHeaderField: key)
     }
 
@@ -632,13 +675,36 @@ final class NativeMusicPlayerEngine: NSObject {
       downloadObservations[trackId] = nil
     }
 
+    let statusCode = (response as? HTTPURLResponse)?.statusCode
+    let httpFailed = statusCode.map { !((200..<300).contains($0)) } ?? false
+
     if let error {
       store.setDownloadProgress(trackId: trackId, progress: nil)
       resolvePendingDownloadCompletions(trackId: trackId, payload: [
         "success": false,
         "error": error.localizedDescription,
       ])
-      publishState()
+      // Keep streaming from the remote URL if this track is currently active.
+      if currentTrackId == trackId, isPlaying, player == nil || currentSourceURLKey != remoteURL.absoluteString {
+        preparePlaybackForCurrentTrack()
+      } else {
+        publishState()
+      }
+      return
+    }
+
+    if httpFailed {
+      store.setDownloadProgress(trackId: trackId, progress: nil)
+      resolvePendingDownloadCompletions(trackId: trackId, payload: [
+        "success": false,
+        "error": "http_\(statusCode ?? 0)",
+        "statusCode": statusCode as Any,
+      ])
+      if currentTrackId == trackId, isPlaying {
+        preparePlaybackForCurrentTrack()
+      } else {
+        publishState()
+      }
       return
     }
 
@@ -648,7 +714,11 @@ final class NativeMusicPlayerEngine: NSObject {
         "success": false,
         "error": "missing_temp_file",
       ])
-      publishState()
+      if currentTrackId == trackId, isPlaying {
+        preparePlaybackForCurrentTrack()
+      } else {
+        publishState()
+      }
       return
     }
 
@@ -661,17 +731,31 @@ final class NativeMusicPlayerEngine: NSObject {
         "success": true,
         "localUri": destinationURL.absoluteString,
         "remoteUrl": remoteURL.absoluteString,
-        "statusCode": (response as? HTTPURLResponse)?.statusCode as Any,
+        "statusCode": statusCode as Any,
         "track": updatedTrack?.toPayload() ?? NSNull(),
       ])
-      publishState()
+      // Prefer the newly cached file for the active track without interrupting mid-play.
+      if currentTrackId == trackId,
+        let track = store.getTrack(trackId: trackId) ?? updatedTrack,
+        let localURL = store.resolvedCachedFileURL(for: track),
+        currentSourceURLKey != localURL.absoluteString,
+        !isPlaying || player == nil
+      {
+        preparePlaybackForCurrentTrack()
+      } else {
+        publishState()
+      }
     } catch {
       store.setDownloadProgress(trackId: trackId, progress: nil)
       resolvePendingDownloadCompletions(trackId: trackId, payload: [
         "success": false,
         "error": error.localizedDescription,
       ])
-      publishState()
+      if currentTrackId == trackId, isPlaying {
+        preparePlaybackForCurrentTrack()
+      } else {
+        publishState()
+      }
     }
   }
 
@@ -728,6 +812,110 @@ final class NativeMusicPlayerEngine: NSObject {
       }
     }
     return result
+  }
+}
+
+/// Resolves a backend `/api/music/stream/:videoId` URL into the PUBLIC audio URL
+/// (Supabase CDN or direct source) via the authed `/api/music/info/:videoId` endpoint.
+/// AVPlayer cannot attach the API bearer, so streaming the backend URL directly 401s
+/// (NSURLErrorDomain -1013); the info endpoint also falls back to a direct stream URL
+/// when the server-side cache fill fails (where /stream would 500), and public URLs
+/// carry a real Content-Length so download byte totals work. Resolved URLs are
+/// memoized per videoId for the session (direct source URLs expire, so never persist).
+final class ChatMusicStreamResolver {
+  static let shared = ChatMusicStreamResolver()
+
+  private let lock = NSLock()
+  private var resolvedByVideoId: [String: URL] = [:]
+  private var inFlight: [String: [(URL?) -> Void]] = [:]
+
+  /// Non-nil only for our own backend's `/api/music/stream/{videoId}` URLs.
+  static func videoId(fromBackendStreamURL url: URL) -> String? {
+    guard !url.isFileURL, let host = url.host?.lowercased(),
+      host == "vibegram.io" || host.hasSuffix(".vibegram.io")
+    else { return nil }
+    let parts = url.path.split(separator: "/").map(String.init)
+    guard parts.count >= 4, parts[0] == "api", parts[1] == "music", parts[2] == "stream" else {
+      return nil
+    }
+    let id = parts[3].trimmingCharacters(in: .whitespacesAndNewlines)
+    return id.isEmpty ? nil : id
+  }
+
+  func cachedResolvedURL(forVideoId videoId: String) -> URL? {
+    lock.lock()
+    defer { lock.unlock() }
+    return resolvedByVideoId[videoId]
+  }
+
+  /// Completion always fires on main. nil = resolution failed — the caller should
+  /// fall back to streaming/downloading the backend URL so behaviour never regresses.
+  func resolve(videoId: String, headers: [String: String], completion: @escaping (URL?) -> Void) {
+    lock.lock()
+    if let cached = resolvedByVideoId[videoId] {
+      lock.unlock()
+      DispatchQueue.main.async { completion(cached) }
+      return
+    }
+    if inFlight[videoId] != nil {
+      inFlight[videoId]?.append(completion)
+      lock.unlock()
+      return
+    }
+    inFlight[videoId] = [completion]
+    lock.unlock()
+
+    let encodedId =
+      videoId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? videoId
+    // Prefer the session API base when available; fall back to production host.
+    let base =
+      ChatEngine.shared.authorizationHeaderForAPI() != nil
+      ? (AppSessionConfig.current?.apiBaseURLString ?? "https://api.vibegram.io")
+      : "https://api.vibegram.io"
+    var root = base.trimmingCharacters(in: .whitespacesAndNewlines)
+    while root.hasSuffix("/") { root.removeLast() }
+    if !root.lowercased().hasSuffix("/api") { root += "/api" }
+    guard let infoURL = URL(string: "\(root)/music/info/\(encodedId)") else {
+      finish(videoId: videoId, url: nil)
+      return
+    }
+    var request = URLRequest(url: infoURL)
+    // On a cache miss the server downloads + uploads the track before answering
+    // (up to ~2 min of yt-dlp) — give it room instead of timing out at 60s.
+    request.timeoutInterval = 150
+    for (key, value) in headers {
+      request.setValue(value, forHTTPHeaderField: key)
+    }
+    let task = VibeHTTP.shared.dataTask(with: request) { [weak self] data, response, _ in
+      guard let self else { return }
+      var resolved: URL?
+      if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+        let data,
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let raw = (object["stream_url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !raw.isEmpty,
+        let url = URL(string: raw), url.scheme?.lowercased().hasPrefix("http") == true
+      {
+        resolved = url
+      }
+      NSLog(
+        "[MusicResolver] videoId=%@ resolved=%@",
+        videoId,
+        resolved?.host ?? "nil"
+      )
+      self.finish(videoId: videoId, url: resolved)
+    }
+    task.resume()
+  }
+
+  private func finish(videoId: String, url: URL?) {
+    lock.lock()
+    if let url { resolvedByVideoId[videoId] = url }
+    let callbacks = inFlight.removeValue(forKey: videoId) ?? []
+    lock.unlock()
+    DispatchQueue.main.async {
+      for callback in callbacks { callback(url) }
+    }
   }
 }
 

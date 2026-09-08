@@ -15,10 +15,11 @@ const HomeHeader: React.FC<HomeHeaderProps> = ({
     return (
         <div className="header-mask-container no-blur">
             <header className="main-header home-header">
-                {/* Left: Edit Mode */}
+                {/* Left: Edit Mode — mirrors iOS home nav */}
                 <div className="header-left-area" style={{ position: 'absolute', left: 0, height: '100%', display: 'flex', alignItems: 'center', paddingLeft: 16 }}>
                     <div className="glass-btn-container">
                         <button
+                            type="button"
                             onClick={() => setIsEditing(!isEditing)}
                             className="glass-text-btn"
                         >
@@ -32,15 +33,17 @@ const HomeHeader: React.FC<HomeHeaderProps> = ({
                     <h2 className="header-title">Chats</h2>
                 </div>
 
-                {/* Right: Actions */}
+                {/* Right: connection · compose · settings */}
                 <div className="header-glass-group">
                     <button
+                        type="button"
                         className={`glass-btn ${connectionStatus === 'connecting' ? 'wifi-pulse' : ''}`}
                         onClick={() => setView('connection')}
                         title={connectionStatus.toUpperCase()}
+                        aria-label={`Connection: ${connectionStatus}`}
                     >
                         {connectionStatus === 'connected' ? (
-                            <Wifi size={18} color="#10b981" />
+                            <Wifi size={18} color="var(--accent)" />
                         ) : connectionStatus === 'disconnected' ? (
                             <WifiOff size={18} color="#ef4444" />
                         ) : (
@@ -50,13 +53,23 @@ const HomeHeader: React.FC<HomeHeaderProps> = ({
 
                     <div className="glass-divider" />
 
-                    <button className="glass-btn" onClick={() => setShowNewChatModal(true)}>
+                    <button
+                        type="button"
+                        className="glass-btn"
+                        onClick={() => setShowNewChatModal(true)}
+                        aria-label="New chat"
+                    >
                         <Pencil size={18} />
                     </button>
 
                     <div className="glass-divider" />
 
-                    <button className="glass-btn" onClick={() => setView('profile')}>
+                    <button
+                        type="button"
+                        className="glass-btn"
+                        onClick={() => setView('profile')}
+                        aria-label="Settings"
+                    >
                         <Settings size={18} />
                     </button>
                 </div>

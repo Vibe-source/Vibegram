@@ -1,0 +1,18 @@
+{
+  "id": 22,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Release morph: finish() now callbacks (flight on overlay host) BEFORE removing the recorder view; morph reveal reconfigures the one cell and fades — no collectionView.reloadData.",
+  "selector": "ios/ChatModule/ChatListView.swift::runVideoNoteReleaseMorph",
+  "path": "ios/ChatModule/ChatListView.swift",
+  "fqn": "runVideoNoteReleaseMorph",
+  "line": 24444,
+  "anchor_hash": "daf959ff31f2645232f2588eae9a16fa8faaf5531f1deadacf612cdeb11314b5",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787745515,
+  "updated_at": 1787745515
+}

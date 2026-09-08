@@ -3,8 +3,8 @@
 // Vibe PreToolUse hook — decides how Claude Code gets approval for tools.
 // Behaviour is driven by ~/.vibe/agent-config.toml (approval_mode):
 //   "local"  -> pure pass-through: approve/answer on THIS device only (no phone).
-//   "mobile" -> safe/allow-listed run w/o asking; blockers -> phone (falls back to
-//               a local prompt after 3 min / if the bridge is down, so nothing hangs).
+//   "mobile" -> safe/allow-listed run w/o asking; blockers -> phone and remain
+//               pending until answered; if the bridge is down it falls back locally.
 //   "auto"   -> same as "mobile" (Codex-like: safe auto, blockers -> phone).
 //   "both"   -> safe/allow-listed run w/o asking; blockers show on BOTH the desk and
 //               the phone at once (first responder wins) when this is a real terminal
@@ -21,7 +21,10 @@ const HOME = os.homedir();
 const VDIR = path.join(HOME, ".vibe");
 const SOCK = path.join(VDIR, "ask.sock");
 const CONFIG_PATH = path.join(VDIR, "agent-config.toml");
-const ROUTE_TIMEOUT_MS = 180000;
+// Zero means wait for an explicit phone decision. This hook is the blocking side of
+// a mobile approval, so a local timer must not silently convert it back to a desktop
+// prompt while the phone is backgrounded or reconnecting.
+const ROUTE_TIMEOUT_MS = Number(process.env.VIBE_APPROVAL_TIMEOUT_MS || 0);
 
 // ---------- tiny TOML subset reader (key = value / ["a","b"] / true|false) ----
 function parseToml(text) {
@@ -335,8 +338,11 @@ function openTty() {
 function routeToPhone(job, timeoutMs) {
   let done = false;
   const finish = (fn) => { if (!done) { done = true; fn(); } };
-  const timer = setTimeout(() => finish(() => emit("ask", "Vibe: no response from your phone — approve here.")), timeoutMs || ROUTE_TIMEOUT_MS);
-  if (timer.unref) timer.unref();
+  const effectiveTimeout = timeoutMs == null ? ROUTE_TIMEOUT_MS : timeoutMs;
+  const timer = effectiveTimeout > 0
+    ? setTimeout(() => finish(() => emit("ask", "Vibe: no response from your phone — approve here.")), effectiveTimeout)
+    : null;
+  if (timer && timer.unref) timer.unref();
   let buf = "";
   const conn = net.createConnection(SOCK, () => {
     conn.write(JSON.stringify({ type: "command", cwd: job.cwd, source: "hook", sessionId: job.sessionId || "", tool_name: job.toolName, input: job.input }) + "\n");
@@ -346,15 +352,15 @@ function routeToPhone(job, timeoutMs) {
     buf += d; const nl = buf.indexOf("\n"); if (nl < 0) return;
     let parsed = null; try { parsed = JSON.parse(buf.slice(0, nl)); } catch (_) {}
     try { conn.end(); } catch (_) {}
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     const ans = (parsed && parsed.answer) || {};
     const decision = String(ans.decision || ans.action || "").toLowerCase();
     if (decision === "approve" || decision === "allow") finish(() => emit("allow", ans.message || "Approved from phone.", ans.updatedInput));
     else if (decision === "deny" || decision === "skip") finish(() => emit("deny", ans.message || (decision === "skip" ? "Skipped from your phone." : "Denied from your phone.")));
     else finish(() => emit("ask", "Vibe: no clear decision — approve here."));
   });
-  conn.on("error", () => { clearTimeout(timer); finish(() => emit("ask", "Vibe bridge unreachable — approve here.")); });
-  conn.on("close", () => { clearTimeout(timer); finish(() => emit("ask", "Vibe: connection closed — approve here.")); });
+  conn.on("error", () => { if (timer) clearTimeout(timer); finish(() => emit("ask", "Vibe bridge unreachable — approve here.")); });
+  conn.on("close", () => { if (timer) clearTimeout(timer); finish(() => emit("ask", "Vibe: connection closed — approve here.")); });
 }
 
 // ---------- BOTH: race the desk (/dev/tty keypress) and the phone -------------
@@ -410,8 +416,10 @@ function raceDeskAndPhone(job, ttyFd) {
   conn.on("error", () => {});
   conn.on("close", () => {});
 
-  const timer = setTimeout(() => finish("ask", "Vibe: no response — approve here."), ROUTE_TIMEOUT_MS);
-  if (timer.unref) timer.unref();
+  if (ROUTE_TIMEOUT_MS > 0) {
+    const timer = setTimeout(() => finish("ask", "Vibe: no response — approve here."), ROUTE_TIMEOUT_MS);
+    if (timer.unref) timer.unref();
+  }
 }
 
 // ---------- main --------------------------------------------------------------
@@ -473,7 +481,7 @@ process.stdin.on("end", () => {
     if (ttyFd >= 0) return raceDeskAndPhone(job, ttyFd); // desk + phone, first wins
     // headless (IDE): a hook can't race Claude's native prompt (returning "ask" ends the
     // hook), so give the phone a short window, then fall back to the native in-app ask.
-    return routeToPhone(job, 15000);
+    return routeToPhone(job, 0);
   }
   // mobile / auto -> phone with local fallback.
   return routeToPhone(job);

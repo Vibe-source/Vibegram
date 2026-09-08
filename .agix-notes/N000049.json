@@ -1,0 +1,18 @@
+{
+  "id": 49,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "When the proxy tunnel is up, the sheet row says 'connected' instead of 'ping N ms'. Idle unselected rows still show probe ping.",
+  "selector": "ios/Sources/App/ProxySettingsSheet.swift::ProxyRow.detail",
+  "path": "ios/Sources/App/ProxySettingsSheet.swift",
+  "fqn": "ProxyRow.detail",
+  "line": 192,
+  "anchor_hash": "de937f8de038f22f8cbfb37e2f75db94bb15e73ac1e82ffa45dcc5a9d2ea0d9c",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787753422,
+  "updated_at": 1787753422
+}

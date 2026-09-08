@@ -1,0 +1,72 @@
+{
+  "session": "01a03f00-ad27-7533-8e13-0d71410adffa",
+  "task": "Uh, this issue is the same family multiple part…",
+  "steps": [
+    {
+      "what": "Delete icon in front of glass + trash-door open/close morph",
+      "id": "1",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Video-note locked: keep pause, add cancel; pause must not close overlay",
+      "id": "2",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Flash/camera: less gap, less bottom margin, slight left inset, slightly bigger",
+      "id": "3",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Lock+arrow more gap from hold icon, slightly less width",
+      "id": "4",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Voice/video switch: morph/translate not fade; Instagram-like video-note icon",
+      "id": "5",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "GIF toggle: less right padding, grayer, slightly bigger",
+      "id": "6",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Build + install (blocked by peer ChatAttachmentMenuController)",
+      "id": "7",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "pending"
+    }
+  ],
+  "state": "approved",
+  "by": "",
+  "at": 1787768358
+}

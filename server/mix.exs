@@ -42,7 +42,13 @@ defmodule Vibe.MixProject do
       {:phoenix_live_view, "~> 0.19.0"},
       {:phoenix_live_reload, "~> 1.4", only: :dev},
       {:hackney, "~> 1.9"},
-      {:finch, "~> 0.18"}  # For streaming HTTP (AI APIs)
+      {:finch, "~> 0.18"},
+      {:ex_aws, "~> 2.5"},
+      {:ex_aws_s3, "~> 2.5"},
+      {:vibe_contracts, path: "../contracts"},
+      {:redix, "~> 1.5"},
+      {:libcluster, "~> 3.4"},
+      {:telemetry_metrics_prometheus_core, "~> 1.2"}
     ]
   end
 

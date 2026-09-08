@@ -83,12 +83,8 @@ final class ChatEngineStore {
     }
   }
 
-  /// One-time migration: packet mesh is now opt-in (default direct). Sessions
-  /// persisted before this change still carry transportMode=packet_mesh, which
-  /// blocks large media (music/video/files) and makes sends fail immediately.
-  /// Downgrade such sessions to direct exactly once; after this runs,
-  /// Settings → Connection remains the source of truth and can re-enable mesh
-  /// without being undone on the next launch.
+  /// One-time downgrade of sessions still carrying the retired packet_mesh transport.
+  /// Settings → Proxy stays the source of truth for the route afterwards.
   func migrateLegacyPacketMeshToDirectIfNeeded() {
     let flagKey = "vibe.mesh.legacyDowngradeDone.v1"
     queue.sync {

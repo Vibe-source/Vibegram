@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import SwiftUI
 import UIKit
 
 final class ChatNativeAgentRegistry {
@@ -29,6 +30,104 @@ final class ChatNativeAgentRegistry {
 
   func unregister(surfaceId: String) {
     map.removeValue(forKey: surfaceId)
+  }
+}
+
+/// Process-lifetime home for the agent socket.
+///
+/// `ChatNativeAgentView` is a stored property of `ChatAgentConversationController`, which
+/// is created on push and released on pop — and `didMoveToWindow` used to `disconnect()`
+/// the client and nil it on every detach. So opening an agent chat paid a fresh
+/// DNS + TLS + WebSocket handshake plus a Phoenix join EVERY time: measured on device at
+/// 25.827 `connecting` → 26.862 `socket open` → 27.179 `join OK`, a flat 1.35s per open,
+/// while the app already held an open socket to that very host.
+///
+/// Nothing about the socket is per-view — its topic is `agent:<userId>` — so it has no
+/// business dying with the view. One client lives here for the process; views ATTACH as
+/// its owner and frames are forwarded to whoever is attached now. A view that finds an
+/// already-joined socket skips the dial AND the join and is usable immediately.
+///
+/// It is not kept alive forever: with no owner attached the socket is torn down after a
+/// grace period, so leaving agent chats does not leave a second socket heartbeating.
+final class ChatNativeAgentSocketHolder {
+  static let shared = ChatNativeAgentSocketHolder()
+
+  /// Long enough that navigating out and back in reuses the socket, short enough that
+  /// walking away from agent chats doesn't leave one running.
+  private static let idleTeardownDelay: TimeInterval = 90.0
+
+  private(set) var client: ChatPhoenixClient?
+  private(set) var topic: String = ""
+  private(set) var isJoined = false
+  private weak var owner: ChatNativeAgentView?
+  private var idleTeardown: DispatchWorkItem?
+
+  func attach(_ view: ChatNativeAgentView) {
+    idleTeardown?.cancel()
+    idleTeardown = nil
+    owner = view
+  }
+
+  func detach(_ view: ChatNativeAgentView) {
+    guard owner === view else { return }
+    owner = nil
+    idleTeardown?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self, self.owner == nil else { return }
+      NSLog("[ChatNativeAgent] idle teardown — no agent surface for %.0fs", Self.idleTeardownDelay)
+      self.invalidate()
+    }
+    idleTeardown = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleTeardownDelay, execute: work)
+  }
+
+  /// The live client for `topic`, dialling one only when there isn't one already.
+  func client(for topic: String, socketURL: URL, token: String) -> ChatPhoenixClient {
+    if let existing = client, self.topic == topic { return existing }
+    // A different user (or a stale topic): that socket is worthless here.
+    invalidate()
+    self.topic = topic
+    NSLog(
+      "[ChatNativeAgent] connecting socketURL=%@ topic=%@ hasToken=%@",
+      socketURL.absoluteString, topic, token.isEmpty ? "false" : "true")
+    let callbacks = ChatPhoenixClient.Callbacks(
+      onOpen: { [weak self] in
+        DispatchQueue.main.async { self?.owner?.agentSocketDidOpen() }
+      },
+      onClose: { [weak self] _, _ in
+        DispatchQueue.main.async { self?.handleDrop() }
+      },
+      onError: { [weak self] error in
+        DispatchQueue.main.async {
+          NSLog("[ChatNativeAgent] socket error %@", error)
+          self?.handleDrop()
+        }
+      },
+      onEvent: { [weak self] frame in
+        DispatchQueue.main.async { self?.owner?.agentSocketDidReceive(frame) }
+      }
+    )
+    let next = ChatPhoenixClient(
+      baseURL: socketURL, params: [:], authToken: token, callbacks: callbacks)
+    client = next
+    next.connect()
+    return next
+  }
+
+  func markJoined() { isJoined = true }
+
+  /// Drop the socket outright (stream abort, auth change, idle teardown).
+  func invalidate() {
+    client?.disconnect()
+    client = nil
+    isJoined = false
+    topic = ""
+  }
+
+  private func handleDrop() {
+    client = nil
+    isJoined = false
+    owner?.agentSocketDidClose()
   }
 }
 
@@ -83,6 +182,18 @@ private struct ChatNativeAgentMessage: Codable, Equatable {
   // "regenerate" button, which now only appears on failed responses. Optional
   // so older persisted state without the key still decodes.
   var isError: Bool?
+  /// Full ordered `buildTurnNodes` output sealed at settle (JSON array of node dicts).
+  /// Cold-open + server rehydrate prefer this over a thin summary-only rebuild.
+  /// Absent / version < 2 → legacy thin path (summary). Optional for older state.
+  var settledProgressNodesJSON: Data?
+  /// Frozen contract: `2` means settledProgressNodesJSON carries the full ordered structure.
+  var agentTurnStructureVersion: Int?
+  /// The server's own ordered node container for this turn (JSON array of node dicts), as
+  /// sent on every stream frame. When present it is AUTHORITATIVE: it already interleaves
+  /// narration text ↔ tool steps ↔ thinking in stream order, and it carries fields the local
+  /// segment enum cannot express (kind, tokens, durationMs, thinkingText). Absent only on an
+  /// older server, where the client-side `buildTurnNodes` heuristics still apply.
+  var serverProgressNodesJSON: Data?
 
   init(
     id: String,
@@ -92,7 +203,10 @@ private struct ChatNativeAgentMessage: Codable, Equatable {
     isStreaming: Bool,
     streamSegments: [ChatNativeAgentStreamSegment] = [],
     deliveryFailed: Bool? = nil,
-    isError: Bool? = nil
+    isError: Bool? = nil,
+    settledProgressNodesJSON: Data? = nil,
+    agentTurnStructureVersion: Int? = nil,
+    serverProgressNodesJSON: Data? = nil
   ) {
     self.id = id
     self.role = role
@@ -102,6 +216,61 @@ private struct ChatNativeAgentMessage: Codable, Equatable {
     self.streamSegments = streamSegments
     self.deliveryFailed = deliveryFailed
     self.isError = isError
+    self.settledProgressNodesJSON = settledProgressNodesJSON
+    self.agentTurnStructureVersion = agentTurnStructureVersion
+    self.serverProgressNodesJSON = serverProgressNodesJSON
+  }
+}
+
+/// Finalized non-text agent artifact (music, question, file, …) delivered after
+/// the streaming text row settles. Stored separately so rich rows never mutate
+/// the assistant text bubble.
+private struct ChatNativeAgentRichOutput: Codable, Equatable {
+  var id: String
+  var agentPartIndex: Int
+  var kind: String
+  var mediaUrl: String?
+  var text: String
+  var fileName: String?
+  var durationSeconds: Double?
+  var timestampMs: Int64
+  var assistantMessageId: String?
+  /// JSON-encoded metadata dictionary (batch fields, music track fields, …).
+  var metadataJSON: Data
+
+  var metadata: [String: Any] {
+    guard !metadataJSON.isEmpty,
+      let object = try? JSONSerialization.jsonObject(with: metadataJSON),
+      let dict = object as? [String: Any]
+    else {
+      return [:]
+    }
+    return dict
+  }
+
+  init(
+    id: String,
+    agentPartIndex: Int,
+    kind: String,
+    mediaUrl: String? = nil,
+    text: String = "",
+    fileName: String? = nil,
+    durationSeconds: Double? = nil,
+    timestampMs: Int64,
+    assistantMessageId: String? = nil,
+    metadata: [String: Any] = [:]
+  ) {
+    self.id = id
+    self.agentPartIndex = agentPartIndex
+    self.kind = kind
+    self.mediaUrl = mediaUrl
+    self.text = text
+    self.fileName = fileName
+    self.durationSeconds = durationSeconds
+    self.timestampMs = timestampMs
+    self.assistantMessageId = assistantMessageId
+    self.metadataJSON =
+      (try? JSONSerialization.data(withJSONObject: metadata, options: [])) ?? Data()
   }
 }
 
@@ -111,6 +280,39 @@ private struct ChatNativeAgentConversation: Codable, Equatable {
   var createdAt: Int64
   var updatedAt: Int64
   var messages: [ChatNativeAgentMessage]
+  /// Finalized rich rows for this conversation, keyed/deduped by part/message id.
+  var richOutputs: [ChatNativeAgentRichOutput]
+
+  init(
+    id: String,
+    title: String,
+    createdAt: Int64,
+    updatedAt: Int64,
+    messages: [ChatNativeAgentMessage],
+    richOutputs: [ChatNativeAgentRichOutput] = []
+  ) {
+    self.id = id
+    self.title = title
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+    self.messages = messages
+    self.richOutputs = richOutputs
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, title, createdAt, updatedAt, messages, richOutputs
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    title = try container.decode(String.self, forKey: .title)
+    createdAt = try container.decode(Int64.self, forKey: .createdAt)
+    updatedAt = try container.decode(Int64.self, forKey: .updatedAt)
+    messages = try container.decode([ChatNativeAgentMessage].self, forKey: .messages)
+    richOutputs =
+      (try? container.decode([ChatNativeAgentRichOutput].self, forKey: .richOutputs)) ?? []
+  }
 }
 
 private struct ChatNativeAgentPersistedState: Codable {
@@ -119,12 +321,19 @@ private struct ChatNativeAgentPersistedState: Codable {
 }
 
 private enum ChatNativeAgentPendingSend {
-  case message(conversationId: String, text: String, truncateAtId: String?)
+  case message(
+    conversationId: String,
+    text: String,
+    truncateAtId: String?,
+    modelProvider: String,
+    modelId: String,
+    thinkingLevel: String
+  )
   case builderUiResponse(conversationId: String, uiResponse: [String: Any], summary: String?)
 
   var conversationId: String {
     switch self {
-    case .message(let conversationId, _, _):
+    case .message(let conversationId, _, _, _, _, _):
       return conversationId
     case .builderUiResponse(let conversationId, _, _):
       return conversationId
@@ -133,11 +342,21 @@ private enum ChatNativeAgentPendingSend {
 
   func withConversationId(_ updatedConversationId: String) -> ChatNativeAgentPendingSend {
     switch self {
-    case .message(_, let text, let truncateAtId):
+    case .message(
+      _,
+      let text,
+      let truncateAtId,
+      let modelProvider,
+      let modelId,
+      let thinkingLevel
+    ):
       return .message(
         conversationId: updatedConversationId,
         text: text,
-        truncateAtId: truncateAtId
+        truncateAtId: truncateAtId,
+        modelProvider: modelProvider,
+        modelId: modelId,
+        thinkingLevel: thinkingLevel
       )
     case .builderUiResponse(_, let uiResponse, let summary):
       return .builderUiResponse(
@@ -165,6 +384,12 @@ private struct ChatNativeAgentRenderEntry {
   let actionSourceText: String?
   var deliveryFailed: Bool = false
   var isError: Bool = false
+  var mediaUrl: String? = nil
+  var fileName: String? = nil
+  var duration: Double? = nil
+  var metadata: [String: Any]? = nil
+  /// Frozen: 2 when progressNodes is the full settled ordered structure.
+  var agentTurnStructureVersion: Int? = nil
 }
 
 private final class ChatNativeAgentHistoryCell: UITableViewCell {
@@ -295,6 +520,12 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
   /// send/stop button.
   public var onStreamingStateChanged: ((Bool) -> Void)?
 
+  /// The visible built-in chat header is owned by the host, while this headless
+  /// transport owns the selected model and turn lifecycle.
+  public var onHeaderStateChanged: ((String, String) -> Void)? {
+    didSet { notifyHeaderStateChanged() }
+  }
+
   /// When true, this view is only the agent socket + row source for a host
   /// (`ChatMainView`). Skip local message rendering, full-screen layout work,
   /// and expensive blur effects so opening Vibe AI does not double the memory
@@ -340,7 +571,7 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
   private let historyTableView = UITableView(frame: .zero, style: .plain)
   private let historyEmptyLabel = UILabel()
 
-  private var appearance = ChatListAppearance.fallback
+  private var appearance = ChatListAppearance.current
   private var currentPage: ChatNativeAgentPage = .chat
   private var conversations: [ChatNativeAgentConversation] = []
   private var activeConversationId: String?
@@ -366,23 +597,82 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
   private var builderLatestSecret: String?
   private var cachedAgentSecrets: [String: String] = [:]
   private var registeredSurfaceId: String = ""
+  private var modelRegistry: ChatAgentModelRegistry = .fallback
+  private var selectedModelProvider = ChatAgentModelRegistry.fallback.defaultProvider
+  private var selectedModelId = ChatAgentModelRegistry.fallback.defaultModelId
+  private var selectedThinkingLevel =
+    ChatAgentModelRegistry.fallback.model(
+      providerId: ChatAgentModelRegistry.fallback.defaultProvider,
+      modelId: ChatAgentModelRegistry.fallback.defaultModelId
+    )?.defaultThinkingLevel ?? "medium"
+  private var hasExplicitModelSelection = false
+  private var modelRegistryLoadInFlight = false
+  private var modelRegistryLoadCompleted = false
+  private var modelRegistryLoadWaiters: [() -> Void] = []
+  private var headerActivityState = "ready"
+  /// `rich_outputs` payloads buffered until the streamed text turn settles (`done`).
+  private var pendingRichOutputsByConversation: [String: [[String: Any]]] = [:]
 
   private static let fallbackApiBaseURL = "https://api.vibegram.io"
   private static let persistenceKey = "vibe.native.agent.screen.v1"
+  private static let modelProviderPersistenceKey = "vibe.native.agent.model-provider.v1"
+  private static let modelIdPersistenceKey = "vibe.native.agent.model-id.v1"
+  private static let thinkingLevelPersistenceKey = "vibe.native.agent.thinking-level.v1"
+  private static let modelSelectionExplicitPersistenceKey =
+    "vibe.native.agent.model-selection-explicit.v1"
 
   override init(frame: CGRect) {
     super.init(frame: frame)
+    commonInit()
+  }
+
+  /// Transport-only construction. `prepareForTransportOnly()` can only hide the local
+  /// UI *after* `init` has already built it; knowing at init time lets the expensive
+  /// half be skipped instead of built-then-thrown-away — that was ~most of the felt
+  /// delay when opening Vibe AI (see `[AgentOpen] view-init`).
+  public init(frame: CGRect, transportOnly: Bool) {
+    super.init(frame: frame)
+    isTransportOnly = transportOnly
+    commonInit()
+  }
+
+  private func commonInit() {
+    let startedAt = ProcessInfo.processInfo.systemUptime
+    func stageMs(_ since: TimeInterval) -> Int {
+      Int((ProcessInfo.processInfo.systemUptime - since) * 1000)
+    }
+    var stageStartedAt = startedAt
 
     backgroundColor = .clear
     clipsToBounds = true
 
     setupHeader()
     setupPages()
+    let setupMs = stageMs(stageStartedAt)
+    stageStartedAt = ProcessInfo.processInfo.systemUptime
     applyPersistedState()
+    let persistedMs = stageMs(stageStartedAt)
+    stageStartedAt = ProcessInfo.processInfo.systemUptime
+    applyPersistedModelSelection()
     applyAppearance([:])
     refreshHeader(animated: false)
-    refreshHistoryList()
-    rebuildChatRows(scrollToBottom: false, animated: false)
+    let chromeMs = stageMs(stageStartedAt)
+    stageStartedAt = ProcessInfo.processInfo.systemUptime
+    // Both of these only feed this view's OWN UI, which a transport instance never
+    // shows: `refreshHistoryList` reloads a table `prepareForTransportOnly` hides, and
+    // `rebuildChatRows` builds the entire transcript into the local
+    // `ChatNativeAgentMessagesView` that the same call then clears. Worse, `onRowsChanged`
+    // is still nil here, so the rows go nowhere — the host gets its copy from
+    // `synchronizeHostState()` at the end of the controller's `viewDidLoad`, which runs
+    // `rebuildChatRows` again. Skipping this is a pure deletion of duplicated work.
+    if !isTransportOnly {
+      refreshHistoryList()
+      rebuildChatRows(scrollToBottom: false, animated: false)
+    }
+    NSLog(
+      "[AgentOpen] view-init transportOnly=%@ setupMs=%d persistedStateMs=%d chromeMs=%d rowsMs=%d totalMs=%d",
+      isTransportOnly ? "Y" : "N", setupMs, persistedMs, chromeMs, stageMs(stageStartedAt),
+      stageMs(startedAt))
   }
 
   required init?(coder: NSCoder) {
@@ -393,7 +683,9 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     transportEnabled = false
     reconnectWorkItem?.cancel()
     streamingTimeoutWorkItem?.cancel()
-    phoenixClient?.disconnect()
+    // Release the shared socket rather than closing it: this view dies on every pop and
+    // closing here would put back the per-open handshake the holder exists to remove.
+    ChatNativeAgentSocketHolder.shared.detach(self)
     if !registeredSurfaceId.isEmpty {
       ChatNativeAgentRegistry.shared.unregister(surfaceId: registeredSurfaceId)
     }
@@ -404,15 +696,19 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     if window != nil {
       transportEnabled = true
       connectIfNeeded()
+      loadModelRegistryIfNeeded()
       if let activeConversationId, conversation(for: activeConversationId)?.messages.isEmpty == true
       {
         loadConversation(id: activeConversationId)
       }
       return
     }
+    // Detach only — the socket belongs to the holder and outlives this view, which is
+    // what makes reopening an agent chat instant. The holder tears it down itself once
+    // no agent surface has claimed it for a while.
     transportEnabled = false
     reconnectWorkItem?.cancel()
-    phoenixClient?.disconnect()
+    ChatNativeAgentSocketHolder.shared.detach(self)
     phoenixClient = nil
     joinedTopic = false
   }
@@ -567,9 +863,21 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     applyAppearance(rawAppearance)
   }
 
-  func synchronizeHostState() {
-    rebuildChatRows(scrollToBottom: false, animated: false)
+  /// Current persisted transcript for a host that wants to stage it authoritatively at
+  /// final bounds before navigation. Data-only: it does not touch either message list.
+  func currentHostRows() -> [[String: Any]] {
+    guard let activeConversation = activeConversationId.flatMap({ conversation(for: $0) }) else {
+      return []
+    }
+    return makeRawRows(for: activeConversation)
+  }
+
+  func synchronizeHostState(emitRows: Bool = true) {
+    if emitRows {
+      rebuildChatRows(scrollToBottom: false, animated: false)
+    }
     onStreamingStateChanged?(streamingConversationId != nil)
+    notifyHeaderStateChanged()
   }
 
   func handleHostEvent(_ event: [String: Any]) {
@@ -584,6 +892,44 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
   func setBuilderLatestSecret(_ latestSecret: String?) {
     builderLatestSecret = Self.normalizedString(latestSecret)
     cacheBuilderSecretIfPossible()
+  }
+
+  func presentModelPicker(from presenter: UIViewController) {
+    loadModelRegistryIfNeeded { [weak self, weak presenter] in
+      guard let self, let presenter else { return }
+      let picker = ChatProviderModelPickerView(
+        registry: self.modelRegistry,
+        currentProviderId: self.selectedModelProvider,
+        currentModelId: self.selectedModelId,
+        currentThinkingLevel: self.selectedThinkingLevel
+      ) { [weak self] providerId, modelId, thinkingLevel, completion in
+        guard let self else {
+          completion(false)
+          return
+        }
+        self.applyModelSelection(
+          providerId: providerId,
+          modelId: modelId,
+          thinkingLevel: thinkingLevel,
+          persist: true)
+        completion(true)
+      }
+      let host = UIHostingController(
+        rootView: NavigationStack {
+          picker
+        }
+      )
+      host.view.backgroundColor = .clear
+      host.view.isOpaque = false
+      host.modalPresentationStyle = .pageSheet
+      if let sheet = host.sheetPresentationController {
+        sheet.detents = [.medium(), .large()]
+        sheet.prefersGrabberVisible = true
+        sheet.prefersScrollingExpandsWhenScrolledToEdge = true
+        sheet.preferredCornerRadius = 30
+      }
+      presenter.present(host, animated: true)
+    }
   }
 
   func submitText(_ rawText: String, userMessageId: String? = nil) {
@@ -619,7 +965,10 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
         .message(
           conversationId: conversationId,
           text: text,
-          truncateAtId: serverTruncateAtId
+          truncateAtId: serverTruncateAtId,
+          modelProvider: selectedModelProvider,
+          modelId: selectedModelId,
+          thinkingLevel: selectedThinkingLevel
         ))
     }
   }
@@ -651,6 +1000,13 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       isStreaming: false,
       streamSegments: []
     )
+    // No placeholder seed. The assistant turn starts with EMPTY segments so it emits
+    // NO row until the first real chunk/tool step arrives (see makeRenderEntries — an
+    // empty streaming turn is skipped). The header carries the "Thinking…" state during
+    // the gap, so there is no in-list feedback to lose. A seeded "Working…" progress node
+    // painted an empty full-width box that re-measured and SHIFTED the layout the moment
+    // the first chunk landed — exactly the jump the user reported. The cell is now born
+    // with real content (streaming text OR the first tool step) and grows in place.
     let assistantMessage = ChatNativeAgentMessage(
       id: UUID().uuidString,
       role: .assistant,
@@ -679,6 +1035,7 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
 
     streamingConversationId = conversationId
     notifyStreamingStateChanged()
+    setHeaderActivityState(fallback: "thinking")
     currentSpacerHeight = 0.0
     persistState()
     refreshHistoryList()
@@ -1061,7 +1418,7 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       apiBaseURL: config.apiBaseURL,
       token: config.token
     )
-    let controller = ChatNativeAgentsControlController(
+    let controller = ChatAgentsMainViewController(
       apiContext: apiContext,
       appearance: appearance
     )
@@ -1127,7 +1484,7 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
   }
 
   private func refreshHeader(animated: Bool) {
-    let title = currentPage == .chat ? "Vibe AI" : "History"
+    let title = currentPage == .chat ? selectedModelDisplayTitle : "History"
     let backSymbol = "chevron.left"
     let actionSymbol = currentPage == .chat ? "clock" : "plus"
     let config = UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
@@ -1163,53 +1520,43 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     pageScrollView.setContentOffset(target, animated: animated)
   }
 
+  // MARK: - Socket bridge (owned by ChatNativeAgentSocketHolder)
+
+  func agentSocketDidOpen() { handleSocketOpen() }
+
+  func agentSocketDidReceive(_ frame: ChatPhoenixClient.EventFrame) { handlePhoenixFrame(frame) }
+
+  func agentSocketDidClose() {
+    handleSocketClose(
+      streamFailureMessage: "Connection lost. Tap regenerate to retry.",
+      toastMessage: "Connection lost"
+    )
+  }
+
   private func connectIfNeeded() {
     guard transportEnabled else { return }
-    guard phoenixClient == nil else { return }
     guard let config = resolveConnectionConfig() else { return }
 
-    topic = "agent:\(config.userId)"
-    NSLog("[ChatNativeAgent] connecting socketURL=%@ userId=%@ hasToken=%@",
-      config.socketURL.absoluteString, config.userId, config.token.isEmpty ? "false" : "true")
+    let nextTopic = "agent:\(config.userId)"
+    topic = nextTopic
+    let holder = ChatNativeAgentSocketHolder.shared
+    holder.attach(self)
 
-    let callbacks = ChatPhoenixClient.Callbacks(
-      onOpen: { [weak self] in
-        DispatchQueue.main.async {
-          self?.handleSocketOpen()
-        }
-      },
-      onClose: { [weak self] _, _ in
-        DispatchQueue.main.async {
-          self?.handleSocketClose(
-            streamFailureMessage: "Connection lost. Tap regenerate to retry.",
-            toastMessage: "Connection lost"
-          )
-        }
-      },
-      onError: { [weak self] error in
-        DispatchQueue.main.async {
-          NSLog("[ChatNativeAgent] socket error %@", error)
-          self?.handleSocketClose(
-            streamFailureMessage: "Connection lost. Tap regenerate to retry.",
-            toastMessage: "Connection lost"
-          )
-        }
-      },
-      onEvent: { [weak self] frame in
-        DispatchQueue.main.async {
-          self?.handlePhoenixFrame(frame)
-        }
-      }
-    )
+    // Already dialled for this process: adopt it. This is the whole point — the socket
+    // outlives the view, so the second and every later open of an agent chat costs
+    // nothing instead of a 1.35s handshake.
+    if let live = holder.client, holder.topic == nextTopic {
+      phoenixClient = live
+      guard holder.isJoined, !joinedTopic else { return }
+      NSLog("[ChatNativeAgent] adopted live socket topic=%@ — no dial, no join", nextTopic)
+      joinedTopic = true
+      syncConversations()
+      flushPendingSends()
+      return
+    }
 
-    let client = ChatPhoenixClient(
-      baseURL: config.socketURL,
-      params: [:],
-      authToken: config.token,
-      callbacks: callbacks
-    )
-    phoenixClient = client
-    client.connect()
+    phoenixClient = holder.client(
+      for: nextTopic, socketURL: config.socketURL, token: config.token)
   }
 
   private func handleSocketOpen() {
@@ -1222,6 +1569,9 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       if status == "ok" {
         NSLog("[ChatNativeAgent] join OK topic=%@ pendingSends=%d", self.topic, self.pendingSends.count)
         self.joinedTopic = true
+        // Record it on the holder: the NEXT view to open this chat adopts a joined
+        // socket and skips both the dial and the join.
+        ChatNativeAgentSocketHolder.shared.markJoined()
         self.syncConversations()
         self.flushPendingSends()
         return
@@ -1296,11 +1646,15 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
         engineConfig["socketUrl"] ?? engineConfig["url"] ?? nativeCallConfig["socketUrl"])
       ?? (apiBase.replacingOccurrences(of: "^http", with: "ws", options: .regularExpression)
         + "/socket")
-    let token =
-      Self.normalizedString(
-        engineConfig["authToken"] ?? engineConfig["token"]
-          ?? nativeCallConfig["authToken"] ?? session?["loginToken"])
-      ?? userId
+    let token = [
+      Self.normalizedString(session?["loginToken"]),
+      Self.normalizedString(nativeCallConfig["authToken"]),
+      Self.normalizedString(engineConfig["authToken"] ?? engineConfig["token"]),
+    ].compactMap { $0 }.first { $0 != userId && $0.lowercased() != "undefined" }
+    guard let token else {
+      NSLog("[ChatNativeAgent] missing valid login token (user id is not socket auth)")
+      return nil
+    }
 
     guard let socketURL = URL(string: socketString) else {
       NSLog("[ChatNativeAgent] invalid socket url %@", socketString)
@@ -1337,6 +1691,196 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     return (apiBaseURL, token, userId)
   }
 
+  private func loadModelRegistryIfNeeded(completion: (() -> Void)? = nil) {
+    if let completion {
+      modelRegistryLoadWaiters.append(completion)
+    }
+    if modelRegistryLoadCompleted {
+      flushModelRegistryLoadWaiters()
+      return
+    }
+    guard !modelRegistryLoadInFlight, let config = resolveAPIConfig() else {
+      if !modelRegistryLoadInFlight {
+        flushModelRegistryLoadWaiters()
+      }
+      return
+    }
+
+    modelRegistryLoadInFlight = true
+    ChatAgentModelRegistryService.load(
+      apiBaseURL: config.apiBaseURL,
+      token: config.token
+    ) { [weak self] registry in
+      guard let self else { return }
+      self.modelRegistryLoadInFlight = false
+      self.modelRegistryLoadCompleted = true
+      self.modelRegistry = registry
+      self.resolveModelSelectionAgainstRegistry()
+      self.flushModelRegistryLoadWaiters()
+    }
+  }
+
+  private func flushModelRegistryLoadWaiters() {
+    let waiters = modelRegistryLoadWaiters
+    modelRegistryLoadWaiters.removeAll()
+    waiters.forEach { $0() }
+  }
+
+  private func applyPersistedModelSelection() {
+    guard
+      let provider = Self.normalizedString(
+        UserDefaults.standard.string(forKey: Self.modelProviderPersistenceKey)),
+      let modelId = Self.normalizedString(
+        UserDefaults.standard.string(forKey: Self.modelIdPersistenceKey))
+    else {
+      UserDefaults.standard.set(
+        selectedModelProvider,
+        forKey: Self.modelProviderPersistenceKey)
+      UserDefaults.standard.set(selectedModelId, forKey: Self.modelIdPersistenceKey)
+      UserDefaults.standard.set(
+        selectedThinkingLevel,
+        forKey: Self.thinkingLevelPersistenceKey)
+      UserDefaults.standard.set(
+        false,
+        forKey: Self.modelSelectionExplicitPersistenceKey)
+      return
+    }
+    selectedModelProvider = provider
+    selectedModelId = modelId
+    if let persistedThinkingLevel = Self.normalizedString(
+      UserDefaults.standard.string(forKey: Self.thinkingLevelPersistenceKey))
+    {
+      selectedThinkingLevel = persistedThinkingLevel.lowercased()
+    } else if let fallbackModel = ChatAgentModelRegistry.fallback.model(
+      providerId: provider,
+      modelId: modelId)
+    {
+      selectedThinkingLevel = fallbackModel.defaultThinkingLevel
+      UserDefaults.standard.set(
+        selectedThinkingLevel,
+        forKey: Self.thinkingLevelPersistenceKey)
+    } else {
+      UserDefaults.standard.set(
+        selectedThinkingLevel,
+        forKey: Self.thinkingLevelPersistenceKey)
+    }
+    hasExplicitModelSelection = UserDefaults.standard.bool(
+      forKey: Self.modelSelectionExplicitPersistenceKey)
+  }
+
+  private func resolveModelSelectionAgainstRegistry() {
+    if hasExplicitModelSelection,
+      let provider = modelRegistry.provider(id: selectedModelProvider),
+      provider.available,
+      let model = modelRegistry.model(providerId: provider.id, modelId: selectedModelId)
+    {
+      applyModelSelection(
+        providerId: provider.id,
+        modelId: model.id,
+        thinkingLevel: selectedThinkingLevel,
+        persist: true)
+      return
+    }
+
+    let defaultProvider =
+      modelRegistry.provider(id: modelRegistry.defaultProvider).flatMap {
+        $0.available ? $0 : nil
+      }
+      ?? modelRegistry.providers.first(where: \.available)
+      ?? modelRegistry.providers.first
+    guard let defaultProvider else { return }
+    let defaultModel =
+      modelRegistry.model(
+        providerId: defaultProvider.id,
+        modelId: modelRegistry.defaultModelId)
+      ?? defaultProvider.models.first(where: \.recommended)
+      ?? defaultProvider.models.first
+    guard let defaultModel else { return }
+    applyModelSelection(
+      providerId: defaultProvider.id,
+      modelId: defaultModel.id,
+      thinkingLevel: defaultModel.defaultThinkingLevel,
+      persist: true,
+      explicit: false
+    )
+  }
+
+  private func applyModelSelection(
+    providerId: String,
+    modelId: String,
+    thinkingLevel: String,
+    persist: Bool,
+    explicit: Bool = true
+  ) {
+    guard
+      let provider = modelRegistry.provider(id: providerId),
+      provider.available,
+      let model = modelRegistry.model(providerId: provider.id, modelId: modelId)
+    else {
+      return
+    }
+    let resolvedThinkingLevel =
+      model.thinkingLevels.first(where: {
+        $0.caseInsensitiveCompare(thinkingLevel) == .orderedSame
+      })
+      ?? model.defaultThinkingLevel
+    selectedModelProvider = provider.id
+    selectedModelId = model.id
+    selectedThinkingLevel = resolvedThinkingLevel
+    if persist {
+      hasExplicitModelSelection = explicit
+      UserDefaults.standard.set(provider.id, forKey: Self.modelProviderPersistenceKey)
+      UserDefaults.standard.set(model.id, forKey: Self.modelIdPersistenceKey)
+      UserDefaults.standard.set(
+        resolvedThinkingLevel,
+        forKey: Self.thinkingLevelPersistenceKey)
+      UserDefaults.standard.set(
+        explicit,
+        forKey: Self.modelSelectionExplicitPersistenceKey)
+    }
+    refreshHeader(animated: true)
+    notifyHeaderStateChanged()
+  }
+
+  private var selectedModelDisplayTitle: String {
+    modelRegistry.model(providerId: selectedModelProvider, modelId: selectedModelId)?.name
+      ?? ChatAgentModelRegistry.fallback.model(
+        providerId: selectedModelProvider,
+        modelId: selectedModelId
+      )?.name
+      ?? selectedModelId
+  }
+
+  private func setHeaderActivityState(
+    from payload: [String: Any]? = nil,
+    fallback: String
+  ) {
+    let serverState = Self.normalizedString(
+      payload?["activityState"] ?? payload?["activity_state"]
+    )?.lowercased()
+    let nextState: String
+    switch serverState {
+    case "thinking", "working", "typing", "ready":
+      nextState = serverState ?? fallback
+    default:
+      nextState = fallback
+    }
+    guard headerActivityState != nextState else { return }
+    headerActivityState = nextState
+    notifyHeaderStateChanged()
+  }
+
+  private func notifyHeaderStateChanged() {
+    let subtitle: String
+    switch headerActivityState {
+    case "thinking": subtitle = "Thinking…"
+    case "working": subtitle = "Working…"
+    case "typing": subtitle = "Typing…"
+    default: subtitle = "Ready"
+    }
+    onHeaderStateChanged?(selectedModelDisplayTitle, subtitle)
+  }
+
   private func handlePhoenixFrame(_ frame: ChatPhoenixClient.EventFrame) {
     if frame.event == "phx_reply", let ref = frame.ref {
       let status = (frame.payload["status"] as? String) ?? "error"
@@ -1348,19 +1892,40 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
 
     guard frame.topic == topic else { return }
 
+    if frame.payload["activityState"] != nil || frame.payload["activity_state"] != nil {
+      setHeaderActivityState(from: frame.payload, fallback: headerActivityState)
+    }
+
+    // The server now ships the WHOLE ordered node list on every stream frame, so the feed no
+    // longer has to be re-derived here from independent labels (which is why two identical
+    // requests used to produce different note lists, and why kind/tokens/thinkingText had
+    // nowhere to live). Capture it first; the per-event handlers below stay as the fallback
+    // path for a server that does not send it.
+    captureServerProgressNodes(from: frame.payload)
+
     switch frame.event {
     case "chunk":
       let text = (frame.payload["text"] as? String) ?? ""
       NSLog("[ChatNativeAgent] chunk received len=%d total_segments=%d", text.count, conversation(for: streamingConversationId ?? activeConversationId ?? "")?.messages.last?.streamSegments.count ?? 0)
       scheduleStreamingTimeout()
+      setHeaderActivityState(from: frame.payload, fallback: "typing")
       appendChunk(text)
     case "progress":
       let label =
         (frame.payload["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       let tool = frame.payload["tool"] as? String
       let status = (frame.payload["status"] as? String) ?? "running"
-      NSLog("[ChatNativeAgent] progress tool=%@ status=%@ label=%@", tool ?? "nil", status, label)
+      let toolCallId =
+        ((frame.payload["tool_call_id"] as? String)
+          ?? (frame.payload["toolCallId"] as? String)
+          ?? (frame.payload["call_id"] as? String)
+          ?? (frame.payload["callId"] as? String))?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      NSLog(
+        "[ChatNativeAgent] progress tool=%@ status=%@ label=%@ callId=%@",
+        tool ?? "nil", status, label, toolCallId ?? "nil")
       scheduleStreamingTimeout()
+      setHeaderActivityState(from: frame.payload, fallback: "working")
 
       guard let conversationId = streamingConversationId ?? activeConversationId else { break }
       updateConversation(conversationId) { conversation in
@@ -1368,30 +1933,113 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
         let lastIndex = conversation.messages.count - 1
         guard conversation.messages[lastIndex].role == .assistant else { return }
 
-        if status == "complete" || status == "error" {
-          // Remove the running progress for this tool
-          conversation.messages[lastIndex].streamSegments.removeAll {
-            $0.isRunningProgress && $0.progressTool == tool
+        // Keep completed steps in the turn (Codex-style item list). Never delete
+        // them — replacing/clearing the segment list is what blanked the cell when
+        // a later chunk arrived. Prefer stable tool_call_id, then tool key.
+        let toolKey = tool
+        let resolvedLabel = label.isEmpty ? "Working…" : label
+        let stableId =
+          (toolCallId?.isEmpty == false ? toolCallId! : nil)
+          ?? toolKey
+          ?? UUID().uuidString
+        let existingIdx = conversation.messages[lastIndex].streamSegments.firstIndex(where: {
+          segment in
+          if let toolCallId, !toolCallId.isEmpty, segment.progressId == toolCallId {
+            return true
+          }
+          // Distinct agentic beats (e.g. search_music_send) must not overwrite the prior step.
+          if let toolKey, toolKey.contains("_send") {
+            return segment.progressId == stableId || segment.progressTool == toolKey
+          }
+          if let toolKey {
+            // Only match a still-running step for this tool so "Looking up" is kept
+            // when "Found · …" arrives (GPT-style step history, not label replace).
+            return segment.progressTool == toolKey && segment.isRunningProgress
+          }
+          return segment.isRunningProgress
+            && (segment.progressTool == nil || segment.progressTool == "thread_start")
+        })
+        if let existingIdx {
+          let existingId = conversation.messages[lastIndex].streamSegments[existingIdx].progressId
+            ?? stableId
+          let previousLabel: String = {
+            if case .progress(_, let lab, _, _) =
+              conversation.messages[lastIndex].streamSegments[existingIdx]
+            {
+              return lab
+            }
+            return resolvedLabel
+          }()
+          let doneStatuses: Set<String> = ["done", "complete", "completed", "error", "failed"]
+          let isDone = doneStatuses.contains(status.lowercased())
+          let wasRunning = conversation.messages[lastIndex].streamSegments[existingIdx]
+            .isRunningProgress
+          // Seal the running label, then append the done label as a new beat so the
+          // feed reads Looking up → Found → Sending (not a single overwritten line).
+          if isDone, wasRunning,
+            previousLabel != resolvedLabel,
+            !previousLabel.isEmpty
+          {
+            conversation.messages[lastIndex].streamSegments[existingIdx] = .progress(
+              id: existingId,
+              label: previousLabel,
+              tool: toolKey
+                ?? conversation.messages[lastIndex].streamSegments[existingIdx].progressTool,
+              status: "complete"
+            )
+            conversation.messages[lastIndex].streamSegments.append(
+              .progress(
+                id: "\(stableId)-done",
+                label: resolvedLabel,
+                tool: toolKey,
+                status: status
+              )
+            )
+          } else {
+            conversation.messages[lastIndex].streamSegments[existingIdx] = .progress(
+              id: existingId,
+              label: resolvedLabel,
+              tool: toolKey
+                ?? conversation.messages[lastIndex].streamSegments[existingIdx].progressTool,
+              status: status
+            )
           }
         } else {
-          // Remove any existing running progress for same tool, then append new one
-          conversation.messages[lastIndex].streamSegments.removeAll {
-            $0.isRunningProgress && $0.progressTool == tool
-          }
           conversation.messages[lastIndex].streamSegments.append(
             .progress(
-              id: UUID().uuidString,
-              label: label.isEmpty ? "Working..." : label,
-              tool: tool,
+              id: stableId,
+              label: resolvedLabel,
+              tool: toolKey,
               status: status
             )
           )
         }
+        // Thread-start placeholder is done once real tool/work progress arrives.
+        if toolKey != nil, toolKey != "thread_start" {
+          if let startIdx = conversation.messages[lastIndex].streamSegments.firstIndex(where: {
+            $0.progressTool == "thread_start" && $0.isRunningProgress
+          }) {
+            conversation.messages[lastIndex].streamSegments[startIdx] = .progress(
+              id: "thread-start",
+              label: "Working…",
+              tool: "thread_start",
+              status: "complete"
+            )
+          }
+        }
       }
+      rebuildChatRows(scrollToBottom: false, animated: false)
+    case "thinking":
+      // Reasoning stream. The node itself already arrived via captureServerProgressNodes
+      // (kind "thinking" + tokens + durationMs), so this only keeps the turn alive and moves
+      // the header to "Thinking…".
+      scheduleStreamingTimeout()
+      setHeaderActivityState(from: frame.payload, fallback: "thinking")
       rebuildChatRows(scrollToBottom: false, animated: false)
     case "subagent":
       NSLog("[ChatNativeAgent] subagent event=%@", (frame.payload["event"] as? String) ?? "unknown")
       scheduleStreamingTimeout()
+      setHeaderActivityState(from: frame.payload, fallback: "working")
       handleSubagentEvent(frame.payload)
     case "agent_cards":
       scheduleStreamingTimeout()
@@ -1410,12 +2058,16 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       if let conversationId = frame.payload["conversation_id"] as? String {
         applyAcknowledgedConversationId(conversationId)
       }
+    case "rich_outputs":
+      handleRichOutputsEvent(frame.payload)
     case "done":
+      setHeaderActivityState(from: frame.payload, fallback: "ready")
       finishStreaming(
         fallbackText: nil,
         forceErrorText: false
       )
     case "error":
+      setHeaderActivityState(from: frame.payload, fallback: "ready")
       let message = (frame.payload["message"] as? String)?.trimmingCharacters(
         in: .whitespacesAndNewlines)
       finishStreaming(
@@ -1435,6 +2087,352 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     default:
       break
     }
+  }
+
+  /// Server pushes finalized non-text artifacts after text completion and before
+  /// (or around) `done`. Never interleave into the streaming text row — buffer
+  /// while the turn is still open, then persist and render as separate rows.
+  private func handleRichOutputsEvent(_ payload: [String: Any]) {
+    let conversationId =
+      Self.normalizedString(payload["conversation_id"] ?? payload["conversationId"])
+      ?? streamingConversationId
+      ?? activeConversationId
+    guard let conversationId, !conversationId.isEmpty else {
+      NSLog("[ChatNativeAgent] rich_outputs dropped: no conversation id")
+      return
+    }
+
+    if streamingConversationId == conversationId {
+      var pending = pendingRichOutputsByConversation[conversationId] ?? []
+      pending.append(payload)
+      pendingRichOutputsByConversation[conversationId] = pending
+      NSLog(
+        "[ChatNativeAgent] rich_outputs buffered until settle conv=%@",
+        String(conversationId.prefix(8))
+      )
+      return
+    }
+
+    applyRichOutputsPayload(payload, conversationId: conversationId)
+  }
+
+  private func flushPendingRichOutputs(for conversationId: String) {
+    let pending = pendingRichOutputsByConversation.removeValue(forKey: conversationId) ?? []
+    for payload in pending {
+      applyRichOutputsPayload(payload, conversationId: conversationId)
+    }
+  }
+
+  private func applyRichOutputsPayload(_ payload: [String: Any], conversationId: String) {
+    let parsed = Self.parseRichOutputs(from: payload)
+    guard !parsed.isEmpty else {
+      NSLog("[ChatNativeAgent] rich_outputs empty after parse")
+      return
+    }
+
+    let assistantMessageId =
+      conversation(for: conversationId)?.messages.last(where: { $0.role == .assistant })?.id
+
+    updateConversation(conversationId) { conversation in
+      var existingById = Dictionary(
+        uniqueKeysWithValues: conversation.richOutputs.map { ($0.id, $0) })
+      for var output in parsed {
+        if output.assistantMessageId == nil {
+          output.assistantMessageId = assistantMessageId
+        }
+        existingById[output.id] = output
+      }
+      conversation.richOutputs = existingById.values.sorted {
+        if $0.agentPartIndex != $1.agentPartIndex {
+          return $0.agentPartIndex < $1.agentPartIndex
+        }
+        return $0.timestampMs < $1.timestampMs
+      }
+      conversation.updatedAt = Self.nowMs()
+    }
+
+    persistState()
+    refreshHistoryList()
+    rebuildChatRows(scrollToBottom: true, animated: false)
+  }
+
+  private static func parseRichOutputs(from payload: [String: Any]) -> [ChatNativeAgentRichOutput] {
+    let rawItems: [[String: Any]] = {
+      if let outputs = payload["outputs"] as? [[String: Any]] { return outputs }
+      if let outputs = payload["rich_outputs"] as? [[String: Any]] { return outputs }
+      if let outputs = payload["richOutputs"] as? [[String: Any]] { return outputs }
+      if let items = payload["items"] as? [[String: Any]] { return items }
+      if let parts = payload["parts"] as? [[String: Any]] { return parts }
+      return []
+    }()
+
+    let baseTimestamp =
+      parseTimestampMs(payload["timestamp"] ?? payload["timestampMs"] ?? payload["timestamp_ms"])
+      ?? nowMs()
+
+    var results: [ChatNativeAgentRichOutput] = []
+    results.reserveCapacity(rawItems.count)
+
+    for (fallbackIndex, item) in rawItems.enumerated() {
+      guard let output = parseRichOutputItem(item, fallbackIndex: fallbackIndex, baseTimestamp: baseTimestamp)
+      else { continue }
+      // Text is already streamed as the assistant row — never re-emit as rich.
+      if output.kind == "text" { continue }
+      results.append(output)
+    }
+
+    return results.sorted {
+      if $0.agentPartIndex != $1.agentPartIndex {
+        return $0.agentPartIndex < $1.agentPartIndex
+      }
+      return $0.timestampMs < $1.timestampMs
+    }
+  }
+
+  private static func parseRichOutputItem(
+    _ item: [String: Any],
+    fallbackIndex: Int,
+    baseTimestamp: Int64
+  ) -> ChatNativeAgentRichOutput? {
+    let metadataRaw =
+      (item["metadata"] as? [String: Any])
+      ?? (item["meta"] as? [String: Any])
+      ?? [:]
+
+    func anyValue(_ keys: [String]) -> Any? {
+      for key in keys {
+        if let value = item[key] { return value }
+        if let value = metadataRaw[key] { return value }
+      }
+      return nil
+    }
+
+    let kind =
+      (normalizedString(anyValue(["type", "kind", "agentPartKind", "agent_part_kind"])) ?? "file")
+      .lowercased()
+
+    let partIndex =
+      parseInt(anyValue(["agentPartIndex", "agent_part_index", "partIndex", "part_index", "index"]))
+      ?? fallbackIndex
+
+    let partId =
+      normalizedString(
+        anyValue([
+          "agentPartId", "agent_part_id", "id", "messageId", "message_id", "trackId", "track_id",
+        ]))
+      ?? "rich-\(partIndex)-\(fallbackIndex)"
+
+    let mediaUrl = normalizedString(
+      anyValue([
+        "mediaUrl", "media_url", "previewUrl", "preview_url", "streamUrl", "stream_url", "uri",
+        "audioUrl", "audio_url", "url",
+      ]))
+
+    let title =
+      normalizedString(anyValue(["title", "name", "fileName", "file_name"]))
+      ?? normalizedString(anyValue(["text", "content", "fallbackText", "fallback_text"]))
+      ?? (kind == "music" ? "Music" : kind.capitalized)
+
+    let artist = normalizedString(anyValue(["artist", "subtitle", "channel"]))
+    let album = normalizedString(anyValue(["album"]))
+    let cover = normalizedString(anyValue(["cover", "thumbnail", "artwork", "image"]))
+    let source = normalizedString(anyValue(["source"]))
+    let videoId = normalizedString(anyValue(["videoId", "video_id"]))
+    let trackId =
+      normalizedString(anyValue(["trackId", "track_id", "id"]))
+      ?? partId
+
+    let durationSeconds = parseFlexibleDurationSeconds(
+      anyValue(["durationSeconds", "duration_seconds", "duration"]))
+    let durationLabel =
+      normalizedString(anyValue(["duration"]))
+      ?? durationSeconds.map { formatDurationLabel(seconds: $0) }
+
+    let text =
+      normalizedString(anyValue(["text", "content", "fallbackText", "fallback_text"]))
+      ?? title
+
+    let timestampMs =
+      parseTimestampMs(anyValue(["timestamp", "timestampMs", "timestamp_ms"]))
+      ?? (baseTimestamp + Int64(partIndex))
+
+    var metadata: [String: Any] = metadataRaw
+    // Normalize music + batch keys into both cases so ChatListViewModels / store
+    // parsers can read either shape.
+    metadata["trackId"] = trackId
+    metadata["track_id"] = trackId
+    if let videoId {
+      metadata["videoId"] = videoId
+      metadata["video_id"] = videoId
+    }
+    metadata["title"] = title
+    if let artist {
+      metadata["artist"] = artist
+    }
+    if let album {
+      metadata["album"] = album
+    }
+    if let durationLabel {
+      metadata["duration"] = durationLabel
+    }
+    if let durationSeconds {
+      metadata["durationSeconds"] = durationSeconds
+      metadata["duration_seconds"] = durationSeconds
+    }
+    if let cover {
+      metadata["cover"] = cover
+    }
+    if let source {
+      metadata["source"] = source
+    }
+    if let mediaUrl {
+      metadata["previewUrl"] = mediaUrl
+      metadata["preview_url"] = mediaUrl
+      metadata["streamUrl"] = mediaUrl
+      metadata["stream_url"] = mediaUrl
+      metadata["mediaUrl"] = mediaUrl
+      metadata["media_url"] = mediaUrl
+    }
+    if let links = item["links"] as? [String: Any] ?? metadataRaw["links"] as? [String: Any] {
+      metadata["links"] = links
+    }
+
+    // Batch / turn identity (frozen contract).
+    if let value = normalizedString(anyValue(["agentTurnId", "agent_turn_id"])) {
+      metadata["agentTurnId"] = value
+      metadata["agent_turn_id"] = value
+    }
+    if let value = normalizedString(anyValue(["agentBatchId", "agent_batch_id"])) {
+      metadata["agentBatchId"] = value
+      metadata["agent_batch_id"] = value
+    }
+    metadata["agentPartId"] = partId
+    metadata["agent_part_id"] = partId
+    metadata["agentPartIndex"] = partIndex
+    metadata["agent_part_index"] = partIndex
+    if let count = parseInt(anyValue(["agentPartCount", "agent_part_count"])) {
+      metadata["agentPartCount"] = count
+      metadata["agent_part_count"] = count
+    }
+    metadata["agentPartKind"] = kind
+    metadata["agent_part_kind"] = kind
+    metadata["agentFinalized"] = true
+    metadata["agent_finalized"] = true
+
+    if let assistantId = normalizedString(
+      anyValue(["assistantMessageId", "assistant_message_id", "parentMessageId", "parent_message_id"])
+    ) {
+      metadata["assistantMessageId"] = assistantId
+    }
+
+    let messageType: String
+    switch kind {
+    case "music", "audio", "mp3":
+      messageType = "music"
+    case "question", "ask_user", "ask-user":
+      messageType = "question"
+    default:
+      messageType = kind
+    }
+
+    // Music rows require a playable URL for the audio cell + queue registry.
+    if messageType == "music", mediaUrl == nil {
+      if let videoId, !videoId.isEmpty {
+        let fallback = "https://api.vibegram.io/api/music/stream/\(videoId)"
+        return ChatNativeAgentRichOutput(
+          id: partId,
+          agentPartIndex: partIndex,
+          kind: messageType,
+          mediaUrl: fallback,
+          text: text,
+          fileName: title,
+          durationSeconds: durationSeconds,
+          timestampMs: timestampMs,
+          assistantMessageId: normalizedString(
+            anyValue([
+              "assistantMessageId", "assistant_message_id", "parentMessageId", "parent_message_id",
+            ])),
+          metadata: {
+            var m = metadata
+            m["previewUrl"] = fallback
+            m["preview_url"] = fallback
+            m["streamUrl"] = fallback
+            m["stream_url"] = fallback
+            m["mediaUrl"] = fallback
+            m["media_url"] = fallback
+            return m
+          }()
+        )
+      }
+      NSLog("[ChatNativeAgent] skip music rich output without mediaUrl id=%@", partId)
+      return nil
+    }
+
+    return ChatNativeAgentRichOutput(
+      id: partId,
+      agentPartIndex: partIndex,
+      kind: messageType,
+      mediaUrl: mediaUrl,
+      text: text,
+      fileName: title,
+      durationSeconds: durationSeconds,
+      timestampMs: timestampMs,
+      assistantMessageId: normalizedString(
+        anyValue([
+          "assistantMessageId", "assistant_message_id", "parentMessageId", "parent_message_id",
+        ])),
+      metadata: metadata
+    )
+  }
+
+  private static func parseInt(_ raw: Any?) -> Int? {
+    if let value = raw as? Int { return value }
+    if let value = raw as? NSNumber { return value.intValue }
+    if let value = raw as? String {
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      return Int(trimmed)
+    }
+    return nil
+  }
+
+  private static func parseFlexibleDurationSeconds(_ raw: Any?) -> Double? {
+    if let value = raw as? Double, value.isFinite {
+      return value > 10_000 ? value / 1000.0 : value
+    }
+    if let value = raw as? NSNumber {
+      let doubleValue = value.doubleValue
+      guard doubleValue.isFinite else { return nil }
+      // Heuristic: values that look like milliseconds.
+      return doubleValue > 10_000 ? doubleValue / 1000.0 : doubleValue
+    }
+    if let value = raw as? String {
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else { return nil }
+      if let number = Double(trimmed) {
+        return number > 10_000 ? number / 1000.0 : number
+      }
+      // mm:ss or h:mm:ss
+      let parts = trimmed.split(separator: ":").compactMap { Double($0) }
+      if parts.count == 2 {
+        return parts[0] * 60.0 + parts[1]
+      }
+      if parts.count == 3 {
+        return parts[0] * 3600.0 + parts[1] * 60.0 + parts[2]
+      }
+    }
+    return nil
+  }
+
+  private static func formatDurationLabel(seconds: Double) -> String {
+    guard seconds.isFinite, seconds > 0 else { return "0:00" }
+    let total = Int(seconds.rounded())
+    let hours = total / 3600
+    let minutes = (total % 3600) / 60
+    let secs = total % 60
+    if hours > 0 {
+      return String(format: "%d:%02d:%02d", hours, minutes, secs)
+    }
+    return String(format: "%d:%02d", minutes, secs)
   }
 
   private func handleSubagentEvent(_ payload: [String: Any]) {
@@ -1467,14 +2465,18 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       guard conversation.messages[lastIndex].role == .assistant else { return }
 
       let toolKey = "subagent_\(label)"
-      if segmentStatus == "complete" || segmentStatus == "error" {
-        conversation.messages[lastIndex].streamSegments.removeAll {
-          $0.isRunningProgress && $0.progressTool == toolKey
-        }
+      if let existingIdx = conversation.messages[lastIndex].streamSegments.firstIndex(where: {
+        $0.progressTool == toolKey
+      }) {
+        let existingId = conversation.messages[lastIndex].streamSegments[existingIdx].progressId
+          ?? UUID().uuidString
+        conversation.messages[lastIndex].streamSegments[existingIdx] = .progress(
+          id: existingId,
+          label: nextLabel,
+          tool: toolKey,
+          status: segmentStatus
+        )
       } else {
-        conversation.messages[lastIndex].streamSegments.removeAll {
-          $0.isRunningProgress && $0.progressTool == toolKey
-        }
         conversation.messages[lastIndex].streamSegments.append(
           .progress(
             id: UUID().uuidString,
@@ -1567,9 +2569,12 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
         promptStatus: card.promptStatus,
         promptPreview: card.promptPreview,
         systemPrompt: card.systemPrompt,
+        modelProvider: card.modelProvider,
+        modelId: card.modelId,
         enabledTools: card.enabledTools,
         outputModes: card.outputModes,
         voiceProfile: card.voiceProfile,
+        voiceProvider: card.voiceProvider,
         callbackURL: card.callbackURL,
         apiBaseURL: card.apiBaseURL,
         invokeURL: card.invokeURL,
@@ -1613,9 +2618,12 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       promptStatus: card.promptStatus,
       promptPreview: card.promptPreview,
       systemPrompt: card.systemPrompt,
+      modelProvider: card.modelProvider,
+      modelId: card.modelId,
       enabledTools: card.enabledTools,
       outputModes: card.outputModes,
       voiceProfile: card.voiceProfile,
+      voiceProvider: card.voiceProvider,
       callbackURL: card.callbackURL,
       apiBaseURL: card.apiBaseURL,
       invokeURL: card.invokeURL,
@@ -1714,7 +2722,8 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
           title: title,
           createdAt: Self.parseTimestampMs(item["inserted_at"]) ?? Self.nowMs(),
           updatedAt: Self.parseTimestampMs(item["updated_at"]) ?? Self.nowMs(),
-          messages: existing?.messages ?? []
+          messages: existing?.messages ?? [],
+          richOutputs: existing?.richOutputs ?? []
         )
       }
 
@@ -1727,8 +2736,17 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
 
       merged.sort { $0.createdAt > $1.createdAt }
       self.conversations = merged
+      // Keep the current session in view. Only fall back to the newest remote
+      // conversation when we have no active id (first open). New Chat sets a
+      // local active id so we never wipe the open list unless the user asked.
       if self.activeConversationId == nil {
         self.activeConversationId = merged.first?.id
+      } else if let activeId = self.activeConversationId,
+        !merged.contains(where: { $0.id == activeId }),
+        let localActive = localConversations.first(where: { $0.id == activeId })
+      {
+        // Local-only active (e.g. brand-new chat not on server yet) — keep it.
+        self.conversations.insert(localActive, at: 0)
       }
 
       self.persistState()
@@ -1778,13 +2796,28 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     )
 
     updateConversation(conversationId) { conversation in
+      let keptMessageIds = Set(
+        conversation.messages.prefix(assistantIndex).map(\.id)
+      )
       conversation.messages = Array(conversation.messages.prefix(assistantIndex))
       conversation.messages.append(assistantMessage)
+      // Drop rich rows that belonged to the regenerated turn (or later).
+      conversation.richOutputs.removeAll { output in
+        guard let parentId = output.assistantMessageId else {
+          // Unlinked artifacts after the truncation point are removed by id collision
+          // only when they shared the regenerated assistant id as their own id prefix.
+          return output.id == assistantMessageId
+            || output.id.hasPrefix("\(assistantMessageId)-")
+        }
+        return !keptMessageIds.contains(parentId)
+      }
       conversation.updatedAt = timestampMs
     }
+    pendingRichOutputsByConversation.removeValue(forKey: conversationId)
 
     streamingConversationId = conversationId
     notifyStreamingStateChanged()
+    setHeaderActivityState(fallback: "thinking")
     currentSpacerHeight = 0.0
     persistState()
     refreshHistoryList()
@@ -1799,7 +2832,10 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
         .message(
           conversationId: conversationId,
           text: userText,
-          truncateAtId: assistantMessageId
+          truncateAtId: assistantMessageId,
+          modelProvider: selectedModelProvider,
+          modelId: selectedModelId,
+          thinkingLevel: selectedThinkingLevel
         ))
     }
   }
@@ -1818,10 +2854,52 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       }
 
       let rawMessages = (conversationPayload["messages"] as? [[String: Any]]) ?? []
-      let messages = rawMessages.compactMap(Self.parseServerMessage)
+      var messages = rawMessages.compactMap(Self.parseServerMessage)
+      // Preserve local v2 turn structure across server rehydrate (server only has thin text).
+      let localById: [String: ChatNativeAgentMessage] = {
+        guard let existing = self.conversation(for: id) else { return [:] }
+        return Dictionary(uniqueKeysWithValues: existing.messages.map { ($0.id, $0) })
+      }()
+      messages = messages.map { serverMessage in
+        var merged = serverMessage
+        if let local = localById[serverMessage.id],
+          let version = local.agentTurnStructureVersion, version >= 2,
+          let nodesJSON = local.settledProgressNodesJSON, !nodesJSON.isEmpty
+        {
+          merged.settledProgressNodesJSON = nodesJSON
+          merged.agentTurnStructureVersion = version
+          // Keep richer local streamSegments when the server only sent final content.
+          if local.streamSegments.count > serverMessage.streamSegments.count {
+            merged.streamSegments = local.streamSegments
+          }
+        } else if let nodesJSON = Self.loadLocalTurnStructureData(messageId: serverMessage.id) {
+          merged.settledProgressNodesJSON = nodesJSON
+          merged.agentTurnStructureVersion = 2
+        }
+        return merged
+      }
+      // History may already include finalized music/question rows as normal messages.
+      let historyRich = rawMessages.compactMap(Self.parseServerRichOutputMessage)
+        + rawMessages.flatMap(Self.parseNestedServerRichOutputs)
+      let payloadRich = Self.parseRichOutputs(from: conversationPayload)
 
       self.updateConversation(id) { conversation in
         conversation.messages = messages.sorted { $0.timestampMs < $1.timestampMs }
+        var mergedById = Dictionary(
+          uniqueKeysWithValues: conversation.richOutputs.map { ($0.id, $0) })
+        for output in historyRich + payloadRich {
+          mergedById[output.id] = output
+        }
+        // Drop rich rows that duplicate a text message id still present in messages.
+        let messageIds = Set(conversation.messages.map(\.id))
+        conversation.richOutputs = mergedById.values
+          .filter { !messageIds.contains($0.id) || $0.kind != "text" }
+          .sorted {
+            if $0.agentPartIndex != $1.agentPartIndex {
+              return $0.agentPartIndex < $1.agentPartIndex
+            }
+            return $0.timestampMs < $1.timestampMs
+          }
         conversation.updatedAt = Self.nowMs()
       }
       self.persistState()
@@ -1830,11 +2908,21 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     }
   }
 
-  private func pushMessage(text: String, conversationId: String, truncateAtId: String?) {
+  private func pushMessage(
+    text: String,
+    conversationId: String,
+    truncateAtId: String?,
+    modelProvider: String? = nil,
+    modelId: String? = nil,
+    thinkingLevel: String? = nil
+  ) {
     var payload: [String: Any] = [
       "text": text,
       "images": [],
       "conversation_id": conversationId,
+      "model_provider": modelProvider ?? selectedModelProvider,
+      "model_id": modelId ?? selectedModelId,
+      "thinking_level": thinkingLevel ?? selectedThinkingLevel,
     ]
     if let truncateAtId, !truncateAtId.isEmpty {
       payload["truncate_at_id"] = truncateAtId
@@ -1852,11 +2940,21 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     pendingSends.removeAll()
     for pending in queued {
       switch pending {
-      case .message(let conversationId, let text, let truncateAtId):
+      case .message(
+        let conversationId,
+        let text,
+        let truncateAtId,
+        let modelProvider,
+        let modelId,
+        let thinkingLevel
+      ):
         pushMessage(
           text: text,
           conversationId: conversationId,
-          truncateAtId: truncateAtId
+          truncateAtId: truncateAtId,
+          modelProvider: modelProvider,
+          modelId: modelId,
+          thinkingLevel: thinkingLevel
         )
 
       case .builderUiResponse(let conversationId, let uiResponse, let summary):
@@ -1877,6 +2975,42 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     guard let client = phoenixClient, !topic.isEmpty else { return }
     let ref = client.push(topic: topic, event: event, payload: payload)
     pendingReplies[ref] = reply
+  }
+
+  /// Store the server's ordered node container on the streaming assistant message.
+  /// Authoritative when present — see `ChatNativeAgentMessage.serverProgressNodesJSON`.
+  private func captureServerProgressNodes(from payload: [String: Any]) {
+    let raw =
+      (payload["progressNodes"] as? [[String: Any]])
+      ?? (payload["progress_nodes"] as? [[String: Any]])
+    guard let raw, !raw.isEmpty else { return }
+    guard JSONSerialization.isValidJSONObject(raw),
+      let data = try? JSONSerialization.data(withJSONObject: raw, options: [])
+    else { return }
+    guard let conversationId = streamingConversationId ?? activeConversationId else { return }
+
+    updateConversation(conversationId) { conversation in
+      guard !conversation.messages.isEmpty else { return }
+      let lastIndex = conversation.messages.count - 1
+      guard conversation.messages[lastIndex].role == .assistant else { return }
+      conversation.messages[lastIndex].serverProgressNodesJSON = data
+    }
+  }
+
+  /// Nodes the server sent for this turn, if any.
+  private static func serverProgressNodes(
+    from message: ChatNativeAgentMessage
+  ) -> [[String: Any]]? {
+    guard let data = message.serverProgressNodesJSON, !data.isEmpty,
+      let nodes = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+      !nodes.isEmpty
+    else { return nil }
+    return nodes
+  }
+
+  private static func isTextNode(_ node: [String: Any]) -> Bool {
+    let kind = (node["kind"] as? String) ?? (node["itemType"] as? String) ?? ""
+    return kind == "text"
   }
 
   private func appendChunk(_ chunk: String) {
@@ -1956,6 +3090,7 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     markUserMessageFailed: Bool? = nil
   ) {
     streamingTimeoutWorkItem?.cancel()
+    setHeaderActivityState(fallback: "ready")
 
     guard let conversationId = streamingConversationId ?? activeConversationId else {
       NSLog("[ChatNativeAgent] finishStreaming: no active conversation")
@@ -1982,7 +3117,19 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       // Only an errored turn keeps the regenerate affordance; a clean/stopped
       // finish clears it.
       conversation.messages[lastIndex].isError = forceErrorText ? true : nil
-      conversation.messages[lastIndex].streamSegments.removeAll { $0.isRunningProgress }
+      // Seal running progress as complete — do NOT wipe the step list (that is
+      // what made the cell appear to clear when the answer settled).
+      for (idx, segment) in conversation.messages[lastIndex].streamSegments.enumerated() {
+        guard case .progress(let id, let label, let tool, let status) = segment,
+          status == "running"
+        else { continue }
+        conversation.messages[lastIndex].streamSegments[idx] = .progress(
+          id: id,
+          label: label,
+          tool: tool,
+          status: forceErrorText ? "error" : "complete"
+        )
+      }
 
       // Tag (or clear) the nearest preceding user message's delivered state.
       if let userIndex = conversation.messages[..<lastIndex].lastIndex(where: {
@@ -1990,11 +3137,27 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       }) {
         conversation.messages[userIndex].deliveryFailed = markFailed ? true : nil
       }
+
+      // Seal the full ordered turn structure (intro→note→summary) into the local
+      // message so cold-open / server rehydrate keep the same feed the live turn had.
+      // FROZEN: metadata["agentTurnStructureVersion"] = 2 + full progressNodes array.
+      let sealed = Self.settledTurnStructure(from: conversation.messages[lastIndex])
+      if let sealed {
+        conversation.messages[lastIndex].settledProgressNodesJSON = sealed.nodesJSON
+        conversation.messages[lastIndex].agentTurnStructureVersion = 2
+        Self.persistLocalTurnStructure(
+          messageId: conversation.messages[lastIndex].id,
+          nodesJSON: sealed.nodesJSON
+        )
+      }
+
       conversation.updatedAt = Self.nowMs()
     }
 
     streamingConversationId = nil
     notifyStreamingStateChanged()
+    // Rich artifacts are only committed after the text turn settles.
+    flushPendingRichOutputs(for: conversationId)
     persistState()
     refreshHistoryList()
     rebuildChatRows(scrollToBottom: false, animated: false)
@@ -2010,9 +3173,11 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     finishStreaming(fallbackText: "Stopped.", forceErrorText: false, markUserMessageFailed: true)
     onNativeEvent(["type": "agentToast", "message": "Stopped response"])
 
+    // Aborting a stream still means dropping the socket — that IS the abort mechanism.
+    // Route it through the holder so its cached state can't outlive the connection.
     joinedTopic = false
     reconnectWorkItem?.cancel()
-    phoenixClient?.disconnect()
+    ChatNativeAgentSocketHolder.shared.invalidate()
     phoenixClient = nil
     scheduleReconnect()
   }
@@ -2035,7 +3200,7 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
 
     let cardTitle = card.displayName
 
-    URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+    VibeHTTP.shared.dataTask(with: request) { [weak self] data, response, error in
       DispatchQueue.main.async {
         guard let self else { return }
 
@@ -2162,6 +3327,7 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
 
   private func deleteConversation(id: String) {
     conversations.removeAll(where: { $0.id == id })
+    pendingRichOutputsByConversation.removeValue(forKey: id)
     if activeConversationId == id {
       activeConversationId = conversations.sorted { $0.createdAt > $1.createdAt }.first?.id
       currentSpacerHeight = 0
@@ -2285,13 +3451,27 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
         message["deliveryFailed"] = true
       }
 
+      if let mediaUrl = entry.mediaUrl, !mediaUrl.isEmpty {
+        message["mediaUrl"] = mediaUrl
+      }
+      if let fileName = entry.fileName, !fileName.isEmpty {
+        message["fileName"] = fileName
+      }
+      if let duration = entry.duration, duration.isFinite, duration > 0 {
+        message["duration"] = duration
+      }
+
       if entry.isAgentMessage {
         message["isAgentMessage"] = true
         message["agentName"] = "Vibe AI"
         message["plainContent"] = entry.text
-        var metadata: [String: Any] = [:]
+        var metadata: [String: Any] = entry.metadata ?? [:]
         if let progressNodes = entry.progressNodes, !progressNodes.isEmpty {
           metadata["progressNodes"] = progressNodes
+        }
+        // FROZEN key+value: cold-open / merge prefer local v2 full structure over thin server.
+        if let version = entry.agentTurnStructureVersion, version >= 2 {
+          metadata["agentTurnStructureVersion"] = version
         }
         if let agentCard = entry.agentCard {
           metadata["agentCard"] = agentCard.rawValue
@@ -2316,6 +3496,8 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
         if entry.isStreaming {
           message["isStreaming"] = true
         }
+      } else if let metadata = entry.metadata, !metadata.isEmpty {
+        message["metadata"] = metadata
       }
 
       rows.append([
@@ -2323,6 +3505,14 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
         "key": "m-\(entry.id)",
         "message": message,
       ])
+
+      if entry.isAgentMessage, entry.isStreaming {
+        NSLog(
+          "[AgentGap] emit id=%@ type=%@ nodes=%d textLen=%d streaming=1",
+          String(entry.id.suffix(12)), entry.messageType,
+          entry.progressNodes?.count ?? 0,
+          entry.text.trimmingCharacters(in: .whitespacesAndNewlines).count)
+      }
 
       // The standalone bottom "agent_actions" row (copy/thumb/regenerate tab bar)
       // is intentionally not emitted anymore. Regenerate now lives on the agent
@@ -2338,6 +3528,15 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
   {
     let messages = conversation.messages.sorted { $0.timestampMs < $1.timestampMs }
     var entries: [ChatNativeAgentRenderEntry] = []
+    var emittedRichIds = Set<String>()
+    // A still-streaming turn's OWN rich artifacts are buffered in
+    // pendingRichOutputsByConversation (handleRichOutputsEvent) and only committed to
+    // conversation.richOutputs on finish (flushPendingRichOutputs), so they can never
+    // reach appendRichOutputEntries — which reads only committed outputs — mid-stream.
+    // The per-message `!isActiveStreaming` guards below keep them off the live turn.
+    // We must NOT suppress rich rows conversation-WIDE while streaming: that made every
+    // already-rendered older track/card vanish on each send and reappear on finish (the
+    // "media disappears from list / gap shift" churn). Older committed outputs stay.
 
     for message in messages {
       let isActiveStreaming =
@@ -2349,8 +3548,9 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
         switch segment {
         case .text(let text):
           return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .progress(_, _, _, let status):
-          return status == "running"
+        case .progress:
+          // Keep completed steps on the same turn cell after settle (not only running).
+          return true
         case .cards(_, let cards):
           return !cards.isEmpty
         }
@@ -2364,31 +3564,27 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
           into: &entries
         )
         if entries.count > entryCountBeforeAppend {
+          if !isActiveStreaming {
+            appendRichOutputEntries(
+              for: conversation,
+              assistantMessageId: message.id,
+              afterTimestamp: message.timestampMs,
+              emittedIds: &emittedRichIds,
+              into: &entries
+            )
+          }
           continue
         }
       }
 
-      if isActiveStreaming && trimmedContent.isEmpty {
-        entries.append(
-          ChatNativeAgentRenderEntry(
-            id: "\(message.id)-thinking",
-            messageId: message.id,
-            role: .assistant,
-            text: "Thinking...",
-            timestampMs: max(message.timestampMs, Self.nowMs()),
-            messageType: "agent_progress_tree",
-            isStreaming: false,
-            isAgentMessage: true,
-            showTail: false,
-            progressNodes: [
-              ["id": "\(message.id)-thinking", "label": "Thinking...", "status": "running", "depth": 0]
-            ],
-            agentCard: nil,
-            actionSourceMessageId: nil,
-            actionSourceText: nil
-          ))
-        continue
-      }
+      // No placeholder "Thinking…" bubble. A streaming assistant turn with nothing
+      // renderable yet (no text, no running tool step, no cards) emits NO row — the cell
+      // is born only when real content arrives, and then it grows with the stream. The
+      // old full-width "Thinking…" shell was large and empty, and the moment the first
+      // chunk landed it re-measured and shifted the layout. Tool activity is unaffected:
+      // a running-progress segment makes `hasRenderableSegments` true above, so it still
+      // renders through appendSegmentedEntries. The guard below drops the empty turn.
+      if isActiveStreaming && trimmedContent.isEmpty { continue }
 
       guard !trimmedContent.isEmpty || message.role == .user else { continue }
 
@@ -2410,9 +3606,95 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
           deliveryFailed: message.role == .user && (message.deliveryFailed ?? false),
           isError: message.role == .assistant && (message.isError ?? false)
         ))
+
+      if !isActiveStreaming, message.role == .assistant {
+        appendRichOutputEntries(
+          for: conversation,
+          assistantMessageId: message.id,
+          afterTimestamp: message.timestampMs,
+          emittedIds: &emittedRichIds,
+          into: &entries
+        )
+      }
+    }
+
+    // Orphans are always prior-turn committed outputs (the live turn's are still
+    // buffered as pending), so they are safe to surface even while streaming.
+    do {
+      // Orphan rich rows (no parent assistant id) still render, in part-index order.
+      appendRichOutputEntries(
+        for: conversation,
+        assistantMessageId: nil,
+        afterTimestamp: nil,
+        emittedIds: &emittedRichIds,
+        into: &entries,
+        includeOrphans: true
+      )
     }
 
     return entries
+  }
+
+  private func appendRichOutputEntries(
+    for conversation: ChatNativeAgentConversation,
+    assistantMessageId: String?,
+    afterTimestamp: Int64?,
+    emittedIds: inout Set<String>,
+    into entries: inout [ChatNativeAgentRenderEntry],
+    includeOrphans: Bool = false
+  ) {
+    let candidates = conversation.richOutputs
+      .filter { output in
+        if emittedIds.contains(output.id) { return false }
+        if let assistantMessageId {
+          return output.assistantMessageId == assistantMessageId
+            || output.assistantMessageId == nil
+        }
+        if includeOrphans {
+          return output.assistantMessageId == nil
+            || !conversation.messages.contains(where: { $0.id == output.assistantMessageId })
+        }
+        return false
+      }
+      .sorted {
+        if $0.agentPartIndex != $1.agentPartIndex {
+          return $0.agentPartIndex < $1.agentPartIndex
+        }
+        return $0.timestampMs < $1.timestampMs
+      }
+
+    for output in candidates {
+      // When attached to a specific assistant message, only claim unlinked outputs once.
+      if let assistantMessageId,
+        output.assistantMessageId == nil,
+        conversation.messages.last(where: { $0.role == .assistant })?.id != assistantMessageId
+      {
+        continue
+      }
+      emittedIds.insert(output.id)
+      let baseTimestamp = afterTimestamp ?? output.timestampMs
+      let timestampMs = max(output.timestampMs, baseTimestamp + Int64(output.agentPartIndex))
+      entries.append(
+        ChatNativeAgentRenderEntry(
+          id: output.id,
+          messageId: output.id,
+          role: .assistant,
+          text: output.text,
+          timestampMs: timestampMs,
+          messageType: output.kind,
+          isStreaming: false,
+          isAgentMessage: true,
+          showTail: false,
+          progressNodes: nil,
+          agentCard: nil,
+          actionSourceMessageId: nil,
+          actionSourceText: nil,
+          mediaUrl: output.mediaUrl,
+          fileName: output.fileName,
+          duration: output.durationSeconds,
+          metadata: output.metadata
+        ))
+    }
   }
 
   private func appendSegmentedEntries(
@@ -2458,61 +3740,135 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       }
     }
 
-    // The whole assistant turn renders as a SINGLE bubble. `content` already
-    // accumulates every streamed chunk, so a response that streamed across tool
-    // calls (text → progress → text) collapses into one cell that expands as it
-    // streams — instead of several stacked bubbles split at each tool boundary.
-    let mergedText = message.content
-    let hasText = !mergedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    // ONE stable turn cell for the whole assistant message. Never swap ids from
+    // "-progress" → "-text" (that remounted the cell and looked like clear+replace).
+    // Progress steps (thread start, tool fetches, done) live as progressNodes on
+    // the same entry as the streaming answer text.
+    let renderableTextIndices: [Int] = message.streamSegments.enumerated().compactMap {
+      index, segment in
+      if case .text(let text) = segment,
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      {
+        return index
+      }
+      return nil
+    }
+    let hasToolSteps = message.streamSegments.contains {
+      if case .progress = $0 { return true }
+      return false
+    }
+    // With tools, prose rides as "text" nodes. While STREAMING every text segment (incl.
+    // the in-flight answer) is a node so it shows + grows live; once SETTLED the final text
+    // segment graduates to the answer body so the bubble reads like a normal reply.
+    let answerTextIndex: Int? = (hasToolSteps && !isStreaming) ? renderableTextIndices.last : nil
+    // Prefer durable v2 structure (sealed at finishStreaming) over a thin rebuild when
+    // streamSegments were clobbered by a server rehydrate. Live turns always rebuild.
+    // Side store is authoritative even when the in-message version field is missing.
+    let settledVersion = message.agentTurnStructureVersion ?? 0
+    let settledNodes: [[String: Any]]? = {
+      guard !isStreaming else { return nil }
+      if let data = message.settledProgressNodesJSON,
+        let nodes = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+        !nodes.isEmpty
+      {
+        return nodes
+      }
+      // Side store keyed by message id (survives conversation message replacement).
+      return Self.loadLocalTurnStructure(messageId: message.id)
+    }()
+    // Server container wins when present: it is already ordered and carries kind/tokens/
+    // thinkingText. Settled (sealed) structure still wins over it so a finished turn never
+    // re-renders differently than it did live.
+    let serverNodes = Self.serverProgressNodes(from: message)
+    // Settled turns hand their final text to the answer body, so the last text node must not
+    // also appear in the feed.
+    let serverFeedNodes: [[String: Any]]? = serverNodes.map { nodes in
+      guard !isStreaming, let lastTextIndex = nodes.lastIndex(where: Self.isTextNode)
+      else { return nodes }
+      var trimmed = nodes
+      trimmed.remove(at: lastTextIndex)
+      return trimmed
+    }
+    let progressNodes: [[String: Any]] =
+      settledNodes
+      ?? serverFeedNodes
+      ?? buildTurnNodes(
+        from: message.streamSegments,
+        emitTextNodes: hasToolSteps,
+        answerTextIndex: answerTextIndex
+      )
+    let structureVersion: Int? = settledNodes != nil ? max(settledVersion, 2) : nil
+    let hasProgress = !progressNodes.isEmpty
+    let hasTextNodes = progressNodes.contains {
+      ($0["itemType"] as? String) == "text" || ($0["kind"] as? String) == "text"
+    }
 
-    if hasText {
-      // Attach the action bar (regenerate / copy) once the turn is finished and
-      // text is the final renderable segment.
-      let lastIsText: Bool = lastRenderableSegmentIndex.map { idx in
-        if case .text = message.streamSegments[idx] { return true }
-        return false
-      } ?? true
-      let attachActions = !isStreaming && lastIsText
+    // Answer body: pure-prose turns stream it live; with-tools turns show it only once
+    // settled (live prose rides in the "text" nodes above and the body is suppressed).
+    let bodyText: String = {
+      // Server-authoritative: the last text node IS the answer once the turn settles, and
+      // while it streams the prose rides in the feed. Derived from the same list the feed
+      // renders, so body and feed can never disagree.
+      if let serverNodes, settledNodes == nil {
+        let hasServerToolSteps = serverNodes.contains { !Self.isTextNode($0) }
+        if !hasServerToolSteps { return message.content }
+        guard !isStreaming,
+          let last = serverNodes.last(where: Self.isTextNode),
+          let text = last["label"] as? String
+        else { return isStreaming ? "" : message.content }
+        return text
+      }
+      if !hasToolSteps { return message.content }  // pure prose (Case A): body streams
+      guard !isStreaming, let answerTextIndex,
+        case .text(let text) = message.streamSegments[answerTextIndex]
+      else {
+        // Server rehydrate may leave only content + sealed nodes (no streamSegments text).
+        if !isStreaming, settledNodes != nil {
+          return message.content
+        }
+        return ""  // with-tools + live: body suppressed, prose is in the feed
+      }
+      return text
+    }()
+    let hasText = !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+    if hasText || hasProgress {
+      let attachActions = !isStreaming && hasText
+      // Prefer "text" once answer prose exists so the bubble uses the normal agent
+      // text path + progress nodes; until then use agent_progress_tree for the
+      // step-only shell.
+      let messageType = hasText ? "text" : "agent_progress_tree"
+      let displayText: String = {
+        if hasText { return bodyText }
+        // No answer body yet. If the feed already carries prose (text nodes), let the
+        // loader carry the status — don't fabricate a body. Only a truly text-less turn
+        // surfaces the running/last step label so the shell isn't blank.
+        if hasTextNodes { return "" }
+        if let running = progressNodes.last(where: {
+          ($0["status"] as? String)?.lowercased() == "running"
+        }), let label = running["label"] as? String, !label.isEmpty {
+          return label
+        }
+        return (progressNodes.last?["label"] as? String) ?? "Working…"
+      }()
       entries.append(
         ChatNativeAgentRenderEntry(
-          id: "\(message.id)-text",
+          id: "\(message.id)-turn",
           messageId: message.id,
           role: .assistant,
-          text: mergedText,
+          text: displayText,
           timestampMs: message.timestampMs,
-          messageType: "text",
+          messageType: messageType,
           isStreaming: isStreaming,
           isAgentMessage: true,
-          showTail: true,
-          progressNodes: nil,
+          showTail: hasText,
+          progressNodes: progressNodes,
           agentCard: nil,
           actionSourceMessageId: attachActions ? message.id : nil,
           actionSourceText: attachActions ? message.content : nil,
-          isError: message.isError ?? false
+          isError: message.isError ?? false,
+          agentTurnStructureVersion: structureVersion
         ))
-    } else {
-      // No text yet — surface the running-progress tree so the user sees tool
-      // activity before the answer arrives. Once text exists it supersedes this.
-      let runningProgress = message.streamSegments.filter { $0.isRunningProgress }
-      let progressNodes = buildProgressNodes(from: runningProgress)
-      if !progressNodes.isEmpty {
-        entries.append(
-          ChatNativeAgentRenderEntry(
-            id: "\(message.id)-progress",
-            messageId: message.id,
-            role: .assistant,
-            text: (progressNodes.first?["label"] as? String) ?? "Working...",
-            timestampMs: max(message.timestampMs, Self.nowMs()),
-            messageType: "agent_progress_tree",
-            isStreaming: false,
-            isAgentMessage: true,
-            showTail: false,
-            progressNodes: progressNodes,
-            agentCard: nil,
-            actionSourceMessageId: nil,
-            actionSourceText: nil
-          ))
-      }
     }
 
     if !deferredCardEntries.isEmpty, !isStreaming || hasText {
@@ -2520,33 +3876,184 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     }
   }
 
-  private func buildProgressNodes(from segments: [ChatNativeAgentStreamSegment]) -> [[String: Any]] {
+  /// Build progress-node metadata for the turn cell. Includes running AND completed
+  /// steps so "Resolving SoundCloud…" stays visible under the answer.
+  /// Ordered interleaved node feed for the turn cell. `.progress` steps become tool nodes
+  /// and (when `emitTextNodes`) narration `.text` segments become `kind:"text"` nodes, IN
+  /// STREAM ORDER, so the body renders intro → notes → summary continuously — the same
+  /// "prose rides as text progressItems" contract the bridge agents already use. Without
+  /// this, a built-in-agent turn WITH tool steps is not `isPlainProseLiveTurn`, so the
+  /// interleaved path suppresses the body and the whole answer hides behind the loader
+  /// until settle. `answerTextIndex` (when non-nil) is the one text segment NOT emitted
+  /// here because it graduates to the settled answer body (displayText). Node ids are
+  /// stable (progress id, or position for text) so the feed updates in place, never remounts.
+  private func buildTurnNodes(
+    from segments: [ChatNativeAgentStreamSegment],
+    emitTextNodes: Bool,
+    answerTextIndex: Int?
+  ) -> [[String: Any]] {
+    Self.buildTurnNodes(
+      from: segments, emitTextNodes: emitTextNodes, answerTextIndex: answerTextIndex)
+  }
+
+  private static func buildTurnNodes(
+    from segments: [ChatNativeAgentStreamSegment],
+    emitTextNodes: Bool,
+    answerTextIndex: Int?
+  ) -> [[String: Any]] {
     var nodes: [[String: Any]] = []
     var hasSubagentNode = false
 
-    for segment in segments {
-      guard case .progress(let id, let label, let tool, let status) = segment, status == "running" else {
+    for (index, segment) in segments.enumerated() {
+      switch segment {
+      case .text(let text):
+        guard emitTextNodes, index != answerTextIndex else { continue }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+        // Narration node: `label` carries the prose, `kind`/`itemType` "text" → the
+        // interleaved feed renders it as streaming text between the tool steps.
+        nodes.append([
+          "id": "text-\(index)",
+          "label": text,
+          "kind": "text",
+          "itemType": "text",
+          "status": "complete",
+          "depth": 0,
+        ])
+
+      case .progress(let id, let label, let tool, let status):
+        // thread_start is a placeholder sentinel ("Working…"), NEVER a real step — never
+        // render it as a node. New turns no longer seed it, but OLD persisted turns baked a
+        // COMPLETED thread_start in (finishStreaming seals every running step to "complete"
+        // at done), and a lone one rendered as an empty transparent progress shell under the
+        // answer — the gap the user reported ("skeleton still there"). Dropping it here cleans
+        // old + new + any server-sent thread_start at render time, so a settled pure-prose
+        // turn falls back to a clean text bubble instead of a text bubble + phantom shell.
+        if tool == "thread_start" { continue }
+
+        // depth must stay 0 for top-level tools (search_music, etc.).
+        // VibeAgentKitMap.chatMessage only surfaces depth==0 as feed items;
+        // depth>=1 is treated as nested under a subagent and was dropping every
+        // Vibe AI tool step — feed showed only "text" nodes (AgentFeed order=[text]).
+        let depth: Int
+        if tool == "delegate_to_subagent" || tool == nil || tool == "thread_start" {
+          depth = 0
+        } else if let tool, tool.hasPrefix("subagent_") {
+          depth = 1
+          hasSubagentNode = true
+        } else if hasSubagentNode {
+          depth = 2
+        } else {
+          depth = 0
+        }
+
+        var node: [String: Any] = [
+          "id": id,
+          "label": label,
+          "status": status,
+          "depth": depth,
+          // itemType/kind "tool" so hasToolProgressItems is true (not all "text").
+          "kind": "tool",
+          "itemType": "tool",
+        ]
+        if let tool {
+          node["tool"] = tool
+          // Keep a stable kind that still counts as a non-text tool step.
+          node["kind"] = tool
+          node["itemType"] = tool
+        }
+        nodes.append(node)
+
+      case .cards:
         continue
       }
-
-      let depth: Int
-      if tool == "delegate_to_subagent" || tool == nil {
-        depth = 0
-      } else if let tool, tool.hasPrefix("subagent_") {
-        depth = 1
-        hasSubagentNode = true
-      } else {
-        depth = hasSubagentNode ? 2 : 1
-      }
-
-      nodes.append([
-        "id": id,
-        "label": label,
-        "status": status,
-        "depth": depth,
-      ])
     }
 
+    return nodes
+  }
+
+  // MARK: - Settled turn structure (v2) — local durable store
+
+  /// FROZEN contract key for the side store (UserDefaults). Values are JSON arrays of
+  /// progress node dicts, keyed by assistant message id.
+  private static let turnStructureStoreKey = "ChatNativeAgentView.agentTurnStructure.v2"
+
+  /// Seal the same ordered node list the live turn rendered, for cold-open rebuild.
+  private static func settledTurnStructure(
+    from message: ChatNativeAgentMessage
+  ) -> (nodesJSON: Data, nodes: [[String: Any]])? {
+    // Prefer the server's own container so the sealed (cold-open) structure is byte-identical
+    // to what the live turn rendered — that mismatch is what made a relaunched chat show a
+    // different set of notes than the one the user watched.
+    if let serverNodes = serverProgressNodes(from: message) {
+      var nodes = serverNodes
+      if let lastTextIndex = nodes.lastIndex(where: isTextNode) {
+        nodes.remove(at: lastTextIndex)  // graduates to the answer body
+      }
+      if !nodes.isEmpty, JSONSerialization.isValidJSONObject(nodes),
+        let data = try? JSONSerialization.data(withJSONObject: nodes, options: [])
+      {
+        return (data, nodes)
+      }
+    }
+    let renderableTextIndices: [Int] = message.streamSegments.enumerated().compactMap {
+      index, segment in
+      if case .text(let text) = segment,
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      {
+        return index
+      }
+      return nil
+    }
+    let hasToolSteps = message.streamSegments.contains {
+      if case .progress = $0 { return true }
+      return false
+    }
+    // Settled mode: last text graduates to body; earlier text + all progress stay as nodes.
+    let answerTextIndex: Int? = hasToolSteps ? renderableTextIndices.last : nil
+    let nodes = buildTurnNodes(
+      from: message.streamSegments,
+      emitTextNodes: hasToolSteps,
+      answerTextIndex: answerTextIndex
+    )
+    guard !nodes.isEmpty,
+      JSONSerialization.isValidJSONObject(nodes),
+      let data = try? JSONSerialization.data(withJSONObject: nodes, options: [])
+    else { return nil }
+    return (data, nodes)
+  }
+
+  private static func persistLocalTurnStructure(messageId: String, nodesJSON: Data) {
+    let trimmed = messageId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    // UserDefaults property-list store: base64 strings keyed by message id.
+    var stringStore =
+      UserDefaults.standard.dictionary(forKey: turnStructureStoreKey) as? [String: String] ?? [:]
+    stringStore[trimmed] = nodesJSON.base64EncodedString()
+    // Cap growth: keep newest ~200 sealed turns.
+    if stringStore.count > 200 {
+      let sortedKeys = stringStore.keys.sorted()
+      for key in sortedKeys.prefix(stringStore.count - 200) {
+        stringStore.removeValue(forKey: key)
+      }
+    }
+    UserDefaults.standard.set(stringStore, forKey: turnStructureStoreKey)
+  }
+
+  private static func loadLocalTurnStructureData(messageId: String) -> Data? {
+    let trimmed = messageId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    let stringStore =
+      UserDefaults.standard.dictionary(forKey: turnStructureStoreKey) as? [String: String] ?? [:]
+    guard let b64 = stringStore[trimmed], let data = Data(base64Encoded: b64), !data.isEmpty
+    else { return nil }
+    return data
+  }
+
+  private static func loadLocalTurnStructure(messageId: String) -> [[String: Any]]? {
+    guard let data = loadLocalTurnStructureData(messageId: messageId),
+      let nodes = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+      !nodes.isEmpty
+    else { return nil }
     return nodes
   }
 
@@ -2595,9 +4102,6 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     ])
   }
 
-  private func updateSpacerForSend(conversationId: String) {
-    currentSpacerHeight = 0.0
-  }
 
   private func applyPersistedState() {
     guard
@@ -2622,7 +4126,60 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
       }
       return normalizedConversation
     }
+    // Keep the active session across app restarts until the user taps New Chat.
     activeConversationId = state.activeConversationId
+    if activeConversationId == nil,
+      let newest = conversations.max(by: { $0.updatedAt < $1.updatedAt })
+    {
+      activeConversationId = newest.id
+    }
+  }
+
+  /// Start a blank conversation (header +). Prior chats stay in History; the open
+  /// list only clears when the user explicitly starts a new chat.
+  func startNewChatSession() {
+    _ = createConversation(title: "New Chat")
+    setHeaderActivityState(fallback: "ready")
+    NSLog("[ChatNativeAgent] startNewChatSession id=%@", activeConversationId ?? "nil")
+  }
+
+  /// Present the conversation History sheet (id + title per past chat).
+  func presentConversationHistory(from presenter: UIViewController) {
+    // Refresh from server when possible so History includes every chat id the user has.
+    if joinedTopic {
+      syncConversations()
+    }
+    let sheet = ChatNativeAgentHistorySheetController(
+      conversations: conversations.sorted { $0.updatedAt > $1.updatedAt },
+      activeConversationId: activeConversationId,
+      appearance: appearance,
+      onSelect: { [weak self] id in
+        self?.selectConversation(id: id)
+      },
+      onDelete: { [weak self] id in
+        self?.deleteConversation(id: id)
+      },
+      onNewChat: { [weak self] in
+        self?.startNewChatSession()
+      }
+    )
+    let navigation = UINavigationController(rootViewController: sheet)
+    navigation.modalPresentationStyle = .pageSheet
+    if let sheetPresentation = navigation.sheetPresentationController {
+      if #available(iOS 16.0, *) {
+        sheetPresentation.detents = [.medium(), .large()]
+        sheetPresentation.selectedDetentIdentifier = .medium
+      } else {
+        sheetPresentation.detents = [.medium(), .large()]
+      }
+      sheetPresentation.prefersGrabberVisible = true
+      sheetPresentation.preferredCornerRadius = 28
+    }
+    var host: UIViewController = presenter
+    while let presented = host.presentedViewController {
+      host = presented
+    }
+    host.present(navigation, animated: true)
   }
 
   private func persistState() {
@@ -2677,18 +4234,65 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
   }
 
   private static func parseServerMessage(_ raw: [String: Any]) -> ChatNativeAgentMessage? {
+    let type =
+      (normalizedString(raw["type"] ?? raw["kind"] ?? raw["message_type"] ?? raw["messageType"])
+        ?? "text")
+      .lowercased()
+    // Non-text finalized artifacts are handled as rich outputs, not text bubbles.
+    if type != "text" && type != "assistant" && type != "user" {
+      return nil
+    }
+
     let id = normalizedString(raw["id"]) ?? UUID().uuidString
     let role = ChatNativeAgentRole(rawValue: (raw["role"] as? String) ?? "assistant") ?? .assistant
-    let content = normalizedString(raw["content"]) ?? ""
-    let timestampMs = parseTimestampMs(raw["timestamp"]) ?? nowMs()
+    let content = normalizedString(raw["content"] ?? raw["text"]) ?? ""
+    let timestampMs = parseTimestampMs(raw["timestamp"] ?? raw["timestampMs"]) ?? nowMs()
     return ChatNativeAgentMessage(
       id: id,
       role: role,
       content: content,
       timestampMs: timestampMs,
       isStreaming: false,
-      streamSegments: []
+      streamSegments: content.isEmpty ? [] : [.text(content)]
     )
+  }
+
+  /// Rebuilds a rich row from a persisted/history message that already used the
+  /// normal music/question message shape (deduped by id on merge).
+  private static func parseServerRichOutputMessage(_ raw: [String: Any]) -> ChatNativeAgentRichOutput?
+  {
+    let type =
+      (normalizedString(raw["type"] ?? raw["kind"] ?? raw["message_type"] ?? raw["messageType"])
+        ?? "")
+      .lowercased()
+    guard !type.isEmpty, type != "text", type != "assistant", type != "user" else { return nil }
+    return parseRichOutputItem(raw, fallbackIndex: 0, baseTimestamp: nowMs())
+  }
+
+  /// Agent history stores the finalized batch on its assistant message. Rehydrate those
+  /// nested outputs so reconnect/reinstall follows the same separate-cell contract as live
+  /// `rich_outputs` delivery instead of depending on a one-shot socket event.
+  private static func parseNestedServerRichOutputs(_ raw: [String: Any])
+    -> [ChatNativeAgentRichOutput]
+  {
+    let nested =
+      (raw["richOutputs"] as? [[String: Any]])
+      ?? (raw["rich_outputs"] as? [[String: Any]])
+      ?? []
+    guard !nested.isEmpty else { return [] }
+
+    var envelope: [String: Any] = ["outputs": nested]
+    if let timestamp = raw["timestamp"] ?? raw["timestampMs"] ?? raw["timestamp_ms"] {
+      envelope["timestamp"] = timestamp
+    }
+    let assistantMessageId = normalizedString(raw["id"])
+    return parseRichOutputs(from: envelope).map { output in
+      var linked = output
+      if linked.assistantMessageId == nil {
+        linked.assistantMessageId = assistantMessageId
+      }
+      return linked
+    }
   }
 
   // MARK: - Legacy decode helper
@@ -2767,21 +4371,26 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     isSequenceEnd: Bool,
     showTail: Bool
   ) -> [String: Any] {
+    // Match ChatEngine bubbleShapePayload — full 18 / merged 12 (Telegram-like).
+    let full: CGFloat = 18
+    let merged: CGFloat = 12
     var shape: [String: Any] = [
       "isMe": isMe,
       "showTail": showTail && isSequenceEnd,
-      "borderTopLeftRadius": 18,
-      "borderTopRightRadius": 18,
-      "borderBottomLeftRadius": 18,
-      "borderBottomRightRadius": 18,
+      "borderTopLeftRadius": full,
+      "borderTopRightRadius": full,
+      "borderBottomLeftRadius": full,
+      "borderBottomRightRadius": full,
     ]
 
     if isMe {
-      shape["borderTopRightRadius"] = isSequenceStart ? 18 : 5
-      shape["borderBottomRightRadius"] = isSequenceEnd ? 18 : 5
+      // Outgoing top-right remains full in every sequence position; only the
+      // bottom-right corner tightens when another outgoing bubble follows.
+      shape["borderTopRightRadius"] = full
+      shape["borderBottomRightRadius"] = isSequenceEnd ? full : merged
     } else {
-      shape["borderTopLeftRadius"] = isSequenceStart ? 18 : 5
-      shape["borderBottomLeftRadius"] = isSequenceEnd ? 18 : 5
+      shape["borderTopLeftRadius"] = isSequenceStart ? full : merged
+      shape["borderBottomLeftRadius"] = isSequenceEnd ? full : merged
     }
 
     return shape
@@ -2899,5 +4508,135 @@ public final class ChatNativeAgentView: UIView, UITableViewDataSource, UITableVi
     guard currentPage != nextPage else { return }
     currentPage = nextPage
     refreshHeader(animated: true)
+  }
+}
+
+// MARK: - History sheet (built-in Vibe AI)
+
+/// Modal History list for the hosted Vibe AI surface (transport-only `ChatNativeAgentView`
+/// cannot page-swipe into its internal history table).
+private final class ChatNativeAgentHistorySheetController: UITableViewController {
+  private var conversations: [ChatNativeAgentConversation]
+  private let activeConversationId: String?
+  private let appearance: ChatListAppearance
+  private let onSelect: (String) -> Void
+  private let onDelete: (String) -> Void
+  private let onNewChat: () -> Void
+
+  init(
+    conversations: [ChatNativeAgentConversation],
+    activeConversationId: String?,
+    appearance: ChatListAppearance,
+    onSelect: @escaping (String) -> Void,
+    onDelete: @escaping (String) -> Void,
+    onNewChat: @escaping () -> Void
+  ) {
+    self.conversations = conversations
+    self.activeConversationId = activeConversationId
+    self.appearance = appearance
+    self.onSelect = onSelect
+    self.onDelete = onDelete
+    self.onNewChat = onNewChat
+    super.init(style: .plain)
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    title = "History"
+    view.backgroundColor = appearance.isDark ? UIColor(white: 0.07, alpha: 1) : .systemBackground
+    tableView.backgroundColor = view.backgroundColor
+    tableView.separatorStyle = .none
+    tableView.rowHeight = UITableView.automaticDimension
+    tableView.estimatedRowHeight = 72
+    tableView.register(
+      ChatNativeAgentHistoryCell.self,
+      forCellReuseIdentifier: ChatNativeAgentHistoryCell.reuseIdentifier
+    )
+    navigationItem.leftBarButtonItem = UIBarButtonItem(
+      barButtonSystemItem: .close,
+      target: self,
+      action: #selector(handleClose)
+    )
+    navigationItem.rightBarButtonItem = UIBarButtonItem(
+      barButtonSystemItem: .add,
+      target: self,
+      action: #selector(handleNew)
+    )
+    if conversations.isEmpty {
+      let empty = UILabel()
+      empty.text = "No conversations yet.\nStart chatting with Vibe AI."
+      empty.numberOfLines = 0
+      empty.textAlignment = .center
+      empty.textColor = appearance.timeColorThem
+      empty.font = .systemFont(ofSize: 15, weight: .regular)
+      tableView.backgroundView = empty
+    }
+  }
+
+  @objc private func handleClose() {
+    dismiss(animated: true)
+  }
+
+  @objc private func handleNew() {
+    dismiss(animated: true) { [onNewChat] in
+      onNewChat()
+    }
+  }
+
+  override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+    conversations.count
+  }
+
+  override func tableView(
+    _ tableView: UITableView,
+    cellForRowAt indexPath: IndexPath
+  ) -> UITableViewCell {
+    let cell =
+      tableView.dequeueReusableCell(
+        withIdentifier: ChatNativeAgentHistoryCell.reuseIdentifier,
+        for: indexPath
+      ) as? ChatNativeAgentHistoryCell
+      ?? ChatNativeAgentHistoryCell(
+        style: .default,
+        reuseIdentifier: ChatNativeAgentHistoryCell.reuseIdentifier
+      )
+    let conversation = conversations[indexPath.row]
+    cell.configure(
+      conversation: conversation,
+      activeConversationId: activeConversationId,
+      appearance: appearance
+    )
+    return cell
+  }
+
+  override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+    tableView.deselectRow(at: indexPath, animated: true)
+    let id = conversations[indexPath.row].id
+    dismiss(animated: true) { [onSelect] in
+      onSelect(id)
+    }
+  }
+
+  override func tableView(
+    _ tableView: UITableView,
+    trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+  ) -> UISwipeActionsConfiguration? {
+    let id = conversations[indexPath.row].id
+    let delete = UIContextualAction(style: .destructive, title: "Delete") {
+      [weak self] _, _, completion in
+      guard let self else {
+        completion(false)
+        return
+      }
+      self.onDelete(id)
+      self.conversations.removeAll { $0.id == id }
+      tableView.deleteRows(at: [indexPath], with: .automatic)
+      completion(true)
+    }
+    return UISwipeActionsConfiguration(actions: [delete])
   }
 }

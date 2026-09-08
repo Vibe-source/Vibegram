@@ -1,0 +1,18 @@
+{
+  "id": 48,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "Chat header last-seen is relative only (min ago / just now). Clock-time formatLastSeenSubtitle was fighting ChatConversationController.lastSeenLabel and made the subtitle flicker between 'last seen 5 min ago' and 'last seen at 2:30 PM'.",
+  "selector": "ios/ChatModule/ChatMainView.swift::ChatMainView.formatLastSeenSubtitle",
+  "path": "ios/ChatModule/ChatMainView.swift",
+  "fqn": "ChatMainView.formatLastSeenSubtitle",
+  "line": 5217,
+  "anchor_hash": "f2e24062ab5055cf47d32e5d1669b76a471f1a28b0c305c7541ff77dfd8c99e5",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787753194,
+  "updated_at": 1787753194
+}

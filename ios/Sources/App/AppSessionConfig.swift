@@ -41,6 +41,9 @@ struct AppSessionConfig {
   }
 
   init?(payload: [String: Any]) {
+    // Prefer stored apiBaseUrl/baseUrl; only fall back to the resolver default
+    // (which itself prefers live engine config, then a compile-time host). Never
+    // invent a production domain when a non-empty config value is already present.
     let apiBaseURLString =
       Self.normalizedString(payload["apiBaseUrl"] ?? payload["baseUrl"])
       ?? Self.defaultAPIBaseURLString
@@ -49,6 +52,25 @@ struct AppSessionConfig {
       let authToken = Self.normalizedString(
         payload["authToken"] ?? payload["token"] ?? payload["loginToken"])
     else {
+      // Empty/cold-start config is normal; only log partial/broken sessions.
+      let hasPartial =
+        Self.normalizedString(payload["userId"]) != nil
+        || Self.normalizedString(
+          payload["authToken"] ?? payload["token"] ?? payload["loginToken"]) != nil
+      if hasPartial {
+        VibeLog.warning(
+          "session config parse failed",
+          category: "session",
+          metadata: [
+            "hasApiBase": Self.normalizedString(payload["apiBaseUrl"] ?? payload["baseUrl"]) == nil
+              ? "false" : "true",
+            "hasUserId": Self.normalizedString(payload["userId"]) == nil ? "false" : "true",
+            "hasToken": Self.normalizedString(
+              payload["authToken"] ?? payload["token"] ?? payload["loginToken"]) == nil
+              ? "false" : "true",
+          ]
+        )
+      }
       return nil
     }
 
@@ -214,6 +236,17 @@ struct AppSessionConfig {
     ChatEngineStore.shared.clearConfig()
     ChatEngineStore.shared.setConfig(config.payload)
     VibeNativeCallManager.shared.syncStoredPushTokens(reason: "app-session-store", force: true)
+    // Durable breadcrumb only — never log tokens, keys, phone, or email.
+    VibeLog.notice(
+      "session config stored",
+      category: "session",
+      metadata: [
+        "apiHost": config.apiBaseURL.host ?? "?",
+        "socketHost": URL(string: config.socketURLString)?.host ?? "?",
+        "transport": config.transportMode.rawValue,
+        "hasToken": config.authToken.isEmpty ? "false" : "true",
+      ]
+    )
   }
 
   private static func normalizedString(_ value: Any?) -> String? {

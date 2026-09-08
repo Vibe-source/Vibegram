@@ -1,0 +1,8 @@
+app_identifier("com.vibegram.app") # The bundle identifier of your app
+apple_id("mohammadshayani2@icloud.com") # Your Apple Developer Portal username
+
+itc_team_id("128575306") # App Store Connect Team ID
+team_id("BXY4DH6H7D") # Developer Portal Team ID
+
+# For more information about the Appfile, see:
+#     https://docs.fastlane.tools/advanced/#appfile

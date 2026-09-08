@@ -1,0 +1,17 @@
+{
+  "id": 1,
+  "status": "open",
+  "priority": 1,
+  "kind": "warning",
+  "body": "layoutSubviews must never re-enter state application: applyPageState(fromLayout:true) skips updateHeaderTexts + the second layoutChrome, and every per-pass bringSubviewToFront is guarded. Unguarded self.bringSubviewToFront from inside layoutSubviews re-dirties self and loops the pass.",
+  "selector": "ios/ChatModule/ChatMainView.swift::ChatMainView.layoutSubviews",
+  "path": "ios/ChatModule/ChatMainView.swift",
+  "fqn": "ChatMainView.layoutSubviews",
+  "line": 441,
+  "anchor_hash": "089f6b5775532002334a6d640fe4d6a9caf90a826febf8fc969d305571219101",
+  "branch": "core/timeline-p4",
+  "commit": "55313ddbe0caf6ab5cfd6f3ad89323e50231f276",
+  "agent": "",
+  "created_at": 1786283887,
+  "updated_at": 1786283887
+}

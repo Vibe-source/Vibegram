@@ -1,0 +1,81 @@
+{
+  "session": "01a04619-8f11-7bf3-a99a-0b49ba2c795e",
+  "task": "Please take a look at the, uh, audio. Profile v…",
+  "steps": [
+    {
+      "what": "Reduce the collapsed avatar footprint, move identity upward, restore header masking, and add a lightweight scroll dissolve",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Lower the username font weight and size",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Collapse action controls into compact untinted translucent glass",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Give group/channel profiles Mute, Search, More with functional report, clear, and leave actions",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Refactor group/channel member and attached-agent rows into one coherent visual system",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Move Edit to the top-right and make group/channel editing functional from the attached reference",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Reuse the chat-list media expansion animation for profile image-grid taps",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Diagnose unreliable back navigation, add targeted logging if needed, then build and audit all behavior",
+      "id": "",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787907737
+}

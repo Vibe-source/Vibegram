@@ -1,0 +1,18 @@
+{
+  "id": 96,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — provider switched from codex to claude mid-task\nDID: exec(const cmds = [ \"agix note done N000094\", \"agix note add \\\"Shipped profile hero/theme/avatar refresh pass: interpolated pull compensati…\nFILES: /Users/mohammadshayani/Vibe/ios/ChatModule/ChatProfileMainView.swift, /Users/mohammadshayani/Vibe/.vibe/memory.md",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "codex",
+  "author": "Vibe Team",
+  "created_at": 1787845972,
+  "updated_at": 1787853766
+}

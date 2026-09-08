@@ -1,0 +1,32 @@
+/* ==================================================================
+   Vibe public-site design tokens — single source of truth for the dark
+   "TERRAIN" system shared by Home, Header, Footer, Auth, Docs, Terms,
+   and Privacy. Previously each of those files re-declared its own copy
+   of these values (three separate literals for the same teal, plus one
+   undocumented fourth) — extend THIS file instead of adding another.
+
+   --vl-teal / --vl-violet are brightened "display" tints of the in-app
+   brand gradient (theme/appearance.ts: #8B7CFF -> #08C6B4) tuned for
+   legibility/glow on large dark surfaces. --vl-*-deep are the canonical
+   in-app hexes, for anything that must match the iOS bubble gradient
+   exactly (e.g. small solid fills/badges).
+   ================================================================== */
+
+:root {
+    --vl-bg: #050807;
+    --vl-ink: #e9f4f1;
+    --vl-dim: #93aaa6;
+    --vl-faint: #566b68;
+    --vl-teal: #63e2d9;
+    --vl-teal-deep: #08c6b4;
+    --vl-violet: #9c8cff;
+    --vl-violet-deep: #8b7cff;
+    --vl-red: #f0716d;
+    --vl-line: rgba(147, 197, 190, 0.14);
+    --vl-panel: linear-gradient(180deg, rgba(13, 20, 19, 0.82), rgba(7, 11, 10, 0.92));
+    --vl-btn-gradient: linear-gradient(135deg, #7deee4 0%, #46c9bd 100%);
+    --vl-font-display: 'Space Grotesk Variable', 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+    --vl-font-serif: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+    --vl-font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --vl-gutter: clamp(20px, 5vw, 72px);
+}

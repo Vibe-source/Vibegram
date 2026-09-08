@@ -18,7 +18,6 @@ defmodule VibeWeb.AgentController do
     user_id = conn.assigns.current_user.id
     chat_id = params["chatId"] || params["chat_id"]
 
-    # Set up SSE streaming
     conn = conn
       |> put_resp_content_type("text/event-stream")
       |> put_resp_header("cache-control", "no-cache")
@@ -37,6 +36,12 @@ defmodule VibeWeb.AgentController do
 
       %{type: :subagent} = event ->
         send_sse_event(conn, "subagent", Map.delete(event, :type))
+
+      %{type: type} = event ->
+        send_sse_event(conn, to_string(type), Map.delete(event, :type))
+
+      _other ->
+        :ok
     end
 
     case AiAgent.stream_response(
@@ -70,7 +75,6 @@ defmodule VibeWeb.AgentController do
     user_id = conn.assigns.current_user.id
     chat_id = params["chatId"] || params["chat_id"]
 
-    # Collect all chunks using Elixir Agent
     {:ok, collected} = Agent.start_link(fn -> "" end)
 
     callback = fn

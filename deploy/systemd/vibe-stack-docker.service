@@ -1,0 +1,17 @@
+[Unit]
+Description=Vibe compose stack (docker)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/vibe
+# Requires `vibe` in the docker group (vps-bootstrap.sh --docker does this) —
+# a user unit can't Requires= a system service it doesn't own, only order after it.
+ExecStart=/usr/bin/docker compose -f /opt/vibe/deploy/compose.yml up -d
+ExecStop=/usr/bin/docker compose -f /opt/vibe/deploy/compose.yml down
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

@@ -10,40 +10,94 @@ settings:
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: 1.0.0
     SWIFT_OBJC_BRIDGING_HEADER: Sources/Packet/Packet-Bridging-Header.h
+    # libpacket_xray.a is the embedded REALITY engine the packet client calls
+    # through PacketXray*; arm64 only, so the x86_64 simulator slice links the
+    # phantom archive built without that feature.
     OTHER_LDFLAGS[sdk=iphoneos*][arch=arm64]:
       - "$(SRCROOT)/Vendor/Packet/ios-arm64/libphantom_client.a"
+      - "$(SRCROOT)/Vendor/Packet/ios-arm64/libpacket_xray.a"
       - "-lresolv"
     OTHER_LDFLAGS[sdk=iphonesimulator*][arch=arm64]:
       - "$(SRCROOT)/Vendor/Packet/ios-sim-arm64/libphantom_client.a"
+      - "$(SRCROOT)/Vendor/Packet/ios-sim-arm64/libpacket_xray.a"
       - "-lresolv"
     OTHER_LDFLAGS[sdk=iphonesimulator*][arch=x86_64]:
       - "$(SRCROOT)/Vendor/Packet/ios-sim-x86_64/libphantom_client.a"
       - "-lresolv"
+packages:
+  GiphyUISDK:
+    url: https://github.com/Giphy/giphy-ios-sdk
+    from: 2.2.16
 targets:
   Vibe:
     type: application
     platform: iOS
     deploymentTarget: "26.0"
+    entitlements:
+      path: App/Vibe.entitlements
+      properties:
+        aps-environment: "$(APS_ENVIRONMENT)"
+        # Required for INSendMessageIntent notifications. Without it iOS logs
+        # "messaging notifications are not allowed" and discards the whole
+        # communication context -- sender name, avatar and the generated
+        # fallback avatar alike -- leaving a plain alert with the app icon.
+        com.apple.developer.usernotifications.communication: true
     sources:
       - path: App
       - path: Sources
+      # Compiled into the notification service extension too, so the avatar
+      # fallback cannot drift between a push and the chat list.
+      - path: Shared
       - path: ChatModule
         excludes:
           - ChatHomeListView.swift
           - ChatListViewCells.swift.patch
           - VibeCallUiCoordinator.swift
+    dependencies:
+      - package: GiphyUISDK
+        product: GiphyUISDK
+      # Rust timeline core (P2). A *static* xcframework, so `embed: false`:
+      # embedding would copy it into Frameworks/ and ship the archive itself.
+      # Linked into the app target ONLY — the notification service extension
+      # must never get it (see that target's OTHER_LDFLAGS note; it also has no
+      # App Group, so it could not use a store even if it linked one).
+      # Regenerate with scripts/build-core-xcframework.sh; not checked in.
+      - framework: Vendor/VibeCore/VibeCoreFFI.xcframework
+        embed: false
+      # Embeds the notification service extension. Without it the app ships
+      # without an NSE, `mutable-content: 1` has nothing to act on, and rich
+      # notifications fall back to the app icon instead of the sender's avatar.
+      - target: VibeNotificationServiceExtension
+        embed: true
     info:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: Vibe
         UILaunchScreen: {}
         LSRequiresIPhoneOS: true
+        GIPHY_API_KEY: sXpGFDGZs0Dv1mmNFvYaGUvYwKX0PWIh
         NSFaceIDUsageDescription: Use Face ID to unlock privacy controls and reveal protected account data.
         NSCameraUsageDescription: Use the camera for video calls and to capture story photos and videos.
         NSMicrophoneUsageDescription: Use the microphone for calls, story videos, and voice messages.
         NSSpeechRecognitionUsageDescription: Transcribe your speech to text so you can dictate messages to the agent.
         NSPhotoLibraryUsageDescription: Use the photo library to choose photos and videos for stories.
         NSPhotoLibraryAddUsageDescription: Save edited stories to your photo library when you choose download.
+        NSLocalNetworkUsageDescription: Vibe connects directly to the Vibe bridge on your Mac over your local network for faster, private agent updates when your phone and Mac share Wi‑Fi.
+        NSBonjourServices:
+          - _vibegram-bridge._tcp
+        # vibe:// deep links (share-link preview pages redirect here, and
+        # ASWebAuthenticationSession uses the same scheme for OAuth callbacks).
+        # Declared here so regenerating the project never drops it.
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Viewer
+            CFBundleURLName: com.vibegram.app.room-link
+            CFBundleURLSchemes:
+              - vibe
+        # Communication notifications are authorized on the parent app, not
+        # just described by the service extension. Apple requires every donated
+        # intent type here before SpringBoard will retain sender/avatar context.
+        NSUserActivityTypes:
+          - INSendMessageIntent
         UIBackgroundModes:
           - audio
           - voip
@@ -51,12 +105,136 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIViewControllerBasedStatusBarAppearance: true
+    settings:
+      base:
+        DEVELOPMENT_TEAM: BXY4DH6H7D
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: App/Vibe.entitlements
+        # iPhone-only: the store rejects a portrait-only universal build.
+        TARGETED_DEVICE_FAMILY: "1"
+      configs:
+        Debug:
+          APS_ENVIRONMENT: development
+        Release:
+          APS_ENVIRONMENT: production
+  # Downloads the sender avatar and applies the iOS 15 communication style so a
+  # message notification shows the person, not the app icon. Restored from the
+  # retired React Native app, where expo-notifications supplied the extension;
+  # rebuilding natively left the project with no NSE at all.
+  VibeNotificationServiceExtension:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: NotificationServiceExtension
+      - path: Shared
+    entitlements:
+      path: NotificationServiceExtension/NotificationServiceExtension.entitlements
+      properties:
+        aps-environment: "$(APS_ENVIRONMENT)"
+        # Deliberately NOT com.apple.developer.usernotifications.communication.
+        # That is an app-level capability: Apple will not provision it for an
+        # extension App ID, and requesting it here fails the build with
+        # "Entitlement ... not found and could not be included in profile".
+        # The extension donates INSendMessageIntent under the host app's
+        # authority, so the entitlement on the app target is what counts.
+    info:
+      path: NotificationServiceExtension/Info.plist
+      # XcodeGen owns any plist named here and rewrites it on every generate, so
+      # these must be declared rather than left in the file — otherwise the
+      # NSExtension dict is silently stripped and iOS never loads the extension.
+      properties:
+        CFBundleDisplayName: Vibe Notify Service
+        CFBundlePackageType: XPC!
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+          NSExtensionAttributes:
+            # Required for the communication-style notification the extension
+            # donates; without it iOS refuses the INSendMessageIntent update.
+            IntentsSupported:
+              - INSendMessageIntent
+    settings:
+      base:
+        PRODUCT_NAME: VibeNotificationServiceExtension
+        PRODUCT_MODULE_NAME: VibeNotificationServiceExtension
+        PRODUCT_BUNDLE_IDENTIFIER: com.vibegram.app.NotificationServiceExtension
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: NotificationServiceExtension/NotificationServiceExtension.entitlements
+        DEVELOPMENT_TEAM: BXY4DH6H7D
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        # The project-level base settings are written for the app: they point at
+        # the Packet bridging header and link libphantom_client.a. An extension
+        # neither has nor needs those, and inheriting them fails the link.
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        OTHER_LDFLAGS: ""
+      configs:
+        Debug:
+          APS_ENVIRONMENT: development
+        Release:
+          APS_ENVIRONMENT: production
+  VibeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: VibeUITests
+    dependencies:
+      - target: Vibe
+    settings:
+      base:
+        PRODUCT_NAME: VibeUITests
+        PRODUCT_MODULE_NAME: VibeUITests
+        PRODUCT_BUNDLE_IDENTIFIER: com.vibegram.app.uitests
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: BXY4DH6H7D
+        TEST_TARGET_NAME: Vibe
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        # Do not inherit app PRODUCT_NAME "Vibe" or swiftmodules collide.
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        OTHER_LDFLAGS: ""
+  # Unit tests for additive Timeline contracts / replay harness (ids + metrics only).
+  # Does not exercise the live chat path. Regenerated into pbxproj via XcodeGen.
+  VibeTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: VibeTests
+    dependencies:
+      - target: Vibe
+    settings:
+      base:
+        PRODUCT_NAME: VibeTests
+        PRODUCT_MODULE_NAME: VibeTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.vibegram.app.tests
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: BXY4DH6H7D
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Vibe.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Vibe"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        # Do not inherit app PRODUCT_NAME "Vibe" or swiftmodules collide.
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        OTHER_LDFLAGS: ""
 schemes:
   Vibe:
     build:
       targets:
         Vibe: all
+        VibeNotificationServiceExtension: all
+        VibeTests: [test]
+        VibeUITests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - VibeTests
+        - VibeUITests
     archive:
       config: Release

@@ -1,0 +1,18 @@
+{
+  "id": 59,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Stuck 'typing…' root cause: there is NO expiry anywhere. ChatEngine.handleNativeSocketFrame (:9227) inserts the peer id into peerTypingUserIdsByChatId and only ever removes it on an explicit stop-typing frame, socket open/close/error, or closeChatChannel. Sender side is worse: sendTypingState (:2211) dedupes on nativeTypingStateByChatId[chatId] == typing, so a peer emits exactly ONE 'typing' when the composer becomes non-empty and one 'stop-typing' when it empties. Background the app, kill it, drop the socket, or just leave text sitting in the composer and the stop never arrives — the receiver shows 'typing…' forever. Fix needs both halves: receiver-side per-(chat,user) timestamp + ~6s expiry sweep, and sender-side keepalive refresh every ~4s plus an idle stop-typing after ~5s of no keystrokes.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787760803,
+  "updated_at": 1787760803
+}

@@ -4,22 +4,76 @@ defmodule Vibe.Notifications do
   require Logger
 
   alias Vibe.Accounts
+  alias Vibe.Repo
+  alias Vibe.Schemas.NotificationPreference
 
-  @expo_push_url "https://exp.host/--/api/v2/push/send"
-  @expo_receipts_url "https://exp.host/--/api/v2/push/getReceipts"
   @default_message_title "New message"
   @apns_voip_prod_base "https://api.push.apple.com"
   @apns_voip_sandbox_base "https://api.sandbox.push.apple.com"
   @fcm_legacy_url "https://fcm.googleapis.com/fcm/send"
   @apns_voip_jwt_cache_ttl_secs 50 * 60
 
-  def send_incoming_call_push(to_user_id, payload) when is_binary(to_user_id) and is_map(payload) do
+  def get_notification_preferences(user_id) do
+    case Repo.get_by(NotificationPreference, user_id: user_id) do
+      nil -> NotificationPreference.default_preferences()
+      preference -> NotificationPreference.normalize(preference.preferences)
+    end
+  end
+
+  def update_notification_preferences(user_id, updates) do
+    with {:ok, updates} <- NotificationPreference.validate_update(updates) do
+      preferences = deep_merge(get_notification_preferences(user_id), updates)
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      %NotificationPreference{}
+      |> NotificationPreference.changeset(%{user_id: user_id, preferences: preferences})
+      |> Repo.insert(
+        on_conflict: [set: [preferences: preferences, updated_at: now]],
+        conflict_target: [:user_id],
+        returning: true
+      )
+      |> case do
+        {:ok, preference} -> {:ok, NotificationPreference.normalize(preference.preferences)}
+        {:error, changeset} -> {:error, changeset}
+      end
+    end
+  end
+
+  def notification_enabled?(user_id, category) do
+    get_notification_preferences(user_id)
+    |> Map.fetch!(category)
+    |> Map.fetch!("enabled")
+  end
+
+  @doc """
+  Collapse identity for one alert push.
+  """
+  @apns_collapse_id_max_bytes 64
+  def push_collapse_id(data) when is_map(data) do
+    (Map.get(data, :messageId) || Map.get(data, "messageId") || Map.get(data, :message_id) ||
+       Map.get(data, "message_id"))
+    |> to_string()
+    |> String.trim()
+    |> binary_part_prefix(@apns_collapse_id_max_bytes)
+  end
+
+  def push_collapse_id(_), do: ""
+
+  defp binary_part_prefix(value, max_bytes) when is_binary(value) do
+    if byte_size(value) <= max_bytes, do: value, else: binary_part(value, 0, max_bytes)
+  end
+
+  def send_incoming_call_push(to_user_id, payload)
+      when is_binary(to_user_id) and is_map(payload) do
     with to_user when not is_nil(to_user) <- Accounts.get_user(to_user_id),
          push_targets when is_map(push_targets) <- normalized_push_targets(to_user.push_token) do
       call_type = normalize_call_type(payload["callType"] || payload["call_type"])
       call_id = payload["callId"] || payload["call_id"]
       from_user_id = payload["fromUserId"] || payload["from_user_id"]
-      caller_name = payload["fromUserName"] || payload["from_user_name"] || from_user_id || "Unknown"
+
+      caller_name =
+        payload["fromUserName"] || payload["from_user_name"] || from_user_id || "Unknown"
+
       caller_image =
         normalize_push_image(
           payload["fromUserImage"] || payload["from_user_image"],
@@ -46,8 +100,6 @@ defmodule Vibe.Notifications do
           _ -> base_data
         end
 
-      has_voip_target = is_binary(push_targets[:apns_voip]) and push_targets[:apns_voip] != ""
-
       voip_result =
         send_apns_voip_incoming_call_push(
           push_targets[:apns_voip],
@@ -56,26 +108,6 @@ defmodule Vibe.Notifications do
           call_type,
           data
         )
-
-      expo_result =
-        cond do
-          has_voip_target and voip_result == {:ok, :apns_voip} ->
-            Logger.info(
-              "[Notifications] Expo call push skipped to_user=#{to_user_id} reason=voip_accepted"
-            )
-
-            :noop
-
-          true ->
-            send_expo_incoming_call_push(
-              push_targets[:expo],
-              to_user_id,
-              caller_name,
-              call_type,
-              caller_image,
-              data
-            )
-        end
 
       fcm_result =
         send_fcm_incoming_call_push(
@@ -86,21 +118,33 @@ defmodule Vibe.Notifications do
           data
         )
 
-      case {expo_result, voip_result, fcm_result} do
-        {{:ok, :expo}, _, _} -> :ok
-        {_, {:ok, :apns_voip}, _} -> :ok
-        {_, _, {:ok, :fcm}} -> :ok
-        {:noop, :noop, :noop} ->
-          Logger.info("[Notifications] Incoming call push skipped: no usable Expo/VoIP/FCM token to_user=#{to_user_id}")
+      case {voip_result, fcm_result} do
+        {{:ok, :apns_voip}, _} ->
+          :ok
+
+        {_, {:ok, :fcm}} ->
+          :ok
+
+        {:noop, :noop} ->
+          Logger.info(
+            "[Notifications] Incoming call push skipped: user has no usable push target to_user=#{to_user_id}"
+          )
+
           :noop
 
-        {expo, voip, fcm} ->
-          Logger.warning("[Notifications] Incoming call push delivery failed to_user=#{to_user_id} expo=#{inspect(expo)} voip=#{inspect(voip)} fcm=#{inspect(fcm)}")
+        {voip, fcm} ->
+          Logger.warning(
+            "[Notifications] Incoming call push delivery failed to_user=#{to_user_id} apns_voip=#{inspect(voip)} fcm=#{inspect(fcm)}"
+          )
+
           :error
       end
     else
       _ ->
-        Logger.info("[Notifications] Incoming call push skipped: missing target user/push token to_user=#{to_user_id}")
+        Logger.info(
+          "[Notifications] Incoming call push skipped: target user missing or no stored push target to_user=#{to_user_id}"
+        )
+
         :noop
     end
   end
@@ -108,159 +152,157 @@ defmodule Vibe.Notifications do
   def send_incoming_call_push(_to_user_id, _payload), do: :noop
 
   def send_message_push(to_user_id, payload) when is_binary(to_user_id) and is_map(payload) do
-    with to_user when not is_nil(to_user) <- Accounts.get_user(to_user_id),
-         push_targets when is_map(push_targets) <- normalized_push_targets(to_user.push_token),
-         push_token when is_binary(push_token) <- push_targets.expo,
-         true <- push_token != "" do
-      from_user_id = payload["fromUserId"] || payload["from_user_id"] || payload["from_id"]
-      sender = if is_binary(from_user_id), do: Accounts.get_user(from_user_id), else: nil
-      sender_name_raw = (sender && (sender.name || sender.username)) || @default_message_title
-      sender_name = truncate_text(sender_name_raw, 64)
-      message_type = payload["type"] || "text"
-      message_type_normalized = message_type |> to_string() |> String.downcase()
-      message_body = resolve_message_body(payload, message_type)
-      sender_image = normalize_push_image(sender && sender.profile_image, from_user_id)
-      media_preview_image =
-        if message_type_normalized in ["image", "video", "gif"] do
-          resolve_push_media_image(payload)
-        else
-          nil
-        end
-      mutable_content_enabled =
-        (is_binary(sender_image) and sender_image != "")
-        or (is_binary(media_preview_image) and media_preview_image != "")
+    category = notification_category(payload)
 
-      base_data = %{
-        type: "new_message",
-        chatId: payload["chatId"] || payload["chat_id"],
-        messageId: payload["messageId"] || payload["message_id"],
-        fromUserId: from_user_id,
-        fromUserName: sender_name,
-        messageType: message_type
-      }
-
-      data_with_avatar =
-        case sender_image do
-          value when is_binary(value) and value != "" -> Map.put(base_data, :fromUserImage, value)
-          _ -> base_data
-        end
-
-      data =
-        case media_preview_image do
-          value when is_binary(value) and value != "" ->
-            data_with_avatar
-            |> Map.put(:mediaImage, value)
-            |> Map.put(:mediaUrl, value)
-
-          _ ->
-            data_with_avatar
-        end
-
-      base_message = %{
-        to: push_token,
-        sound: "default",
-        priority: "high",
-        title: sender_name,
-        body: message_body,
-        data: data
-      }
-
-      message =
-        base_message
-        |> Map.put(:mutableContent, true)
-        |> then(fn payload_map ->
-          case media_preview_image do
-            value when is_binary(value) and value != "" ->
-              payload_map
-              |> Map.put(:richContent, %{image: value})
-              |> Map.put(:image, value)
-
-            _ ->
-              payload_map
-          end
-        end)
-
-      request =
-        Finch.build(
-          :post,
-          @expo_push_url,
-          [{"content-type", "application/json"}],
-          Jason.encode!(message)
-        )
-
+    if notification_enabled?(to_user_id, category) do
+      send_enabled_message_push(to_user_id, payload)
+    else
       Logger.info(
-        "[Notifications] Sending message push to_user=#{to_user_id} chat_id=#{data.chatId} message_id=#{data.messageId} from_user=#{from_user_id} mutable_content=#{mutable_content_enabled} avatar_present=#{is_binary(sender_image) and sender_image != ""} media_preview_present=#{is_binary(media_preview_image) and media_preview_image != ""} message_type=#{message_type_normalized}"
+        "[Notifications] Message push skipped: notification category muted to_user=#{to_user_id} category=#{category}"
       )
 
-      case Finch.request(request, Vibe.Finch, receive_timeout: 7_000) do
-        {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
-          log_expo_push_result("message", to_user_id, body)
-          :ok
-
-        {:ok, %Finch.Response{status: status, body: body}} ->
-          Logger.warning(
-            "[Notifications] Message push failed status=#{status} to_user=#{to_user_id} body=#{String.slice(body || "", 0, 240)}"
-          )
-
-          :error
-
-        {:error, reason} ->
-          Logger.warning("[Notifications] Message push request failed to_user=#{to_user_id} reason=#{inspect(reason)}")
-          :error
-      end
-    else
-      _ ->
-        Logger.info("[Notifications] Message push skipped: missing target user/push token to_user=#{to_user_id}")
-        :noop
+      :noop
     end
   end
 
   def send_message_push(_to_user_id, _payload), do: :noop
 
-  defp send_expo_incoming_call_push(push_token, _to_user_id, _caller_name, _call_type, _caller_image, _data)
-       when not is_binary(push_token) do
-    :noop
+  defp send_enabled_message_push(to_user_id, payload) do
+    case Accounts.get_user(to_user_id) do
+      nil ->
+        Logger.info(
+          "[Notifications] Message push skipped: target user not found to_user=#{to_user_id}"
+        )
+
+        :noop
+
+      to_user ->
+        push_targets = normalized_push_targets(to_user.push_token)
+
+        if has_message_push_target?(push_targets) do
+          send_message_to_push_targets(to_user_id, payload, push_targets)
+        else
+          log_no_usable_message_push_target(to_user_id)
+          :noop
+        end
+    end
   end
 
-  defp send_expo_incoming_call_push(push_token, _to_user_id, _caller_name, _call_type, _caller_image, _data)
-       when is_binary(push_token) and push_token == "" do
-    :noop
-  end
+  defp send_message_to_push_targets(to_user_id, payload, push_targets) do
+    from_user_id = payload["fromUserId"] || payload["from_user_id"] || payload["from_id"]
+    sender = if is_binary(from_user_id), do: Accounts.get_user(from_user_id), else: nil
+    sender_name_raw = (sender && (sender.name || sender.username)) || @default_message_title
+    sender_name = truncate_text(sender_name_raw, 64)
+    message_type = payload["type"] || "text"
+    message_type_normalized = message_type |> to_string() |> String.downcase()
+    message_body = resolve_message_body(payload, message_type)
+    sender_image = normalize_push_image(sender && sender.profile_image, from_user_id)
 
-  defp send_expo_incoming_call_push(push_token, to_user_id, caller_name, call_type, _caller_image, data) do
-    message = %{
-      to: push_token,
-      sound: "default",
-      priority: "high",
-      title: caller_name,
-      body: "Incoming #{call_type} call",
-      data: data
+    media_preview_image =
+      if message_type_normalized in ["image", "video", "gif"] do
+        resolve_push_media_image(payload)
+      else
+        nil
+      end
+
+    mutable_content_enabled =
+      (is_binary(sender_image) and sender_image != "") or
+        (is_binary(media_preview_image) and media_preview_image != "")
+
+    base_data = %{
+      type: "new_message",
+      chatId: payload["chatId"] || payload["chat_id"],
+      messageId: payload["messageId"] || payload["message_id"],
+      fromUserId: from_user_id,
+      fromUserName: sender_name,
+      messageType: message_type
     }
 
-    request =
-      Finch.build(
-        :post,
-        @expo_push_url,
-        [{"content-type", "application/json"}],
-        Jason.encode!(message)
+    data_with_avatar =
+      case sender_image do
+        value when is_binary(value) and value != "" -> Map.put(base_data, :fromUserImage, value)
+        _ -> base_data
+      end
+
+    data =
+      case media_preview_image do
+        value when is_binary(value) and value != "" ->
+          data_with_avatar
+          |> Map.put(:mediaImage, value)
+          |> Map.put(:mediaUrl, value)
+
+        _ ->
+          data_with_avatar
+      end
+
+    Logger.info(
+      "[Notifications] Sending message push to_user=#{to_user_id} chat_id=#{data.chatId} message_id=#{data.messageId} from_user=#{from_user_id} mutable_content=#{mutable_content_enabled} avatar_present=#{is_binary(sender_image) and sender_image != ""} media_preview_present=#{is_binary(media_preview_image) and media_preview_image != ""} message_type=#{message_type_normalized} targets=#{inspect(describe_push_targets(push_targets))}"
+    )
+
+    apns_result =
+      send_apns_message_push(
+        push_targets[:apns],
+        to_user_id,
+        sender_name,
+        message_body,
+        data,
+        resolve_push_badge(payload),
+        mutable_content_enabled
       )
 
-    case Finch.request(request, Vibe.Finch, receive_timeout: 7_000) do
-      {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
-        log_expo_push_result("call", to_user_id, body)
-        {:ok, :expo}
+    fcm_result =
+      if apns_result == {:ok, :apns} do
+        :noop
+      else
+        send_fcm_message_push(
+          push_targets[:fcm],
+          to_user_id,
+          sender_name,
+          message_body,
+          data,
+          resolve_push_badge(payload),
+          mutable_content_enabled
+        )
+      end
 
-      {:ok, %Finch.Response{status: status, body: body}} ->
+    case {apns_result, fcm_result} do
+      {{:ok, :apns}, _} ->
+        :ok
+
+      {_, {:ok, :fcm}} ->
+        :ok
+
+      {:noop, :noop} ->
+        Logger.info(
+          "[Notifications] Message push skipped: user has usable push tokens but no configured sender to_user=#{to_user_id}"
+        )
+
+        :noop
+
+      {apns, fcm} ->
         Logger.warning(
-          "[Notifications] Expo push failed status=#{status} to_user=#{to_user_id} body=#{String.slice(body || "", 0, 240)}"
+          "[Notifications] Message push delivery failed: user has usable push tokens but all attempted sends failed to_user=#{to_user_id} apns=#{inspect(apns)} fcm=#{inspect(fcm)}"
         )
 
         :error
-
-      {:error, reason} ->
-        Logger.warning("[Notifications] Expo push request failed to_user=#{to_user_id} reason=#{inspect(reason)}")
-        :error
     end
+  end
+
+  defp notification_category(payload) do
+    case payload["notificationCategory"] || payload["notification_category"] ||
+           payload["chatType"] || payload["chat_type"] do
+      category when category in ["group", "group_chat", "group_chats"] -> "groupChats"
+      category when category in ["channel", "channels"] -> "channels"
+      category when category in ["story", "stories"] -> "stories"
+      category when category in ["reaction", "reactions"] -> "reactions"
+      _ -> "privateChats"
+    end
+  end
+
+  defp deep_merge(left, right) do
+    Map.merge(left, right, fn _key, current, update ->
+      if is_map(current) and is_map(update), do: deep_merge(current, update), else: update
+    end)
   end
 
   defp send_fcm_incoming_call_push(fcm_token, _to_user_id, _caller_name, _call_type, _data)
@@ -276,7 +318,10 @@ defmodule Vibe.Notifications do
   defp send_fcm_incoming_call_push(fcm_token, to_user_id, caller_name, call_type, data) do
     case fcm_server_key() do
       nil ->
-        Logger.info("[Notifications] FCM call push skipped: missing FCM server key to_user=#{to_user_id}")
+        Logger.info(
+          "[Notifications] FCM call push skipped: missing FCM server key to_user=#{to_user_id}"
+        )
+
         :noop
 
       server_key ->
@@ -306,20 +351,238 @@ defmodule Vibe.Notifications do
 
         case Finch.request(request, Vibe.Finch, receive_timeout: 7_000) do
           {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
-            Logger.info("[Notifications] FCM call push accepted to_user=#{to_user_id} body=#{String.slice(body || "", 0, 240)}")
+            Logger.info(
+              "[Notifications] FCM call push accepted to_user=#{to_user_id} body=#{String.slice(body || "", 0, 240)}"
+            )
+
             {:ok, :fcm}
 
           {:ok, %Finch.Response{status: status, body: body}} ->
             Logger.warning(
               "[Notifications] FCM call push failed status=#{status} to_user=#{to_user_id} body=#{String.slice(body || "", 0, 240)}"
             )
+
             :error
 
           {:error, reason} ->
-            Logger.warning("[Notifications] FCM call push request failed to_user=#{to_user_id} reason=#{inspect(reason)}")
+            Logger.warning(
+              "[Notifications] FCM call push request failed to_user=#{to_user_id} reason=#{inspect(reason)}"
+            )
+
             :error
         end
     end
+  end
+
+  defp send_fcm_message_push(
+         fcm_token,
+         _to_user_id,
+         _title,
+         _body,
+         _data,
+         _badge,
+         _mutable_content_enabled
+       )
+       when not is_binary(fcm_token) do
+    :noop
+  end
+
+  defp send_fcm_message_push(
+         fcm_token,
+         _to_user_id,
+         _title,
+         _body,
+         _data,
+         _badge,
+         _mutable_content_enabled
+       )
+       when fcm_token == "" do
+    :noop
+  end
+
+  defp send_fcm_message_push(
+         fcm_token,
+         to_user_id,
+         title,
+         body,
+         data,
+         badge,
+         _mutable_content_enabled
+       ) do
+    case fcm_server_key() do
+      nil ->
+        Logger.info(
+          "[Notifications] FCM message push skipped: missing FCM server key to_user=#{to_user_id}"
+        )
+
+        :noop
+
+      server_key ->
+        message = %{
+          to: fcm_token,
+          priority: "high",
+          content_available: true,
+          mutable_content: true,
+          notification: %{title: title, body: body, sound: "default", badge: badge},
+          data: stringify_push_data(data)
+        }
+
+        request =
+          Finch.build(
+            :post,
+            @fcm_legacy_url,
+            [
+              {"content-type", "application/json"},
+              {"authorization", "key=#{server_key}"}
+            ],
+            Jason.encode!(message)
+          )
+
+        case Finch.request(request, Vibe.Finch, receive_timeout: 7_000) do
+          {:ok, %Finch.Response{status: status, body: response_body}} when status in 200..299 ->
+            Logger.info(
+              "[Notifications] FCM message push accepted to_user=#{to_user_id} body=#{String.slice(response_body || "", 0, 240)}"
+            )
+
+            {:ok, :fcm}
+
+          {:ok, %Finch.Response{status: status, body: response_body}} ->
+            Logger.warning(
+              "[Notifications] FCM message push failed status=#{status} to_user=#{to_user_id} body=#{String.slice(response_body || "", 0, 240)}"
+            )
+
+            :error
+
+          {:error, reason} ->
+            Logger.warning(
+              "[Notifications] FCM message push request failed to_user=#{to_user_id} reason=#{inspect(reason)}"
+            )
+
+            :error
+        end
+    end
+  end
+
+  defp send_apns_message_push(
+         apns_token,
+         _to_user_id,
+         _title,
+         _body,
+         _data,
+         _badge,
+         _mutable_content_enabled
+       )
+       when not is_binary(apns_token) do
+    :noop
+  end
+
+  defp send_apns_message_push(
+         apns_token,
+         _to_user_id,
+         _title,
+         _body,
+         _data,
+         _badge,
+         _mutable_content_enabled
+       )
+       when apns_token == "" do
+    :noop
+  end
+
+  defp send_apns_message_push(
+         apns_token,
+         to_user_id,
+         title,
+         body,
+         data,
+         badge,
+         _mutable_content_enabled
+       ) do
+    Logger.info(
+      "[Notifications] APNs message push attempt to_user=#{to_user_id} message_id=#{inspect(Map.get(data, :messageId))} token=#{token_hint(apns_token)}"
+    )
+
+    with {:ok, config} <- apns_message_config(),
+         {:ok, jwt} <- apns_voip_jwt(config),
+         {:ok, request_body} <- apns_message_payload(data, title, body, badge) do
+      headers =
+        [
+          {"content-type", "application/json"},
+          {"authorization", "bearer " <> jwt},
+          {"apns-push-type", "alert"},
+          {"apns-priority", "10"},
+          {"apns-topic", config.topic},
+          {"apns-expiration", "0"},
+          {"apns-collapse-id", push_collapse_id(data)}
+        ]
+        |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+
+      post_apns_message(apns_token, to_user_id, config, headers, request_body, apns_base_urls())
+    else
+      {:error, :missing_config} ->
+        Logger.info(
+          "[Notifications] APNs message push skipped: missing APNs config #{inspect(apns_message_config_presence())} to_user=#{to_user_id}"
+        )
+
+        :noop
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Notifications] APNs message push setup failed to_user=#{to_user_id} reason=#{inspect(reason)}"
+        )
+
+        :error
+    end
+  end
+
+  defp post_apns_message(_token, to_user_id, config, _headers, _body, []) do
+    Logger.warning(
+      "[Notifications] APNs message push failed in every environment to_user=#{to_user_id} topic=#{config.topic}"
+    )
+
+    :error
+  end
+
+  defp post_apns_message(token, to_user_id, config, headers, body, [base_url | rest]) do
+    request = Finch.build(:post, "#{base_url}/3/device/#{URI.encode(token)}", headers, body)
+
+    case Finch.request(request, Vibe.APNsFinch, receive_timeout: 7_000) do
+      {:ok, %Finch.Response{status: 200}} ->
+        Logger.info(
+          "[Notifications] APNs message push accepted to_user=#{to_user_id} topic=#{config.topic} base_url=#{base_url}"
+        )
+
+        {:ok, :apns}
+
+      {:ok, %Finch.Response{status: 400, body: response_body}} ->
+        if rest != [] and String.contains?(response_body || "", "BadDeviceToken") do
+          Logger.info(
+            "[Notifications] APNs token is not for #{base_url}, retrying the other environment to_user=#{to_user_id}"
+          )
+
+          post_apns_message(token, to_user_id, config, headers, body, rest)
+        else
+          log_apns_message_failure(to_user_id, config, base_url, 400, response_body)
+          :error
+        end
+
+      {:ok, %Finch.Response{status: status, body: response_body}} ->
+        log_apns_message_failure(to_user_id, config, base_url, status, response_body)
+        :error
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Notifications] APNs message push request failed to_user=#{to_user_id} topic=#{config.topic} base_url=#{base_url} reason=#{inspect(reason)}"
+        )
+
+        :error
+    end
+  end
+
+  defp log_apns_message_failure(to_user_id, config, base_url, status, response_body) do
+    Logger.warning(
+      "[Notifications] APNs message push failed status=#{status} to_user=#{to_user_id} topic=#{config.topic} base_url=#{base_url} body=#{String.slice(response_body || "", 0, 240)}"
+    )
   end
 
   defp send_apns_voip_incoming_call_push(voip_token, _to_user_id, _caller_name, _call_type, _data)
@@ -345,16 +608,17 @@ defmodule Vibe.Notifications do
          {:ok, body} <- apns_voip_payload(data, caller_name, call_type) do
       url = "#{config.base_url}/3/device/#{URI.encode(voip_token)}"
 
-      headers = [
-        {"content-type", "application/json"},
-        {"authorization", "bearer " <> jwt},
-        {"apns-push-type", "voip"},
-        {"apns-priority", "10"},
-        {"apns-topic", config.topic},
-        {"apns-expiration", "0"},
-        {"apns-collapse-id", Map.get(data, :callId, "") |> to_string()}
-      ]
-      |> Enum.reject(fn {_k, v} -> v in [nil, ""] end)
+      headers =
+        [
+          {"content-type", "application/json"},
+          {"authorization", "bearer " <> jwt},
+          {"apns-push-type", "voip"},
+          {"apns-priority", "10"},
+          {"apns-topic", config.topic},
+          {"apns-expiration", "0"},
+          {"apns-collapse-id", Map.get(data, :callId, "") |> to_string()}
+        ]
+        |> Enum.reject(fn {_k, v} -> v in [nil, ""] end)
 
       request = Finch.build(:post, url, headers, body)
 
@@ -363,18 +627,21 @@ defmodule Vibe.Notifications do
           Logger.info(
             "[Notifications] APNs VoIP push accepted to_user=#{to_user_id} call_type=#{call_type} topic=#{config.topic} base_url=#{config.base_url}"
           )
+
           {:ok, :apns_voip}
 
         {:ok, %Finch.Response{status: status, body: response_body}} ->
           Logger.warning(
             "[Notifications] APNs VoIP push failed status=#{status} to_user=#{to_user_id} topic=#{config.topic} base_url=#{config.base_url} body=#{String.slice(response_body || "", 0, 240)}"
           )
+
           :error
 
         {:error, reason} ->
           Logger.warning(
             "[Notifications] APNs VoIP request failed to_user=#{to_user_id} topic=#{config.topic} base_url=#{config.base_url} reason=#{inspect(reason)}"
           )
+
           :error
       end
     else
@@ -382,10 +649,14 @@ defmodule Vibe.Notifications do
         Logger.info(
           "[Notifications] APNs VoIP push skipped: missing APNs VoIP config #{inspect(apns_voip_config_presence())}"
         )
+
         :noop
 
       {:error, reason} ->
-        Logger.warning("[Notifications] APNs VoIP push setup failed to_user=#{to_user_id} reason=#{inspect(reason)}")
+        Logger.warning(
+          "[Notifications] APNs VoIP push setup failed to_user=#{to_user_id} reason=#{inspect(reason)}"
+        )
+
         :error
     end
   end
@@ -397,26 +668,40 @@ defmodule Vibe.Notifications do
       trimmed == "" ->
         nil
 
-      String.starts_with?(trimmed, "ExponentPushToken[") ->
-        %{expo: trimmed, fcm: nil, apns: nil, apns_voip: nil}
-
       true ->
         case Jason.decode(trimmed) do
           {:ok, value} when is_map(value) ->
             %{
-              expo: normalize_token_value(value["expo"] || value["expoPushToken"]),
               fcm: normalize_token_value(value["fcm"] || value["fcmPushToken"]),
               apns: normalize_token_value(value["apns"] || value["apnsToken"]),
-              apns_voip: normalize_token_value(value["apns_voip"] || value["voip"] || value["voipPushToken"])
+              apns_voip:
+                normalize_token_value(
+                  value["apns_voip"] || value["voip"] || value["voipPushToken"]
+                )
             }
 
           _ ->
-            %{expo: trimmed, fcm: nil, apns: nil, apns_voip: nil}
+            %{fcm: nil, apns: nil, apns_voip: nil}
         end
     end
   end
 
   defp normalized_push_targets(_), do: nil
+
+  defp has_message_push_target?(push_targets) when is_map(push_targets) do
+    Enum.any?([push_targets[:apns], push_targets[:fcm]], &usable_push_token?/1)
+  end
+
+  defp has_message_push_target?(_), do: false
+
+  defp usable_push_token?(value) when is_binary(value), do: String.trim(value) != ""
+  defp usable_push_token?(_), do: false
+
+  defp log_no_usable_message_push_target(to_user_id) do
+    Logger.info(
+      "[Notifications] Message push skipped: user has no usable push target to_user=#{to_user_id}"
+    )
+  end
 
   defp fcm_server_key do
     System.get_env("FCM_SERVER_KEY")
@@ -425,6 +710,7 @@ defmodule Vibe.Notifications do
       nil ->
         System.get_env("FIREBASE_SERVER_KEY")
         |> normalize_token_value()
+
       value ->
         value
     end
@@ -432,6 +718,7 @@ defmodule Vibe.Notifications do
       nil ->
         System.get_env("FIREBASE_CLOUD_MESSAGING_SERVER_KEY")
         |> normalize_token_value()
+
       value ->
         value
     end
@@ -459,7 +746,7 @@ defmodule Vibe.Notifications do
   defp stringify_push_data(_), do: %{}
 
   defp normalize_token_value(value) when is_binary(value) do
-    case String.trim(value) do
+    case value |> String.trim() |> unwrap_swift_optional() do
       "" -> nil
       trimmed -> trimmed
     end
@@ -467,9 +754,15 @@ defmodule Vibe.Notifications do
 
   defp normalize_token_value(_), do: nil
 
+  defp unwrap_swift_optional(value) do
+    case Regex.run(~r/^Optional\("(.*)"\)$/s, value) do
+      [_, inner] -> String.trim(inner)
+      _ -> value
+    end
+  end
+
   defp describe_push_targets(push_targets) when is_map(push_targets) do
     %{
-      expo: token_hint(push_targets[:expo]),
       fcm: token_hint(push_targets[:fcm]),
       apns: token_hint(push_targets[:apns]),
       apns_voip: token_hint(push_targets[:apns_voip])
@@ -501,10 +794,11 @@ defmodule Vibe.Notifications do
     %{
       team_id: is_binary(normalize_token_value(System.get_env("APPLE_VOIP_TEAM_ID"))),
       key_id: is_binary(normalize_token_value(System.get_env("APPLE_VOIP_KEY_ID"))),
-      private_key: is_binary(normalize_apns_private_key(System.get_env("APPLE_VOIP_PRIVATE_KEY"))),
+      private_key:
+        is_binary(normalize_apns_private_key(System.get_env("APPLE_VOIP_PRIVATE_KEY"))),
       topic:
         is_binary(
-          (System.get_env("APPLE_VOIP_TOPIC") |> normalize_token_value()) ||
+          System.get_env("APPLE_VOIP_TOPIC") |> normalize_token_value() ||
             case System.get_env("APPLE_BUNDLE_ID") |> normalize_token_value() do
               nil -> nil
               bundle_id -> bundle_id <> ".voip"
@@ -517,29 +811,87 @@ defmodule Vibe.Notifications do
   defp apns_voip_config do
     team_id = System.get_env("APPLE_VOIP_TEAM_ID") |> normalize_token_value()
     key_id = System.get_env("APPLE_VOIP_KEY_ID") |> normalize_token_value()
+
     private_key =
       System.get_env("APPLE_VOIP_PRIVATE_KEY")
       |> normalize_apns_private_key()
 
     topic =
-      (System.get_env("APPLE_VOIP_TOPIC") |> normalize_token_value()) ||
+      System.get_env("APPLE_VOIP_TOPIC") |> normalize_token_value() ||
         case System.get_env("APPLE_BUNDLE_ID") |> normalize_token_value() do
           nil -> nil
           bundle_id -> bundle_id <> ".voip"
         end
 
-    base_url =
-      case String.downcase(System.get_env("APPLE_VOIP_APNS_ENV") || "") do
-        "sandbox" -> @apns_voip_sandbox_base
-        "development" -> @apns_voip_sandbox_base
-        "dev" -> @apns_voip_sandbox_base
-        _ -> @apns_voip_prod_base
-      end
+    base_url = apns_base_url()
 
     if is_binary(team_id) and is_binary(key_id) and is_binary(private_key) and is_binary(topic) do
-      {:ok, %{team_id: team_id, key_id: key_id, private_key: private_key, topic: topic, base_url: base_url}}
+      {:ok,
+       %{
+         team_id: team_id,
+         key_id: key_id,
+         private_key: private_key,
+         topic: topic,
+         base_url: base_url
+       }}
     else
       {:error, :missing_config}
+    end
+  end
+
+  defp apns_message_config_presence do
+    %{
+      team_id: is_binary(normalize_token_value(System.get_env("APPLE_VOIP_TEAM_ID"))),
+      key_id: is_binary(normalize_token_value(System.get_env("APPLE_VOIP_KEY_ID"))),
+      private_key:
+        is_binary(normalize_apns_private_key(System.get_env("APPLE_VOIP_PRIVATE_KEY"))),
+      topic: is_binary(normalize_token_value(System.get_env("APPLE_BUNDLE_ID"))),
+      env: apns_environment()
+    }
+  end
+
+  defp apns_message_config do
+    team_id = System.get_env("APPLE_VOIP_TEAM_ID") |> normalize_token_value()
+    key_id = System.get_env("APPLE_VOIP_KEY_ID") |> normalize_token_value()
+
+    private_key =
+      System.get_env("APPLE_VOIP_PRIVATE_KEY")
+      |> normalize_apns_private_key()
+
+    topic = System.get_env("APPLE_BUNDLE_ID") |> normalize_token_value()
+
+    if is_binary(team_id) and is_binary(key_id) and is_binary(private_key) and is_binary(topic) do
+      {:ok,
+       %{
+         team_id: team_id,
+         key_id: key_id,
+         private_key: private_key,
+         topic: topic,
+         base_url: apns_base_url()
+       }}
+    else
+      {:error, :missing_config}
+    end
+  end
+
+  defp apns_environment do
+    case String.downcase(System.get_env("APPLE_VOIP_APNS_ENV") || "") do
+      value when value in ["sandbox", "development", "dev"] -> "sandbox"
+      _ -> "production"
+    end
+  end
+
+  defp apns_base_url do
+    case apns_environment() do
+      "sandbox" -> @apns_voip_sandbox_base
+      _ -> @apns_voip_prod_base
+    end
+  end
+
+  defp apns_base_urls do
+    case apns_base_url() do
+      @apns_voip_sandbox_base -> [@apns_voip_sandbox_base, @apns_voip_prod_base]
+      base -> [base, @apns_voip_sandbox_base]
     end
   end
 
@@ -562,7 +914,8 @@ defmodule Vibe.Notifications do
     cache_key = apns_voip_jwt_cache_key(config)
 
     case :persistent_term.get(cache_key, nil) do
-      %{jwt: jwt, iat: iat} when is_binary(jwt) and is_integer(iat) and now - iat < @apns_voip_jwt_cache_ttl_secs ->
+      %{jwt: jwt, iat: iat}
+      when is_binary(jwt) and is_integer(iat) and now - iat < @apns_voip_jwt_cache_ttl_secs ->
         {:ok, jwt}
 
       _ ->
@@ -583,7 +936,8 @@ defmodule Vibe.Notifications do
   end
 
   defp apns_voip_jwt_cache_key(config) do
-    {:vibe_notifications_apns_voip_jwt, config.team_id, config.key_id, :erlang.phash2(config.private_key)}
+    {:vibe_notifications_apns_voip_jwt, config.team_id, config.key_id,
+     :erlang.phash2(config.private_key)}
   end
 
   defp decode_apns_private_key(pem) when is_binary(pem) do
@@ -603,6 +957,7 @@ defmodule Vibe.Notifications do
   defp sign_es256_jwt(signing_input, private_key) do
     try do
       der_sig = :public_key.sign(signing_input, :sha256, private_key)
+
       case :public_key.der_decode(:"ECDSA-Sig-Value", der_sig) do
         {:"ECDSA-Sig-Value", r, s} when is_integer(r) and is_integer(s) ->
           {:ok, <<int_to_fixed_32(r)::binary, int_to_fixed_32(s)::binary>>}
@@ -620,6 +975,7 @@ defmodule Vibe.Notifications do
 
   defp int_to_fixed_32(int) when is_integer(int) and int >= 0 do
     bin = :binary.encode_unsigned(int)
+
     case byte_size(bin) do
       32 -> bin
       size when size < 32 -> :binary.copy(<<0>>, 32 - size) <> bin
@@ -629,6 +985,7 @@ defmodule Vibe.Notifications do
 
   defp apns_voip_payload(data, caller_name, call_type) when is_map(data) do
     aps = %{"content-available" => 1}
+
     payload =
       data
       |> Map.put_new(:event, "call-start")
@@ -638,6 +995,20 @@ defmodule Vibe.Notifications do
       |> Map.put(:callType, if(call_type == "video", do: "video", else: "voice"))
       |> Map.put(:aps, aps)
 
+    {:ok, Jason.encode!(payload)}
+  rescue
+    error -> {:error, {:apns_payload_encode_failed, error}}
+  end
+
+  defp apns_message_payload(data, title, body, badge) when is_map(data) do
+    aps = %{
+      "alert" => %{"title" => title, "body" => body},
+      "sound" => "default",
+      "badge" => badge,
+      "mutable-content" => 1
+    }
+
+    payload = Map.put(data, :aps, aps)
     {:ok, Jason.encode!(payload)}
   rescue
     error -> {:error, {:apns_payload_encode_failed, error}}
@@ -663,7 +1034,9 @@ defmodule Vibe.Notifications do
     if body != "" do
       truncate_text(body, 160)
     else
-      case to_string(message_type || "text") do
+      kind = payload["pushKind"] || payload["push_kind"] || message_type
+
+      case to_string(kind || "text") do
         "image" -> "Photo"
         "video" -> "Video"
         "voice" -> "Voice message"
@@ -672,19 +1045,39 @@ defmodule Vibe.Notifications do
         "location" -> "Location"
         "contact" -> "Contact"
         "gif" -> "GIF"
-        _ -> "You have a new message"
+        "sticker" -> "Sticker"
+        "text" -> "New message"
+        _ -> "New message"
       end
     end
   end
 
+  defp resolve_push_badge(payload) when is_map(payload) do
+    case payload["badge"] || payload[:badge] do
+      value when is_integer(value) and value >= 0 ->
+        value
+
+      value when is_binary(value) ->
+        case Integer.parse(String.trim(value)) do
+          {badge, ""} when badge >= 0 -> badge
+          _ -> 1
+        end
+
+      _ ->
+        1
+    end
+  end
+
+  defp resolve_push_badge(_), do: 1
+
   defp resolve_push_media_image(payload) when is_map(payload) do
     candidate =
       payload["media_image"] ||
-      payload["mediaImage"] ||
-      payload["media_url"] ||
-      payload["mediaUrl"] ||
-      map_value(payload["richContent"], "image") ||
-      map_value(payload["_richContent"], "image")
+        payload["mediaImage"] ||
+        payload["media_url"] ||
+        payload["mediaUrl"] ||
+        map_value(payload["richContent"], "image") ||
+        map_value(payload["_richContent"], "image")
 
     case candidate do
       value when is_binary(value) ->
@@ -727,9 +1120,6 @@ defmodule Vibe.Notifications do
     end
   end
 
-  # APNs payload must stay compact.
-  # For inline/base64 avatars we switch to a compact API URL and let the iOS
-  # notification service extension fetch/attach the image.
   defp normalize_push_image(value, from_user_id) when is_binary(value) do
     trimmed = String.trim(value)
 
@@ -743,7 +1133,10 @@ defmodule Vibe.Notifications do
           Logger.info("[Notifications] push image using remote URL from_user=#{from_user_id}")
           trimmed
         else
-          Logger.warning("[Notifications] push image URL too long from_user=#{from_user_id} length=#{String.length(trimmed)}")
+          Logger.warning(
+            "[Notifications] push image URL too long from_user=#{from_user_id} length=#{String.length(trimmed)}"
+          )
+
           nil
         end
 
@@ -754,7 +1147,10 @@ defmodule Vibe.Notifications do
   end
 
   defp normalize_push_image(_value, from_user_id) do
-    Logger.info("[Notifications] push image non-binary value, using proxy URL from_user=#{from_user_id}")
+    Logger.info(
+      "[Notifications] push image non-binary value, using proxy URL from_user=#{from_user_id}"
+    )
+
     avatar_proxy_url(from_user_id)
   end
 
@@ -787,108 +1183,5 @@ defmodule Vibe.Notifications do
       end
     end)
     |> String.trim_trailing("/")
-  end
-
-  defp log_expo_push_result(kind, to_user_id, body) do
-    with {:ok, decoded} <- Jason.decode(body || ""),
-         data <- Map.get(decoded, "data"),
-         ticket when is_map(ticket) <- normalize_expo_ticket(data) do
-      case ticket["status"] do
-        "ok" ->
-          ticket_id = ticket["id"]
-
-          Logger.info(
-            "[Notifications] #{kind} push accepted by Expo to_user=#{to_user_id} ticket_id=#{ticket_id}"
-          )
-
-          if is_binary(ticket_id) and ticket_id != "" do
-            schedule_expo_receipt_check(kind, to_user_id, ticket_id)
-          end
-
-        "error" ->
-          Logger.warning(
-            "[Notifications] #{kind} push rejected by Expo to_user=#{to_user_id} details=#{inspect(ticket["details"])} message=#{inspect(ticket["message"])}"
-          )
-
-        other ->
-          Logger.warning(
-            "[Notifications] #{kind} push unexpected Expo ticket to_user=#{to_user_id} status=#{inspect(other)} ticket=#{inspect(ticket)}"
-          )
-      end
-    else
-      _ ->
-        Logger.warning(
-          "[Notifications] #{kind} push response parse failed to_user=#{to_user_id} body=#{String.slice(body || "", 0, 240)}"
-        )
-    end
-  end
-
-  defp normalize_expo_ticket(data) when is_map(data), do: data
-
-  defp normalize_expo_ticket(data) when is_list(data) do
-    case data do
-      [ticket | _] when is_map(ticket) -> ticket
-      _ -> nil
-    end
-  end
-
-  defp normalize_expo_ticket(_), do: nil
-
-  defp schedule_expo_receipt_check(kind, to_user_id, ticket_id) do
-    Task.start(fn ->
-      Process.sleep(1_500)
-      fetch_and_log_expo_receipt(kind, to_user_id, ticket_id)
-    end)
-  end
-
-  defp fetch_and_log_expo_receipt(kind, to_user_id, ticket_id) do
-    payload = %{ids: [ticket_id]}
-
-    request =
-      Finch.build(
-        :post,
-        @expo_receipts_url,
-        [{"content-type", "application/json"}],
-        Jason.encode!(payload)
-      )
-
-    case Finch.request(request, Vibe.Finch, receive_timeout: 7_000) do
-      {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
-        with {:ok, decoded} <- Jason.decode(body || ""),
-             data when is_map(data) <- Map.get(decoded, "data"),
-             receipt when is_map(receipt) <- Map.get(data, ticket_id) do
-          case receipt["status"] do
-            "ok" ->
-              Logger.info(
-                "[Notifications] #{kind} push receipt ok to_user=#{to_user_id} ticket_id=#{ticket_id}"
-              )
-
-            "error" ->
-              Logger.warning(
-                "[Notifications] #{kind} push receipt error to_user=#{to_user_id} ticket_id=#{ticket_id} details=#{inspect(receipt["details"])} message=#{inspect(receipt["message"])}"
-              )
-
-            other ->
-              Logger.warning(
-                "[Notifications] #{kind} push receipt unexpected status to_user=#{to_user_id} ticket_id=#{ticket_id} status=#{inspect(other)} receipt=#{inspect(receipt)}"
-              )
-          end
-        else
-          _ ->
-            Logger.warning(
-              "[Notifications] #{kind} push receipt parse failed to_user=#{to_user_id} ticket_id=#{ticket_id} body=#{String.slice(body || "", 0, 240)}"
-            )
-        end
-
-      {:ok, %Finch.Response{status: status, body: body}} ->
-        Logger.warning(
-          "[Notifications] #{kind} push receipt request failed status=#{status} to_user=#{to_user_id} ticket_id=#{ticket_id} body=#{String.slice(body || "", 0, 240)}"
-        )
-
-      {:error, reason} ->
-        Logger.warning(
-          "[Notifications] #{kind} push receipt request error to_user=#{to_user_id} ticket_id=#{ticket_id} reason=#{inspect(reason)}"
-        )
-    end
   end
 end

@@ -1,0 +1,18 @@
+{
+  "id": 53,
+  "status": "done",
+  "priority": 1,
+  "kind": "handoff",
+  "body": "WHERE WE LEFT OFF — the allowance ran out mid-task\nFILES: /Users/mohammadshayani/.claude/projects/-Users-mohammadshayani-Vibe/memory/mls-open-is-one-shot.md, /Users/mohammadshayani/.claude/projects/-Users-mohammadshayani-Vibe/memory/decrypt-empty-cell-instrumentation.md, .vibe/memory.md, server/lib/vibe/mls.ex, docs/secure-core-architecture.md, docs/mls-commit-fanout.md (+2)",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "codex",
+  "author": "Vibe Team",
+  "created_at": 1787755159,
+  "updated_at": 1787758716
+}

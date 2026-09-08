@@ -550,18 +550,47 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
     return btn
   }()
 
+  /// "Computer" button — visible once this chat has a preview frame or live computer
+  /// state. Presents the live sheet, falling back to the last frame.
+  private lazy var headerComputerButton: UIButton = {
+    let btn = UIButton(type: .system)
+    btn.setImage(UIImage(systemName: "display"), for: .normal)
+    btn.addTarget(self, action: #selector(computerPreviewTapped), for: .touchUpInside)
+    btn.accessibilityLabel = "Computer"
+    btn.setContentHuggingPriority(.required, for: .horizontal)
+    btn.setContentCompressionResistancePriority(.required, for: .horizontal)
+    btn.isHidden = true
+    return btn
+  }()
+
   /// Container for ONLY history + new chat — the cloud (profile) is deliberately NOT in
   /// here; it stays its own standalone bar-button item. Arranged left→right as
   /// new chat, history, so new chat animates in hugging the history button while the
   /// cloud (a separate item further trailing) never shares a wrapper with them.
   private lazy var headerHistoryActionsStack: UIStackView = {
     let stack = UIStackView(arrangedSubviews: [
-      headerNewChatActionButton, headerHistoryButton,
+      headerComputerButton, headerNewChatActionButton, headerHistoryButton,
     ])
     stack.axis = .horizontal
     stack.alignment = .center
     stack.spacing = 16
     return stack
+  }()
+
+  /// Floating 96pt live "computer" thumbnail above the composer; tap opens the full sheet.
+  /// Hidden until the first `agent-preview` frame for this chat.
+  private lazy var computerThumbnailView: UIImageView = {
+    let iv = UIImageView()
+    iv.contentMode = .scaleAspectFill
+    iv.clipsToBounds = true
+    iv.layer.cornerRadius = 14
+    iv.backgroundColor = UIColor.black.withAlphaComponent(0.85)
+    iv.isUserInteractionEnabled = true
+    iv.isHidden = true
+    iv.translatesAutoresizingMaskIntoConstraints = false
+    iv.accessibilityLabel = "Computer preview"
+    iv.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(computerPreviewTapped)))
+    return iv
   }()
 
   /// Floating "jump to latest" control above the composer; appears when the feed is
@@ -579,7 +608,21 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
   /// The model a loaded run reports (history list / live task). The header shows this
   /// when the user hasn't explicitly overridden the model, so a resumed/opened session
   /// reflects its real model instead of the local default.
-  var runModel: String?
+  var runModel: String? {
+    didSet {
+      guard isViewLoaded else { return }
+      updateWorkspace()
+      updateHeaderTexts()
+    }
+  }
+  /// Bridge-reported thinking/reasoning effort for the loaded run/session (if known).
+  var runReasoningEffort: String? {
+    didSet {
+      guard isViewLoaded else { return }
+      updateWorkspace()
+      updateHeaderTexts()
+    }
+  }
   /// Connected computer name shown beneath the model (e.g. "MacBook-Pro.local").
   var deviceLabel: String?
   /// Whether that computer is currently online (drives the "· reconnecting" hint).
@@ -706,8 +749,16 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
   /// Chat + provider context (history surface) so a runtime card can route a
   /// full-file-open request to the user's bridge. Nil in the live agent view.
   var agentBridgeChatId: String? {
-    didSet { composerView.bridgeChatId = agentBridgeChatId }
+    didSet {
+      composerView.bridgeChatId = agentBridgeChatId
+      if isViewLoaded { updateComputerPreviewAffordances() }
+    }
   }
+  /// Set by a host that already knows the agent; otherwise the session resolves it from
+  /// this chat's peer. Skips one lookup on the way into the Computer sheet.
+  var agentComputerAgentId: String?
+  private var computerSheetOpening = false
+
   var agentBridgeProvider: String? {
     didSet {
       composerView.provider = agentBridgeProvider ?? "codex"
@@ -869,6 +920,61 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
     onPresentProfile?()
   }
 
+  /// Opens the LIVE computer sheet when a session can be created; the still-frame sheet
+  /// stays the fallback for no gateway / 429 capacity (agent-computer-v1 §2).
+  @objc private func computerPreviewTapped() {
+    guard let chatId = agentBridgeChatId, !chatId.isEmpty else { return }
+    guard !computerSheetOpening else { return }
+    computerSheetOpening = true
+    setComputerAffordancesBusy(true)
+    VibeAgentComputerSession.create(agentId: agentComputerAgentId, chatId: chatId) {
+      [weak self] result in
+      guard let self else { return }
+      self.computerSheetOpening = false
+      self.setComputerAffordancesBusy(false)
+      let canPresent = self.viewIfLoaded?.window != nil && self.presentedViewController == nil
+      guard canPresent else {
+        if case .success(let session) = result { session.stop() }
+        return
+      }
+      switch result {
+      case .success(let session):
+        self.present(
+          VibeAgentComputerViewController(
+            session: session, agentTitle: self.runtimeTitle, appearance: self.appearance),
+          animated: true)
+      case .failure:
+        self.present(
+          VibeAgentComputerPreviewViewController(
+            chatId: chatId, appearance: self.appearance,
+            fallbackNote: "Live view unavailable — showing the latest frame."),
+          animated: true)
+      }
+    }
+  }
+
+  private func setComputerAffordancesBusy(_ busy: Bool) {
+    headerComputerButton.isEnabled = !busy
+    computerThumbnailView.isUserInteractionEnabled = !busy
+    UIView.animate(withDuration: 0.15) {
+      self.headerComputerButton.alpha = busy ? 0.45 : 1.0
+      self.computerThumbnailView.alpha = busy ? 0.6 : 1.0
+    }
+  }
+
+  /// Show/hide the header button + floating thumbnail once a "computer" preview frame
+  /// has arrived for this chat (agent-platform-v1 §3.4).
+  private func updateComputerPreviewAffordances() {
+    let preview = agentBridgeChatId.flatMap { ChatEngine.shared.latestAgentPreview(chatId: $0) }
+    let computer = agentBridgeChatId.flatMap { ChatEngine.shared.latestAgentComputer(chatId: $0) }
+    // The button rides either signal; the thumbnail needs an actual frame.
+    headerComputerButton.isHidden = preview == nil && computer == nil
+    computerThumbnailView.isHidden = preview == nil
+    if let preview {
+      computerThumbnailView.image = preview.image
+    }
+  }
+
   @objc private func handleTranscriptTap() {
     view.endEditing(true)
   }
@@ -1014,6 +1120,7 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
     repoPickerButton.showsMenuAsPrimaryAction = true
     updateRepoPickerStyle()
     view.addSubview(repoPickerButton)
+    view.addSubview(computerThumbnailView)
 
     progressSheet.translatesAutoresizingMaskIntoConstraints = false
     progressSheet.applyAppearance(appearance)
@@ -1073,6 +1180,10 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
       editToastBlur.bottomAnchor.constraint(equalTo: composerView.topAnchor, constant: -8.0),
       repoPickerButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16.0),
       repoPickerButton.bottomAnchor.constraint(equalTo: composerView.topAnchor, constant: -8.0),
+      computerThumbnailView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16.0),
+      computerThumbnailView.bottomAnchor.constraint(equalTo: composerView.topAnchor, constant: -8.0),
+      computerThumbnailView.widthAnchor.constraint(equalToConstant: 96),
+      computerThumbnailView.heightAnchor.constraint(equalToConstant: 96),
       progressSheet.topAnchor.constraint(equalTo: view.topAnchor),
       progressSheet.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       progressSheet.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -1124,6 +1235,7 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
     trackStreamStarts(messages)
     indexProgress()
     updateWorkspace()
+    updateComputerPreviewAffordances()
     observeKeyboard()
     observeLiveMessages()
     // First landing is handled in viewDidLayoutSubviews (once content + insets resolve)
@@ -1484,6 +1596,12 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
       if (note.userInfo?["reason"] as? String) == "agentBridgeAsk" {
         self.handleAgentBridgeAsk(note.userInfo ?? [:])
       }
+      let reason = note.userInfo?["reason"] as? String
+      if reason == "agentPreview" || reason == "agentComputer",
+        (note.userInfo?["chatId"] as? String) == self.agentBridgeChatId
+      {
+        self.updateComputerPreviewAffordances()
+      }
     }
   }
 
@@ -1549,11 +1667,13 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
       return
     }
 
-    // The body is E2E-sealed (`askEnc`); fall back to plaintext `request` for a
-    // keyless pairing. Decrypted shape is { kind, request: {...} }.
+    // The body is E2E-sealed (`askEnc`); an isolated-runtime run (agent-platform-v1) sends
+    // `ask` plaintext instead. Fall back to plaintext `request` for a keyless pairing.
     var body: [String: Any]
     if let dec = AgentRuntimeCrypto.decrypt(payload["askEnc"]) {
       body = dec
+    } else if payload["askEnc"] == nil, let ask = payload["ask"] as? [String: Any] {
+      body = ["request": ask]
     } else if let raw = payload["request"] as? [String: Any] {
       body = ["request": raw]
     } else {
@@ -1919,6 +2039,19 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
     return nil
   }
 
+  /// Latest reasoning effort a run reported (live runtime metadata).
+  private var latestRuntimeReasoningEffort: String? {
+    for message in messages.reversed() {
+      if let effort = message.runtime?.reasoningEffort?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !effort.isEmpty
+      {
+        return effort
+      }
+    }
+    return nil
+  }
+
   private var latestRuntimeAdvisor: String? {
     for message in messages.reversed() {
       if let advisor = message.runtime?.advisor?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1928,6 +2061,61 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
       }
     }
     return nil
+  }
+
+  /// Model id to display for the open session. Prefer run/session-reported values so
+  /// history and live tasks show what actually ran; fall back to the store selection
+  /// only when nothing was reported (empty/new chat). Explicit overrides still drive
+  /// the next spawn via `selectedRunOptions`.
+  private func displayedSessionModelId(provider: String) -> String? {
+    if let runtime = latestRuntimeModel { return runtime }
+    if let run = runModel?.trimmingCharacters(in: .whitespacesAndNewlines), !run.isEmpty {
+      return run
+    }
+    if let explicit = AgentBridgeSelectionStore.selectedModel(provider: provider) {
+      return explicit
+    }
+    return AgentBridgeSelectionStore.selectedRunOptions(provider: provider).model
+  }
+
+  /// Effort to display as the session's reported configuration. Prefer run/session
+  /// values; do not invent archived effort from the mobile default picker.
+  private func displayedSessionReasoningEffort() -> String? {
+    if let runtime = latestRuntimeReasoningEffort { return runtime }
+    if let run = runReasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !run.isEmpty
+    {
+      return run
+    }
+    return nil
+  }
+
+  /// Compact configuration string for workspace/header, e.g. `Opus 4.6 · Thinking High`.
+  private func sessionConfigurationLabel(provider: String) -> String? {
+    AgentBridgeSessionConfiguration.compactLabel(
+      provider: provider,
+      model: displayedSessionModelId(provider: provider),
+      reasoningEffort: displayedSessionReasoningEffort()
+    )
+  }
+
+  private func sessionThinkingLabel() -> String? {
+    guard
+      let effort = displayedSessionReasoningEffort(),
+      let level = AgentBridgeIntelligenceLevel.fromProviderEffort(effort)
+    else { return nil }
+    return "\(level.title) Thinking"
+  }
+
+  private func headerModelTitle(provider: String) -> String {
+    let title = AgentBridgeSelectionStore.modelTitle(
+      provider: provider,
+      model: displayedSessionModelId(provider: provider)
+    )
+    if provider.lowercased() == "claude", title.lowercased().hasPrefix("claude ") {
+      return String(title.dropFirst("Claude ".count))
+    }
+    return title
   }
 
   /// Refresh the header's model title + run-options menu and the device subline.
@@ -1991,9 +2179,15 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
   /// when a transcript is open and idle, otherwise a "start a session" prompt. The header
   /// title itself always stays the agent's name (Claude / Codex).
   private func headerSubtitleText() -> String {
+    if isLiveTurnActive(), let thinking = sessionThinkingLabel() { return thinking }
     if let live = liveHeaderStatusText() { return live }
     let title = runtimeTitle.trimmingCharacters(in: .whitespacesAndNewlines)
     if !title.isEmpty && (isHistoryPicked || !tableMessages.isEmpty) { return title }
+    // No topic yet — surface reported model·thinking so an open/running session still
+    // shows its configuration in the header strip.
+    if let config = sessionConfigurationLabel(provider: agentBridgeProvider ?? "codex") {
+      return config
+    }
     if !tableMessages.isEmpty { return "Session" }
     return "Start a session"
   }
@@ -2001,16 +2195,26 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
   private func updateHeaderTexts() {
     guard usesInViewHeader else { return }
 
-    // Title is always the agent's name (Claude / Codex) — never the model / "Cloud".
-    headerModelButton.setTitle(agentDisplayName, for: .normal)
+    let provider = agentBridgeProvider ?? "codex"
+    // The running session's actual model is the primary header title. The second line
+    // carries its reported effort (for example "Max Thinking").
+    headerModelButton.setTitle(headerModelTitle(provider: provider), for: .normal)
     let color = vibeAgentKitColorWithAlpha(appearance.text, 0.8)
     headerModelButton.setTitleColor(color, for: .normal)
     headerModelButton.tintColor = color
 
     // Subtitle carries the live state: current thinking/tool step while running, the
-    // history/chat name when a transcript is open and idle, else "Start a session".
+    // history/chat name when a transcript is open and idle, else session config or
+    // "Start a session". Reported model·thinking also lives on the workspace strip.
     subtitleLabel.text = headerSubtitleText()
     subtitleLabel.textColor = appearance.textSecondary
+    if let config = sessionConfigurationLabel(provider: provider) {
+      headerModelButton.accessibilityValue = config
+      headerModelButton.accessibilityHint = "Session configuration: \(config)"
+    } else {
+      headerModelButton.accessibilityValue = nil
+      headerModelButton.accessibilityHint = nil
+    }
 
     // Connection is shown by the pip/spinner regardless of what the subtitle text says.
     let device = (deviceLabel?.isEmpty == false) ? deviceLabel : AgentPairingService.lastDeviceLabel
@@ -2036,9 +2240,13 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
   private func updateWorkspace() {
     guard isViewLoaded else { return }
     let provider = agentBridgeProvider ?? "codex"
-    let options = AgentBridgeSelectionStore.selectedRunOptions(provider: provider)
-    let modelTitle = AgentBridgeSelectionStore.modelTitle(
-      provider: provider, model: options.model ?? runModel ?? latestRuntimeModel)
+    // Prefer reported run/session model+effort for the open conversation; fall back to
+    // the explicit user selection (or store default) only when nothing was reported.
+    let modelId = displayedSessionModelId(provider: provider)
+    let modelOnlyTitle = AgentBridgeSelectionStore.modelTitle(provider: provider, model: modelId)
+    let modelTitle =
+      sessionConfigurationLabel(provider: provider)
+      ?? modelOnlyTitle
     let device = (deviceLabel?.isEmpty == false) ? deviceLabel : AgentPairingService.lastDeviceLabel
     let connected = (deviceLabel != nil) ? deviceConnected : AgentPairingService.lastConnected
     workspaceView.configure(
@@ -2053,72 +2261,6 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
     )
   }
 
-  private func runOptionsMenu() -> UIMenu {
-    let provider = agentBridgeProvider ?? "codex"
-    let options = AgentBridgeSelectionStore.selectedRunOptions(provider: provider)
-    let effectiveModelId =
-      options.model
-      ?? AgentBridgeSelectionStore.canonicalModel(
-        provider: provider, model: runModel ?? latestRuntimeModel)
-
-    let modelActions = AgentBridgeSelectionStore.modelChoices(provider: provider).map { choice in
-      UIAction(
-        title: choice.title,
-        subtitle: choice.subtitle,
-        state: choice.value == effectiveModelId ? .on : .off
-      ) { [weak self] _ in
-        AgentBridgeSelectionStore.setModel(provider: provider, model: choice.value)
-        self?.updateHeaderTexts()
-      }
-    }
-    let defaultAction = UIAction(
-      title: "\(AgentBridgeSelectionStore.defaultModelTitle(provider: provider)) default",
-      subtitle: "Use the model active in the local CLI session",
-      state: effectiveModelId == nil ? .on : .off
-    ) { [weak self] _ in
-      AgentBridgeSelectionStore.setModel(provider: provider, model: nil)
-      self?.runModel = nil
-      self?.updateHeaderTexts()
-    }
-    let intelligenceActions = AgentBridgeIntelligenceLevel.allCases.map { level in
-      UIAction(title: level.title, state: options.intelligence == level ? .on : .off) { [weak self] _ in
-        AgentBridgeSelectionStore.setIntelligence(level)
-        self?.updateHeaderTexts()
-      }
-    }
-    let speedActions = AgentBridgeSpeedMode.allCases.map { speed in
-      UIAction(title: speed.title, state: options.speed == speed ? .on : .off) { [weak self] _ in
-        AgentBridgeSelectionStore.setSpeed(speed)
-        self?.updateHeaderTexts()
-      }
-    }
-    let advisorActions = AgentBridgeSelectionStore.advisorChoices(provider: provider).map { choice in
-      UIAction(
-        title: choice.title,
-        subtitle: choice.subtitle,
-        state: choice.value == options.advisor ? .on : .off
-      ) { [weak self] _ in
-        AgentBridgeSelectionStore.setAdvisor(provider: provider, advisor: choice.value ?? "off")
-        self?.updateHeaderTexts()
-      }
-    }
-    let currentTitle = AgentBridgeSelectionStore.modelTitle(
-      provider: provider, model: options.model ?? runModel ?? latestRuntimeModel)
-    var children: [UIMenuElement] = [
-      UIMenu(title: "Model", subtitle: currentTitle, children: [defaultAction] + modelActions),
-      UIMenu(title: "Thinking", subtitle: options.intelligence.title, children: intelligenceActions),
-      UIMenu(title: "Speed", subtitle: options.speed.title, children: speedActions),
-    ]
-    if provider.lowercased() == "claude" {
-      let advisorTitle = AgentBridgeSelectionStore.advisorTitle(
-        provider: provider, advisor: options.advisor ?? latestRuntimeAdvisor)
-      children.insert(
-        UIMenu(title: "Advisor", subtitle: advisorTitle, children: advisorActions),
-        at: 1
-      )
-    }
-    return UIMenu(children: children)
-  }
 
   private func refreshModelMenu() {
     // Menu removed: tapping title now pushes to profile
@@ -2463,6 +2605,10 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
   /// the single running task for this chat+provider when taskId is absent.
   private func stopActiveTask() {
     guard let chatId = agentBridgeChatId, !chatId.isEmpty else { return }
+    if let runId = ChatEngine.shared.activeIsolatedRunId(chatId: chatId) {
+      NSLog("[AgentView] stopActiveTask isolated chat=%@ runId=%@", chatId, runId)
+      _ = ChatEngine.shared.cancelAgentRun(chatId: chatId, runId: runId)
+    }
     let provider = agentBridgeProvider ?? "codex"
     let taskId = messages.first {
       $0.isStreaming || $0.runtime?.status == "running"
@@ -3187,6 +3333,29 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
     let content: (title: String, body: String)
     switch normalized {
     case "/usage", "usage":
+      // Prefer the payload-backed usage sheet (same glass as progress / tools Usage).
+      if let chatId = agentBridgeChatId, !chatId.isEmpty {
+        let provider = (agentBridgeProvider ?? composerView.provider)
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        let appearance = self.appearance
+        let root = VibeAgentUsageSheetRoot(
+          chatId: chatId,
+          provider: provider.isEmpty ? "claude" : provider,
+          appearance: appearance
+        )
+        let host = UIHostingController(rootView: root)
+        host.view.backgroundColor = .clear
+        host.modalPresentationStyle = .pageSheet
+        if let sheet = host.sheetPresentationController {
+          sheet.detents = [.medium(), .large()]
+          sheet.prefersGrabberVisible = true
+          if #available(iOS 16.0, *) {
+            sheet.preferredCornerRadius = 30
+          }
+        }
+        present(host, animated: true)
+        return
+      }
       content = ("Usage", usageCommandBody())
     case "/status", "status":
       content = ("Status", statusCommandBody())
@@ -3282,7 +3451,10 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
       ?? "No repository selected"
     let cwd = runtime?.cwd ?? AgentBridgeSelectionStore.selectedRepository()?.path ?? "-"
     let options = AgentBridgeSelectionStore.selectedRunOptions(provider: provider)
-    let model = runtime?.model ?? options.model ?? "Provider default"
+    let reportedModel = displayedSessionModelId(provider: provider)
+    let model = reportedModel ?? options.model ?? "Provider default"
+    let modelTitle = AgentBridgeSelectionStore.modelTitle(provider: provider, model: model)
+    let reportedEffort = displayedSessionReasoningEffort()
     let advisor = runtime?.advisor ?? options.advisor
     let mode = runtime?.workMode ?? AgentBridgeSelectionStore.selectedWorkMode().rawValue
     let status = runtime?.status ?? (messages.contains { $0.isStreaming } ? "running" : "idle")
@@ -3292,8 +3464,13 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
       "repo: \(repo)",
       "cwd: \(cwd)",
       "work mode: \(mode)",
-      "model: \(model)",
+      "model: \(modelTitle)",
     ]
+    if let reportedEffort,
+      let level = AgentBridgeIntelligenceLevel.fromProviderEffort(reportedEffort)
+    {
+      lines.append("thinking: \(level.title) (session)")
+    }
     if provider.lowercased() == "claude" {
       lines.append("advisor: \(advisor ?? "off")")
     }
@@ -3338,18 +3515,35 @@ final class VibeAgentConversationViewController: UIViewController, UITableViewDa
   private func reasoningCommandBody() -> String {
     let provider = agentBridgeProvider ?? composerView.provider
     let options = AgentBridgeSelectionStore.selectedRunOptions(provider: provider)
-    let effort = AgentBridgeRunOptions.effectiveEffort(
+    let nextEffort = AgentBridgeRunOptions.effectiveEffort(
       provider: provider,
       intelligence: options.intelligence,
       speed: options.speed
     )
-    let model = options.model ?? latestRuntimeSummary()?.model ?? "Provider default"
-    return [
-      "model: \(model)",
-      "thinking: \(options.intelligence.title)",
-      "speed: \(options.speed.title)",
-      "effective effort: \(effort)",
-    ].joined(separator: "\n")
+    let sessionModelId = displayedSessionModelId(provider: provider)
+    let modelTitle = AgentBridgeSelectionStore.modelTitle(
+      provider: provider,
+      model: sessionModelId ?? options.model
+    )
+    let sessionEffort = displayedSessionReasoningEffort()
+    var lines = [
+      "session model: \(modelTitle)",
+    ]
+    if let sessionEffort {
+      if let level = AgentBridgeIntelligenceLevel.fromProviderEffort(sessionEffort) {
+        lines.append("session thinking: \(level.title)")
+      } else {
+        lines.append("session thinking: reported (\(sessionEffort))")
+      }
+    } else {
+      lines.append("session thinking: not reported")
+    }
+    lines.append(contentsOf: [
+      "next-run thinking: \(options.intelligence.title)",
+      "next-run speed: \(options.speed.title)",
+      "next-run effort: \(nextEffort)",
+    ])
+    return lines.joined(separator: "\n")
   }
 
   private func appendCommandSection(
@@ -4117,10 +4311,185 @@ private final class VibeAgentSkeletonPillView: UIView {
   }
 }
 
+// MARK: - History load: line spinner (direct + group)
+
+/// Thin rotating line arc for History / chat load in the middle of the feed.
+/// Replaces the old orbiting-orb constellation. Channels keep the bubble skeleton.
+final class ChatHistoryModernLoadingView: UIView {
+  private let spinHost = CALayer()
+  private let progressLayer = CAShapeLayer()
+  private let spinKey = "chat.history.lineSpin"
+
+  private var lineColor: UIColor = UIColor.secondaryLabel
+  private let spinnerSide: CGFloat = 28
+  private let lineWidth: CGFloat = 2.0
+
+  var contentTopInset: CGFloat = 0 { didSet { setNeedsLayout() } }
+  var contentBottomInset: CGFloat = 20 { didSet { setNeedsLayout() } }
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    isUserInteractionEnabled = false
+    clipsToBounds = true
+    backgroundColor = .clear
+
+    spinHost.contentsScale = UIScreen.main.scale
+    layer.addSublayer(spinHost)
+
+    progressLayer.fillColor = UIColor.clear.cgColor
+    progressLayer.lineCap = .round
+    progressLayer.lineWidth = lineWidth
+    progressLayer.strokeStart = 0.08
+    progressLayer.strokeEnd = 0.78
+    progressLayer.contentsScale = UIScreen.main.scale
+    spinHost.addSublayer(progressLayer)
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  func applyAppearance(isDark: Bool, accent: UIColor, secondaryText: UIColor) {
+    _ = accent
+    lineColor = secondaryText.withAlphaComponent(isDark ? 0.78 : 0.72)
+    progressLayer.strokeColor = lineColor.cgColor
+    setNeedsLayout()
+  }
+
+  func startAnimating() {
+    layoutIfNeeded()
+    progressLayer.strokeColor = lineColor.cgColor
+    if spinHost.animation(forKey: spinKey) == nil {
+      let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+      spin.fromValue = 0
+      spin.toValue = Double.pi * 2
+      spin.duration = 0.85
+      spin.repeatCount = .infinity
+      spin.timingFunction = CAMediaTimingFunction(name: .linear)
+      spin.isRemovedOnCompletion = false
+      spinHost.add(spin, forKey: spinKey)
+    }
+  }
+
+  func stopAnimating() {
+    spinHost.removeAnimation(forKey: spinKey)
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    spinHost.transform = CATransform3DIdentity
+    CATransaction.commit()
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    let usable = bounds.inset(
+      by: UIEdgeInsets(
+        top: contentTopInset, left: 0, bottom: contentBottomInset, right: 0))
+    let center = CGPoint(x: usable.midX, y: usable.midY)
+
+    spinHost.bounds = CGRect(x: 0, y: 0, width: spinnerSide, height: spinnerSide)
+    spinHost.position = center
+
+    let ringRect = spinHost.bounds.insetBy(dx: lineWidth / 2.0, dy: lineWidth / 2.0)
+    progressLayer.frame = spinHost.bounds
+    progressLayer.path = UIBezierPath(ovalIn: ringRect).cgPath
+    progressLayer.lineWidth = lineWidth
+  }
+}
+
+// MARK: - Header line spinner (Home / chat sync)
+
+/// Compact open-arc spinner used in the chat header next to Connecting / Updating.
+final class VibeHeaderLineSpinnerView: UIView {
+  private let spinHost = CALayer()
+  private let progressLayer = CAShapeLayer()
+  private let spinKey = "vibe.header.lineSpin"
+  private let spinnerSize: CGFloat
+  private let strokeWidth: CGFloat
+  private var isAnimating = false
+
+  var color: UIColor = .secondaryLabel {
+    didSet { progressLayer.strokeColor = color.cgColor }
+  }
+
+  init(size: CGFloat = 11, lineWidth: CGFloat = 1.55) {
+    self.spinnerSize = size
+    self.strokeWidth = lineWidth
+    super.init(frame: CGRect(x: 0, y: 0, width: size, height: size))
+    isUserInteractionEnabled = false
+    backgroundColor = .clear
+    clipsToBounds = false
+
+    spinHost.contentsScale = UIScreen.main.scale
+    layer.addSublayer(spinHost)
+
+    progressLayer.fillColor = UIColor.clear.cgColor
+    progressLayer.strokeColor = color.cgColor
+    progressLayer.lineCap = .round
+    progressLayer.lineWidth = strokeWidth
+    progressLayer.strokeStart = 0.08
+    progressLayer.strokeEnd = 0.78
+    progressLayer.contentsScale = UIScreen.main.scale
+    spinHost.addSublayer(progressLayer)
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override var intrinsicContentSize: CGSize {
+    CGSize(width: spinnerSize, height: spinnerSize)
+  }
+
+  func startAnimating() {
+    // Never collapse via isHidden — callers reserve this slot so text doesn't shift.
+    isHidden = false
+    alpha = 1
+    isAnimating = true
+    layoutIfNeeded()
+    progressLayer.strokeColor = color.cgColor
+    guard spinHost.animation(forKey: spinKey) == nil else { return }
+    let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+    spin.fromValue = 0
+    spin.toValue = Double.pi * 2
+    spin.duration = 0.85
+    spin.repeatCount = .infinity
+    spin.timingFunction = CAMediaTimingFunction(name: .linear)
+    spin.isRemovedOnCompletion = false
+    spinHost.add(spin, forKey: spinKey)
+  }
+
+  func stopAnimating() {
+    isAnimating = false
+    spinHost.removeAnimation(forKey: spinKey)
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    spinHost.transform = CATransform3DIdentity
+    CATransaction.commit()
+    // Keep layout space; hide only visually so neighboring labels don't jump left.
+    isHidden = false
+    alpha = 0
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    spinHost.bounds = CGRect(x: 0, y: 0, width: spinnerSize, height: spinnerSize)
+    spinHost.position = CGPoint(x: bounds.midX, y: bounds.midY)
+    let ringRect = spinHost.bounds.insetBy(dx: strokeWidth / 2.0, dy: strokeWidth / 2.0)
+    progressLayer.frame = spinHost.bounds
+    progressLayer.path = UIBezierPath(ovalIn: ringRect).cgPath
+    progressLayer.lineWidth = strokeWidth
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    // Resume spin if we were animating when the view re-entered a window.
+    if isAnimating, window != nil, spinHost.animation(forKey: spinKey) == nil {
+      startAnimating()
+    }
+  }
+}
+
 /// Chat-shaped loading skeleton for the agent transcript (Claude / Codex). Renders an
 /// alternating cadence of agent (left, multi-line) and user (right, bubble) placeholders
 /// on the SAME background as the live feed, so a loading conversation reads as chat rather
 /// than a bare spinner. Soft, low-contrast shimmer only.
+/// Used for **channels** on History pick; direct + group use `ChatHistoryModernLoadingView`.
 final class VibeAgentTranscriptSkeletonView: UIView {
   private struct RowSpec {
     let height: CGFloat
@@ -4283,41 +4652,18 @@ final class VibeAgentTranscriptSkeletonView: UIView {
 /// through the shared `ChatAvatarURLResolver` + `ChatAvatarImageStore` (so it matches
 /// the main view instead of a generic SF person symbol).
 final class VibeAgentHeaderAvatarView: UIControl {
-  private let gradientLayer = CAGradientLayer()
-  private let initialLabel = UILabel()
-  private let imageView = UIImageView()
-  private var loadToken = 0
-  // Matches the UINavigationBar button wrapper's 36pt min-width slot so the avatar fills
-  // it exactly (no constraint fight); the size constraints below are also sub-required as
-  // a belt-and-suspenders against the wrapper ever pinning a different width.
+  private let avatarNode = ChatAvatarNodeView()
+  // Matches the UINavigationBar button wrapper's 36pt min-width slot.
   private let diameter: CGFloat = 36
 
   override init(frame: CGRect) {
     super.init(frame: frame)
     translatesAutoresizingMaskIntoConstraints = false
-    clipsToBounds = true
-    layer.cornerCurve = .continuous
-    gradientLayer.startPoint = CGPoint(x: 0, y: 0)
-    gradientLayer.endPoint = CGPoint(x: 1, y: 1)
-    layer.addSublayer(gradientLayer)
-
-    initialLabel.textAlignment = .center
-    initialLabel.textColor = .white
-    initialLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-    initialLabel.isUserInteractionEnabled = false
-    addSubview(initialLabel)
-
-    imageView.contentMode = .scaleAspectFill
-    imageView.clipsToBounds = true
-    imageView.isHidden = true
-    imageView.isUserInteractionEnabled = false
-    addSubview(imageView)
-
-    let avatarWidth = widthAnchor.constraint(equalToConstant: diameter)
-    let avatarHeight = heightAnchor.constraint(equalToConstant: diameter)
-    avatarWidth.priority = .required
-    avatarHeight.priority = .required
-    NSLayoutConstraint.activate([avatarWidth, avatarHeight])
+    addSubview(avatarNode)
+    NSLayoutConstraint.activate([
+      widthAnchor.constraint(equalToConstant: diameter),
+      heightAnchor.constraint(equalToConstant: diameter),
+    ])
   }
 
   required init?(coder: NSCoder) { return nil }
@@ -4326,55 +4672,31 @@ final class VibeAgentHeaderAvatarView: UIControl {
 
   override func layoutSubviews() {
     super.layoutSubviews()
-    layer.cornerRadius = diameter / 2
-    imageView.layer.cornerRadius = diameter / 2
-    CATransaction.begin()
-    CATransaction.setDisableActions(true)
-    gradientLayer.frame = bounds
-    CATransaction.commit()
-    initialLabel.frame = bounds
-    imageView.frame = bounds
+    avatarNode.frame = bounds
   }
 
-  func configure(title: String?, peerUserId: String?, chatId: String?, avatarURI: String?, isDark: Bool) {
-    let colors = ChatProfileAppearanceStore.avatarColors(
-      title: title, peerUserId: peerUserId, chatId: chatId)
-    gradientLayer.colors = [colors.0.cgColor, colors.1.cgColor]
-    let trimmed = (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    initialLabel.text = trimmed.isEmpty ? "" : String(trimmed.prefix(1)).uppercased()
-
-    // Invalidate any in-flight load, then resolve + fetch the picture exactly as the
-    // main view does. No picture → the gradient + initial stand in (also the main view's
-    // behavior), so the two surfaces always agree.
-    loadToken &+= 1
-    let token = loadToken
-    imageView.image = nil
-    imageView.isHidden = true
-    let raw = (avatarURI ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    let resolved = ChatAvatarURLResolver.resolve(
-      rawAvatar: raw,
-      peerUserId: peerUserId,
-      chatId: chatId,
-      preferPushAvatar: (peerUserId?.isEmpty == false)
-    ) ?? (raw.isEmpty ? "" : raw)
-    guard !resolved.isEmpty else {
-      imageView.isHidden = true
-      return
-    }
-    if let cached = ChatAvatarImageStore.cached(for: resolved) {
-      imageView.image = cached
-      imageView.isHidden = false
-      return
-    }
-    imageView.isHidden = true
-    Task { [weak self] in
-      let image = await ChatAvatarImageStore.load(from: resolved)
-      await MainActor.run {
-        guard let self, self.loadToken == token, let image else { return }
-        self.imageView.image = image
-        self.imageView.isHidden = false
-      }
-    }
+  func configure(
+    title: String?,
+    peerUserId: String?,
+    chatId: String?,
+    avatarURI: String?,
+    isDark: Bool
+  ) {
+    avatarNode.configure(
+      with: ChatAvatarDescriptor(
+        title: title ?? "",
+        rawAvatarURI: avatarURI,
+        peerUserId: peerUserId,
+        chatId: chatId,
+        kind: .standard,
+        isGroup: false,
+        members: [],
+        preferPushAvatar: peerUserId?.isEmpty == false,
+        gradientColors: nil
+      ),
+      isDark: isDark,
+      renderingSide: diameter
+    )
   }
 }
 
@@ -4870,12 +5192,6 @@ public final class VibeComposerView: UIView, UITextViewDelegate {
     }
   }
 
-  /// "+" opens a bottom sheet instead of a native UIMenu — same actions (attachment,
-  /// model, thinking, permission) plus every slash command in one place, styled after
-  /// resolo.ai's `ChatComposerOptionsSheet` tool selector.
-  @objc private func handlePlusTap() {
-    onOpenToolsSheet?(buildToolsSheetViewController())
-  }
 
   private func buildToolsSheetViewController() -> UIViewController {
     let host = UIHostingController(rootView: AnyView(EmptyView()))
@@ -4884,6 +5200,8 @@ public final class VibeComposerView: UIView, UITextViewDelegate {
         appearance: appearance,
         provider: provider,
         chatId: bridgeChatId,
+        // Agent surface is always one provider; detail panel still fetches real payload.
+        usageProviders: [provider].filter { !$0.isEmpty },
         allCommands: allCommands,
         onAttach: { [weak self] in self?.onAttach?() },
         onCamera: { /* add camera logic later if needed */ },

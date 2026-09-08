@@ -28,6 +28,7 @@ data class ChatListAppearance(
   val dayTextColor: Int = Color.argb(210, 236, 239, 255),
   val dayBackgroundColor: Int = Color.argb(107, 20, 20, 34),
   val dayBorderColor: Int = Color.argb(41, 255, 255, 255),
+  val messageTailCurvature: Float = 1f,
 ) {
   fun visualEquals(other: ChatListAppearance): Boolean {
     return backgroundMode == other.backgroundMode &&
@@ -45,7 +46,8 @@ data class ChatListAppearance(
       timeColorThem == other.timeColorThem &&
       dayTextColor == other.dayTextColor &&
       dayBackgroundColor == other.dayBackgroundColor &&
-      dayBorderColor == other.dayBorderColor
+      dayBorderColor == other.dayBorderColor &&
+      messageTailCurvature == other.messageTailCurvature
   }
 
   companion object {
@@ -87,6 +89,9 @@ data class ChatListAppearance(
         dayTextColor = parseColor(raw["dayTextColor"] as? String) ?: fallback.dayTextColor,
         dayBackgroundColor = parseColor(raw["dayBackgroundColor"] as? String) ?: fallback.dayBackgroundColor,
         dayBorderColor = parseColor(raw["dayBorderColor"] as? String) ?: fallback.dayBorderColor,
+        messageTailCurvature =
+          ((raw["messageTailCurvature"] as? Number)?.toFloat()
+            ?: fallback.messageTailCurvature).coerceIn(0f, 1f),
       )
     }
   }
@@ -169,6 +174,9 @@ private fun nativePresetAppearance(
     dayTextColor = withAlpha(textColorThem, 0.82f),
     dayBackgroundColor = withAlpha(dayBackgroundBase, 0.42f),
     dayBorderColor = withAlpha(Color.WHITE, 0.16f),
+    messageTailCurvature =
+      ((raw["messageTailCurvature"] as? Number)?.toFloat()
+        ?: fallback.messageTailCurvature).coerceIn(0f, 1f),
   )
 }
 

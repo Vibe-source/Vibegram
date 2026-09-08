@@ -1938,17 +1938,29 @@ private class NativeRowsAdapter(
     }
 
     if (!hidden && item.shape.showTail && !hasMediaPreview) {
+      val tailRadiusDp = maxOf(
+        item.shape.topLeft,
+        item.shape.topRight,
+        item.shape.bottomRight,
+        item.shape.bottomLeft,
+      )
       tailView.configure(
         isMe = effectiveIsMe,
         visible = true,
         color = if (effectiveIsMe) bubbleMeGradient.lastOrNull() ?: Color.WHITE else bubbleThemFill,
+        cornerRadiusDp = tailRadiusDp,
+        curvature = appearance.messageTailCurvature,
       )
       val tailLp = tailView.layoutParams as FrameLayout.LayoutParams
+      tailLp.width = dpF(BubbleTailGeometrySource.frameWidthDp(tailRadiusDp)).roundToInt()
+      tailLp.height = dpF(BubbleTailGeometrySource.frameHeightDp(tailRadiusDp)).roundToInt()
       tailLp.gravity = if (effectiveIsMe) Gravity.END or Gravity.BOTTOM else Gravity.START or Gravity.BOTTOM
       tailLp.marginStart = 0
       tailLp.marginEnd = 0
-      tailLp.bottomMargin = 0
-      if (effectiveIsMe) tailLp.marginEnd = dp(-27) else tailLp.marginStart = dp(-27)
+      tailLp.bottomMargin = -dpF(BubbleTailGeometrySource.bottomOverhangDp(tailRadiusDp)).roundToInt()
+      val outsideOverhang =
+        dpF(BubbleTailGeometrySource.outsideOverhangDp(tailRadiusDp)).roundToInt()
+      if (effectiveIsMe) tailLp.marginEnd = -outsideOverhang else tailLp.marginStart = -outsideOverhang
       tailView.layoutParams = tailLp
     } else {
       tailView.visibility = View.GONE
@@ -5293,10 +5305,18 @@ private class SendTransitionOverlayView(
       dpF(shape.bottomLeft), dpF(shape.bottomLeft),
     )
     bubbleBackground.background = drawable
+    val tailRadiusDp = maxOf(
+      shape.topLeft,
+      shape.topRight,
+      shape.bottomRight,
+      shape.bottomLeft,
+    )
     bubbleTail.configure(
       isMe = isMe,
       color = if (isMe) appearance.bubbleMeGradient.lastOrNull() ?: Color.WHITE else appearance.bubbleThemColor,
       visible = shape.showTail,
+      cornerRadiusDp = tailRadiusDp,
+      curvature = appearance.messageTailCurvature,
     )
   }
 
@@ -5363,19 +5383,29 @@ private class SendTransitionOverlayView(
     bubbleBackground.alpha = bgOpacity
 
     if (shape.showTail) {
-      val tailSize = dpF(29f)
+      val tailRadiusDp = maxOf(
+        shape.topLeft,
+        shape.topRight,
+        shape.bottomRight,
+        shape.bottomLeft,
+      )
+      val tailWidth = dpF(BubbleTailGeometrySource.frameWidthDp(tailRadiusDp))
+      val tailHeight = dpF(BubbleTailGeometrySource.frameHeightDp(tailRadiusDp))
+      val bodyCornerFromLeft =
+        dpF(BubbleTailGeometrySource.bodyCornerFromLeftDp(tailRadiusDp, isMe))
+      val bodyCornerFromTop = dpF(BubbleTailGeometrySource.bodyCornerFromTopDp(tailRadiusDp))
       val tailLeftInOverlay =
         if (isMe) {
-          targetBackgroundFrame.right - dpF(1f)
+          targetBackgroundFrame.right - bodyCornerFromLeft
         } else {
-          targetBackgroundFrame.left - dpF(28f)
+          targetBackgroundFrame.left - bodyCornerFromLeft
         }
-      val tailTopInOverlay = targetBackgroundFrame.bottom - tailSize
+      val tailTopInOverlay = targetBackgroundFrame.bottom - bodyCornerFromTop
       val tailFrameInEnvelope = RectF(
         tailLeftInOverlay - envelopeFrame.left,
         tailTopInOverlay - envelopeFrame.top,
-        tailLeftInOverlay - envelopeFrame.left + tailSize,
-        tailTopInOverlay - envelopeFrame.top + tailSize,
+        tailLeftInOverlay - envelopeFrame.left + tailWidth,
+        tailTopInOverlay - envelopeFrame.top + tailHeight,
       )
       updateViewFrame(bubbleTail, tailFrameInEnvelope)
       bubbleTail.visibility = View.VISIBLE

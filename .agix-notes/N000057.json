@@ -1,0 +1,18 @@
+{
+  "id": 57,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "Video-note scale: expand scrolls only newly occluded points vs composer; collapse clamps only. pinBottom += heightDelta doubled collapse (ListShift +240pt).",
+  "selector": "ios/ChatModule/ChatListView.swift::ChatListView.reloadAgentTurnStateRow",
+  "path": "ios/ChatModule/ChatListView.swift",
+  "fqn": "ChatListView.reloadAgentTurnStateRow",
+  "line": 14398,
+  "anchor_hash": "3fe21a3f32395f487e33607cfa51ea3a42a25571afdd81f8c584574d4c3396c1",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787759681,
+  "updated_at": 1787759681
+}

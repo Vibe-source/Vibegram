@@ -1,0 +1,18 @@
+{
+  "id": 42,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "claim_key_package/2 requires a shared (non-deleted) chat or self, refuses either-direction blocks, and caps 8 claims/hour per (claimer, target) in ETS :mls_claim_quota. Controller 404s :not_allowed same body as :not_found; 429 for :too_many. Self-claim /1 still works so existing tests and a device topping up itself are unchanged. iOS establishDirectMessage/establishGroup already have a chat id before they GET /mls/key-packages/:user_id, so the relationship check matches the client.",
+  "selector": "server/lib/vibe/mls.ex::Vibe.Mls.claim_key_package",
+  "path": "server/lib/vibe/mls.ex",
+  "fqn": "Vibe.Mls.claim_key_package",
+  "line": 115,
+  "anchor_hash": "efdbdfadd083baefde00a3ce3fa472f2c0cd4a883878bf5bd82e3b190353ddd9",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787751677,
+  "updated_at": 1787751677
+}

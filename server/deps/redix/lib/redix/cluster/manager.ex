@@ -1,0 +1,1186 @@
+defmodule Redix.Cluster.Manager do
+  @moduledoc false
+
+  require Logger
+
+  @behaviour :gen_statem
+
+  @refresh_cooldown 1_000
+  @backoff_exponent 1.5
+
+  # Total number of hash slots in a Redis Cluster. When the slot table covers all of
+  # them, no slot can have become unassigned, so update_slot_map/2 can skip pruning.
+  @hash_slots 16_384
+
+  defstruct [
+    :cluster_name,
+    :slot_table,
+    :command_cache,
+    :registry,
+    :pool_supervisor,
+    :conn_opts,
+    :seed_nodes,
+    :refresh_interval,
+    :primary_pool_size,
+    :replica_pool_size,
+    # Tracks the exponential backoff between initial topology fetch attempts
+    # while in the :disconnected state (async connect).
+    :backoff_current,
+    read_from_replicas: false,
+    # Optional (host, port -> {host, port}) function applied to announced addresses.
+    address_mapper: nil,
+    # Maps a monitor ref to `{node_id, index, role}` so a crashed pool member is
+    # restarted with the same index and role (and therefore the same READONLY behavior).
+    monitors: %{},
+    # Maps a node_id (canonical, resolved-IP form) to the literal host it was
+    # actually reached at (a hostname or an IP, whichever the server gave us).
+    # Reconnects) and refresh seeding must dial this exact host again rather
+    # than the resolved IP: with TLS + hostname verification, dialing the IP
+    # would fail the handshake even though the node is perfectly reachable.
+    # Dropped when a node is torn down for good.
+    node_addresses: %{}
+  ]
+
+  ## Public API
+
+  @doc """
+  Starts the cluster manager.
+  """
+  @spec start_link(keyword()) :: :gen_statem.start_ret()
+  def start_link(opts) when is_list(opts) do
+    {name, init_opts} = Keyword.pop(opts, :name)
+
+    if name do
+      :gen_statem.start_link({:local, name}, __MODULE__, init_opts, [])
+    else
+      :gen_statem.start_link(__MODULE__, init_opts, [])
+    end
+  end
+
+  @doc """
+  Child spec for this module.
+  """
+  @spec child_spec(keyword()) :: map()
+  def child_spec(opts) when is_list(opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      type: :worker
+    }
+  end
+
+  @doc """
+  Looks up the **primary** Redix connection PID for a given hash slot.
+
+  Reads the slot table from ETS and then looks up the connection in the Registry.
+  """
+  @spec get_connection(atom(), atom(), non_neg_integer(), pos_integer()) ::
+          {:ok, pid()} | :error
+  def get_connection(slot_table, registry, slot, pool_size) when is_integer(slot) do
+    guard_missing_table(
+      fn ->
+        case :ets.lookup(slot_table, slot) do
+          [{^slot, primary_id, _replica_ids}] ->
+            lookup_connection(registry, primary_id, pool_size)
+
+          [] ->
+            :error
+        end
+      end,
+      :error
+    )
+  end
+
+  @doc """
+  Looks up a **replica** Redix connection PID for a given hash slot.
+
+  Picks a reachable replica at random. Returns `:error` if the slot is unknown or
+  has no reachable replica connection (for example when `:read_from_replicas` is
+  disabled, in which case no replicas are tracked). Callers that want to fall back
+  to the primary should do so explicitly (see `Redix.Cluster`'s `:prefer_replica`).
+  """
+  @spec get_replica_connection(atom(), atom(), non_neg_integer(), pos_integer()) ::
+          {:ok, pid()} | :error
+  def get_replica_connection(slot_table, registry, slot, pool_size) when is_integer(slot) do
+    guard_missing_table(
+      fn ->
+        case :ets.lookup(slot_table, slot) do
+          [{^slot, _primary_id, replica_ids}] when replica_ids != [] ->
+            replica_ids
+            |> Enum.shuffle()
+            |> Enum.find_value(:error, fn replica_id ->
+              case lookup_connection(registry, replica_id, pool_size) do
+                {:ok, pid} -> {:ok, pid}
+                :error -> false
+              end
+            end)
+
+          _other ->
+            :error
+        end
+      end,
+      :error
+    )
+  end
+
+  @doc """
+  Looks up the Redix connection PID for a given `{host, port}`.
+
+  Used for `MOVED`/`ASK` redirection to a specific node.
+  """
+  @spec get_connection_by_node(atom(), {String.t(), non_neg_integer()}, pid()) ::
+          {:ok, pid()} | :error
+  def get_connection_by_node(registry, {host, port}, caller) do
+    guard_missing_table(
+      fn -> lookup_node_connection(registry, canonical_node_id(host, port), caller) end,
+      :error
+    )
+  end
+
+  @doc """
+  Returns any available **primary** connection PID from the cluster.
+
+  Used for keyless commands like `PING`, `INFO`, and so on. Primaries are preferred
+  so that keyless *write* commands (such as `FLUSHALL`) don't land on a read-only
+  replica; if no primary is registered yet, it falls back to any connection (so in
+  that rare window a keyless write could hit a replica and bounce back `MOVED`).
+  """
+  @spec get_random_connection(atom()) :: {:ok, pid()} | :error
+  def get_random_connection(registry) do
+    guard_missing_table(
+      fn ->
+        case Registry.select(registry, [{{{:_, :_}, :"$1", :primary}, [], [:"$1"]}]) do
+          [_ | _] = pids ->
+            {:ok, Enum.random(pids)}
+
+          [] ->
+            case Registry.select(registry, [{{{:_, :_}, :"$1", :_}, [], [:"$1"]}]) do
+              [] -> :error
+              pids -> {:ok, Enum.random(pids)}
+            end
+        end
+      end,
+      :error
+    )
+  end
+
+  # The slot/command-cache ETS tables (owned by this Manager) and the Registry are
+  # siblings in the cluster's :one_for_all supervisor, so a Manager crash briefly tears
+  # all of them down before they're recreated. A caller racing that window (a lookup
+  # from `Redix.Cluster`, `Redix.Cluster.KeyResolver`, or one of this module's own public
+  # functions above) hits :ets.lookup/member or Registry.lookup/select on a table that
+  # doesn't exist yet, which raises `ArgumentError` in the *caller* instead of just not
+  # finding an answer (issue #338). `fun` wraps exactly that single lookup; `default` is
+  # what a "not found" result already looks like for that lookup (`:error`, `false`, ...),
+  # so a table-missing race degrades identically to an ordinary miss. Only the specific
+  # "table/registry doesn't exist" class of ArgumentError is treated this way — anything
+  # else re-raises, so a genuine bug in the wrapped lookup isn't silently hidden.
+  @doc false
+  @spec guard_missing_table((-> result), result) :: result when result: var
+  def guard_missing_table(fun, default) do
+    fun.()
+  rescue
+    error in ArgumentError ->
+      if is_binary(error.message) and
+           (String.contains?(error.message, "does not refer to an existing ETS table") or
+              String.starts_with?(error.message, "unknown registry:")) do
+        default
+      else
+        reraise error, __STACKTRACE__
+      end
+  end
+
+  @doc """
+  Triggers an asynchronous topology refresh. Rate-limited to at most once per second.
+  """
+  @spec refresh_topology(:gen_statem.server_ref()) :: :ok
+  def refresh_topology(manager) do
+    :gen_statem.cast(manager, :refresh_topology)
+  end
+
+  @doc """
+  Blocks until the *initial* topology fetch attempt has completed.
+
+  Mirrors how a single Redix connection *postpones* commands while its first
+  connection attempt is in flight: callers that find no `:discovery_attempted`
+  marker in the slot table yet call this before resolving connections. The call
+  queues behind the fetch the manager is performing, so the reply arrives once
+  that attempt is done; if it succeeded the caller's lookups now find the
+  topology, and if it failed they fall through to the normal "no connection"
+  error. The marker is set once the first attempt completes — success or failure —
+  so commands only ever await that one attempt: after a failed first try the
+  cluster might be unreachable for a while, and blocking every caller for each
+  backoff retry wouldn't help.
+
+  The reply carries no information on purpose; exits (caller timeout, dead
+  manager) degrade to `:ok` so callers always just retry their lookups.
+  """
+  @spec await_topology_discovery(:gen_statem.server_ref(), timeout()) :: :ok
+  def await_topology_discovery(manager, timeout) do
+    :gen_statem.call(manager, :await_topology_discovery, timeout)
+  catch
+    :exit, _reason -> :ok
+  end
+
+  @doc """
+  Ensures a connection to `{host, port}` exists, starting one **on demand**
+  if needed.
+
+  Used when a `MOVED` redirect points at a node we haven't discovered yet (for
+  example mid-resharding). `MOVED` is authoritative, so we trust the address,
+  connect, register, and monitor it just like a node found via `CLUSTER SLOTS`.
+  The next topology refresh "adopts" the connection (if the node shows up in
+  `CLUSTER SLOTS`) or terminates it (if it doesn't), so a bogus address can't
+  leak connections.
+  """
+  @spec connect_to_node(:gen_statem.server_ref(), {String.t(), :inet.port_number()}, timeout()) ::
+          {:ok, pid()} | {:error, term()}
+  def connect_to_node(manager, {host, port}, timeout) do
+    connect_to_node(manager, {host, port}, timeout, self())
+  end
+
+  @doc false
+  @spec connect_to_node(
+          :gen_statem.server_ref(),
+          {String.t(), :inet.port_number()},
+          timeout(),
+          pid()
+        ) :: {:ok, pid()} | {:error, term()}
+  def connect_to_node(manager, {host, port}, timeout, caller) do
+    # This runs in the command hot path, so a Manager that's briefly busy (say,
+    # mid-refresh against slow nodes) must not crash the caller: degrade to an
+    # error tuple, which the MOVED handler turns into a normal Redix error. The
+    # Manager fetches topology *serially* and each unreachable node can cost up to
+    # the connection `:timeout`, so a finite call timeout is essential, otherwise a
+    # slow refresh against a partially-down cluster blocks every on-demand connect
+    # (and thus every MOVED/ASK redirect) for the whole refresh (issue #327). On
+    # timeout the `:exit` is caught and degrades to the documented error path.
+    :gen_statem.call(manager, {:connect_to_node, host, port, caller}, timeout)
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  ## gen_statem callbacks
+
+  @impl true
+  def callback_mode, do: :state_functions
+
+  @impl true
+  def init(opts) do
+    cluster_name = Keyword.fetch!(opts, :cluster_name)
+    seed_nodes = Keyword.fetch!(opts, :seed_nodes)
+    pool_supervisor = Keyword.fetch!(opts, :pool_supervisor)
+    conn_opts = Keyword.fetch!(opts, :conn_opts)
+    refresh_interval = Keyword.fetch!(opts, :refresh_interval)
+    table_name = Keyword.fetch!(opts, :table_name)
+    command_cache_name = Keyword.fetch!(opts, :command_cache_table)
+    registry = Keyword.fetch!(opts, :registry)
+    read_from_replicas = Keyword.fetch!(opts, :read_from_replicas)
+    primary_pool_size = Keyword.fetch!(opts, :primary_pool_size)
+    replica_pool_size = Keyword.fetch!(opts, :replica_pool_size)
+    sync_connect = Keyword.fetch!(opts, :sync_connect)
+    address_mapper = Keyword.get(opts, :address_mapper)
+
+    # :protected, not :public: only the Manager (the owner) ever writes the slot
+    # table; callers only read it, so :protected is free hardening.
+    slot_table = :ets.new(table_name, [:named_table, :protected, :set, {:read_concurrency, true}])
+    :ets.insert(slot_table, {:pool_sizes, {primary_pool_size, replica_pool_size}})
+    # Callers apply the mapper to MOVED/ASK targets in their own process, so they read
+    # it from the slot table like the pool sizes.
+    :ets.insert(slot_table, {:address_mapper, address_mapper})
+
+    # Caches the key specification (first-key position / movable / no-key) of commands
+    # outside CommandParser's static table, learned via COMMAND INFO. Written from
+    # arbitrary caller processes, so it's public with write concurrency.
+    command_cache =
+      :ets.new(command_cache_name, [
+        :named_table,
+        :public,
+        :set,
+        {:read_concurrency, true},
+        {:write_concurrency, true}
+      ])
+
+    data = %__MODULE__{
+      cluster_name: cluster_name,
+      slot_table: slot_table,
+      command_cache: command_cache,
+      registry: registry,
+      pool_supervisor: pool_supervisor,
+      conn_opts: conn_opts,
+      seed_nodes: seed_nodes,
+      refresh_interval: refresh_interval,
+      primary_pool_size: primary_pool_size,
+      replica_pool_size: replica_pool_size,
+      read_from_replicas: read_from_replicas,
+      address_mapper: address_mapper
+    }
+
+    if sync_connect do
+      # The initial discovery fetch is deliberately *unbounded* (deadline :infinity):
+      # startup must reliably reach a reachable seed even if an earlier seed is a black
+      # hole, and blocking here is expected (start_link/1 is allowed to take time). Only
+      # steady-state refreshes are time-bounded (see fetch_deadline/1, issue #335).
+      case do_refresh_topology(data, _deadline = :infinity) do
+        {:ok, data} ->
+          {:ok, :ready, data, [periodic_refresh_action(refresh_interval)]}
+
+        {:error, reason} ->
+          {:stop, reason}
+      end
+    else
+      {:ok, :disconnected, data, [{:next_event, :internal, :connect}]}
+    end
+  end
+
+  ## State: :disconnected. The initial topology fetch hasn't succeeded yet
+  ## (async connect, the default). Retries with exponential backoff until a seed
+  ## node answers, mirroring how a single Redix connection reconnects. Commands
+  ## issued while the *initial* fetch attempt is in flight await its completion
+  ## (see await_topology_discovery/2); once that attempt has completed — success
+  ## or failure — they resolve straight from the slot table, so after a failed
+  ## first attempt they fail fast with a connection error.
+
+  def disconnected(event_type, :connect, data)
+      when event_type in [:internal, :state_timeout] do
+    # Unbounded like the sync initial fetch: this is still *initial* discovery (no node
+    # connections exist yet, so a slow fetch blocks nothing that matters), and it must
+    # reliably reach a reachable seed. Only steady-state refreshes are bounded (#335).
+    case do_refresh_topology(data, _deadline = :infinity) do
+      {:ok, data} ->
+        data = %{data | backoff_current: nil}
+        {:next_state, :ready, data, [periodic_refresh_action(data.refresh_interval)]}
+
+      {:error, _reason} ->
+        # The attempt completed (just unsuccessfully), so set the marker: commands
+        # stop awaiting and fail fast — if we couldn't reach the cluster on the
+        # first try, it might be a while before we can, and blocking every caller
+        # for each retry wouldn't help. do_refresh_topology/2 sets it on success.
+        :ets.insert(data.slot_table, {:discovery_attempted, true})
+        {backoff, data} = next_backoff(data)
+        {:keep_state, data, [{:state_timeout, backoff, :connect}]}
+    end
+  end
+
+  # The backoff retry already drives fetch attempts; honoring reactive refreshes
+  # here would bypass the backoff.
+  def disconnected(:cast, :refresh_topology, _data) do
+    :keep_state_and_data
+  end
+
+  # DOWN, on-demand connect_to_node (served even before the first fetch succeeds —
+  # MOVED is authoritative), await_topology_discovery, and stray :info are handled
+  # identically in every state; see handle_common_event/3.
+  def disconnected(event_type, event_content, data) do
+    handle_common_event(event_type, event_content, data)
+  end
+
+  ## State: :ready — reactive refreshes are accepted.
+
+  def ready(:cast, :refresh_topology, data) do
+    data =
+      case do_refresh_topology(data, fetch_deadline(data)) do
+        {:ok, data} -> data
+        {:error, _reason} -> data
+      end
+
+    # Transition to :cooling_down with a state timeout that will bring us back.
+    {:next_state, :cooling_down, data, [{:state_timeout, @refresh_cooldown, :cooldown_expired}]}
+  end
+
+  def ready({:timeout, :periodic_refresh}, :refresh, data) do
+    data =
+      case do_refresh_topology(data, fetch_deadline(data)) do
+        {:ok, data} -> data
+        {:error, _reason} -> data
+      end
+
+    {:keep_state, data, [periodic_refresh_action(data.refresh_interval)]}
+  end
+
+  def ready(event_type, event_content, data) do
+    handle_common_event(event_type, event_content, data)
+  end
+
+  ## State: :cooling_down — reactive refreshes are silently dropped.
+
+  def cooling_down(:state_timeout, :cooldown_expired, data) do
+    {:next_state, :ready, data}
+  end
+
+  # Drop, we just refreshed.
+  def cooling_down(:cast, :refresh_topology, _data) do
+    :keep_state_and_data
+  end
+
+  def cooling_down({:timeout, :periodic_refresh}, :refresh, _data) do
+    {:keep_state_and_data, :postpone}
+  end
+
+  def cooling_down(event_type, event_content, data) do
+    handle_common_event(event_type, event_content, data)
+  end
+
+  ## Private helpers
+
+  # Events handled identically in every state, dispatched to from each state's
+  # trailing catch-all clause:
+  #
+  #   * a monitored connection going `:DOWN` — restart it under its tracked role,
+  #     *unless* it died of a semantic error, in which case it's left to the
+  #     periodic topology refresh;
+  #   * an on-demand `connect_to_node` call — served regardless of state, since a
+  #     MOVED/ASK redirect address is authoritative (even while :disconnected, and
+  #     during :cooling_down it isn't a refresh so the cooldown doesn't apply);
+  #   * `await_topology_discovery` — only ever processed after the initial fetch
+  #     attempt completed (a call arriving mid-attempt queues behind it, which is
+  #     the whole point), and the :discovery_attempted marker is never removed, so
+  #     replying right away sends the caller back to a lookup that resolves;
+  #   * a stray `:info` message — absorbed so an unexpected message can't raise a
+  #     FunctionClauseError and crash the Manager, restarting the whole
+  #     :one_for_all cluster tree (issue #326). No source emits them today
+  #     (sockets are passive throughout).
+  #
+  # Any other event (an unknown call/cast/timeout) has no clause here and crashes
+  # the Manager, exactly as it did when each state matched events explicitly.
+  defp handle_common_event(:info, {:DOWN, ref, :process, _pid, reason}, data) do
+    {:keep_state, handle_down(data, ref, reason)}
+  end
+
+  defp handle_common_event({:call, from}, {:connect_to_node, host, port, caller}, data) do
+    handle_connect_to_node(from, host, port, caller, data)
+  end
+
+  defp handle_common_event({:call, from}, :await_topology_discovery, _data) do
+    {:keep_state_and_data, [{:reply, from, :ok}]}
+  end
+
+  defp handle_common_event(:info, _msg, _data) do
+    :keep_state_and_data
+  end
+
+  defp periodic_refresh_action(interval) do
+    {{:timeout, :periodic_refresh}, interval, :refresh}
+  end
+
+  # Same exponential backoff as Redix.Connection, driven by the :backoff_initial
+  # and :backoff_max options (which `Redix.StartOptions.sanitize/2` always fills in).
+  defp next_backoff(%__MODULE__{backoff_current: nil} = data) do
+    backoff_initial = Keyword.fetch!(data.conn_opts, :backoff_initial)
+    {backoff_initial, %{data | backoff_current: backoff_initial}}
+  end
+
+  defp next_backoff(%__MODULE__{} = data) do
+    next_exponential_backoff = round(data.backoff_current * @backoff_exponent)
+
+    backoff_current =
+      case Keyword.fetch!(data.conn_opts, :backoff_max) do
+        :infinity -> next_exponential_backoff
+        backoff_max -> min(next_exponential_backoff, backoff_max)
+      end
+
+    {backoff_current, %{data | backoff_current: backoff_current}}
+  end
+
+  defp handle_connect_to_node(from, host, port, caller, data) do
+    node_id = canonical_node_id(host, port)
+
+    case lookup_node_connection(data.registry, node_id, caller) do
+      {:ok, pid} ->
+        # Returns the existing connection whatever role it's registered under. Just
+        # after a failover that role can be stale (a target promoted to primary may
+        # still be registered/connected as a readonly replica), so a write can bounce
+        # back MOVED — but that's bounded by @max_redirections and self-heals once the
+        # MOVED-triggered refresh reconciles roles in ensure_connections/2.
+        {:keep_state_and_data, [{:reply, from, {:ok, pid}}]}
+
+      :error ->
+        # MOVED is authoritative and always points at the slot's primary, so an
+        # on-demand pool is registered as primary connections.
+        {first_result, data} = start_and_monitor_node_pool(data, node_id, host, port, :primary)
+        result = lookup_node_connection(data.registry, node_id, caller, first_result)
+        {:keep_state, data, [{:reply, from, result}]}
+    end
+  end
+
+  defp handle_down(data, ref, reason) do
+    {node_info, monitors} = Map.pop(data.monitors, ref)
+    data = %{data | monitors: monitors}
+
+    case node_info do
+      {node_id, index, role} -> handle_node_down(data, node_id, index, role, reason)
+      nil -> data
+    end
+  end
+
+  # A node connection that stopped with a *semantic* error (a `%Redix.Error{}`
+  # such as NOAUTH/WRONGPASS from per-node password/ACL drift, or READONLY on a
+  # node with cluster support disabled) is misconfigured relative to our shared
+  # connection config. Restarting it on a timer can't fix that: only an operator
+  # changing the node (or our config) can, and there's no bound on when. So we
+  # deliberately do *not* restart it here. Instead we leave it to the periodic
+  # topology refresh.
+  defp handle_node_down(data, node_id, _index, _role, %Redix.Error{} = reason) do
+    :telemetry.execute([:redix, :cluster, :node_connection_failed], %{}, %{
+      cluster: data.cluster_name,
+      address: node_id,
+      reason: reason,
+      kind: :parked
+    })
+
+    data
+  end
+
+  # Any other death (a process crash or a deliberate kill) is expected to be a
+  # one-off, so restart right away for fast recovery. A *transient network*
+  # failure never reaches here: `Redix.Connection` handles it internally (it moves
+  # to its own :disconnected state and reconnects) rather than stopping, so this
+  # path can't degenerate into a fast restart loop.
+  defp handle_node_down(data, node_id, index, role, reason) do
+    {:ok, _canonical_host, port} = split_host_port(node_id)
+    host = Map.fetch!(data.node_addresses, node_id)
+
+    :telemetry.execute([:redix, :cluster, :node_connection_restarted], %{}, %{
+      cluster: data.cluster_name,
+      address: node_id,
+      role: role,
+      reason: reason
+    })
+
+    {_result, data} = start_and_monitor_connection(data, node_id, index, host, port, role)
+    data
+  end
+
+  # Demonitors and drops every monitor entry tracking `node_id`. Called before a
+  # deliberate `terminate_child` so the resulting DOWN doesn't restart the node.
+  # `[:flush]` removes any DOWN already sitting in the mailbox.
+  defp demonitor_node(data, node_id) do
+    monitors =
+      data.monitors
+      |> Enum.filter(fn {ref, {id, _index, _role}} ->
+        if id == node_id do
+          Process.demonitor(ref, [:flush])
+          false
+        else
+          true
+        end
+      end)
+      |> Map.new()
+
+    %{data | monitors: monitors}
+  end
+
+  defp monitoring_member?(data, node_id, index) do
+    Enum.any?(data.monitors, fn {_ref, {id, member_index, _role}} ->
+      id == node_id and member_index == index
+    end)
+  end
+
+  defp lookup_connection(registry, node_id, pool_size) do
+    index = :erlang.phash2(self(), pool_size)
+
+    case Registry.lookup(registry, {node_id, index}) do
+      [{pid, _value}] ->
+        {:ok, pid}
+
+      [] ->
+        lookup_other_connection(registry, node_id, index, pool_size)
+    end
+  end
+
+  defp lookup_other_connection(registry, node_id, preferred_index, pool_size) do
+    0..(pool_size - 1)
+    |> Enum.reject(&(&1 == preferred_index))
+    |> Enum.find_value(:error, fn index ->
+      case Registry.lookup(registry, {node_id, index}) do
+        [{pid, _value}] -> {:ok, pid}
+        [] -> false
+      end
+    end)
+  end
+
+  # A redirect target can already be registered under either role. Search all live
+  # members instead of limiting the lookup to one role's pool size.
+  defp lookup_node_connection(registry, node_id, caller, default \\ :error) do
+    members =
+      registry
+      |> Registry.select([{{{node_id, :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
+      |> Enum.filter(fn {_index, pid} -> Process.alive?(pid) end)
+      |> Enum.sort_by(&elem(&1, 0))
+
+    case members do
+      [] ->
+        default
+
+      members ->
+        {last_index, _pid} = List.last(members)
+        preferred_index = :erlang.phash2(caller, last_index + 1)
+        {_index, pid} = List.keyfind(members, preferred_index, 0, hd(members))
+        {:ok, pid}
+    end
+  end
+
+  # NOTE: this runs *synchronously* inside the gen_statem callback, so while a refresh is
+  # in flight the Manager processes no other events. In steady state that's invisible —
+  # commands read the slot table and Registry directly and never call the Manager. It
+  # only bites the on-demand `connect_to_node` path (MOVED/ASK redirects to a
+  # not-yet-known node) and DOWN-triggered restarts, which queue behind an in-flight
+  # refresh. `fetch_cluster_slots/3` tries nodes serially and each unreachable one can
+  # cost up to the connection `:timeout`, so without a bound N black-holed nodes cost
+  # N x `:timeout` and block the Manager for tens of seconds (issue #335). `deadline`
+  # bounds the whole sweep: steady-state refreshes pass a finite one (see
+  # `fetch_deadline/1`) so the Manager stays responsive, while the *initial* discovery
+  # fetch passes `:infinity` so startup reliably reaches a reachable seed. A redirect
+  # arriving mid-refresh still uses a finite call timeout and fails fast rather than
+  # hanging (issue #327). The remaining, larger step — moving the network-bound fetch
+  # into a Task and feeding its result back as an event so the Manager never blocks at
+  # all — stays deferred because it reworks the await_topology_discovery/2 handshake
+  # (which relies on the initial fetch being synchronous within this callback).
+  defp do_refresh_topology(data, deadline) do
+    start_time = System.monotonic_time()
+    all_nodes = get_known_nodes(data) ++ data.seed_nodes
+
+    case fetch_cluster_slots(all_nodes, data.conn_opts, deadline) do
+      {:ok, slots_data} ->
+        # Map announced addresses once here, so the slot table and the node pools
+        # only ever see mapped addresses.
+        slots_data = map_slots_addresses(data.address_mapper, slots_data)
+        update_slot_map(data, slots_data)
+        data = ensure_connections(data, slots_data)
+
+        # Marks that the initial topology fetch attempt has completed (the
+        # :disconnected state sets the same marker on failure). Callers check this
+        # before resolving connections: while it's absent they await the initial
+        # fetch via await_topology_discovery/2 instead of failing right away.
+        # Inserted *after* the slot table and Registry are populated, so a caller
+        # that sees the marker also sees a routable topology. A 2-tuple can't
+        # collide with the {slot, primary, replicas} entries or with
+        # update_slot_map/2's 3-tuple select/delete patterns.
+        :ets.insert(data.slot_table, {:discovery_attempted, true})
+
+        nodes =
+          for {node_id, host, port, role} <- nodes_to_connect(data, slots_data),
+              do: %{id: node_id, host: host, port: port, role: role}
+
+        :telemetry.execute(
+          [:redix, :cluster, :topology_change],
+          %{duration: System.monotonic_time() - start_time, node_count: length(nodes)},
+          %{
+            cluster: data.cluster_name,
+            nodes: Enum.map(nodes, & &1.id),
+            node_info: nodes
+          }
+        )
+
+        {:ok, data}
+
+      {:error, reason} ->
+        :telemetry.execute(
+          [:redix, :cluster, :failed_topology_refresh],
+          %{duration: System.monotonic_time() - start_time},
+          %{cluster: data.cluster_name, reason: reason}
+        )
+
+        {:error, reason}
+    end
+  end
+
+  # The Registry (not the slot table) is the source of known nodes on purpose: it
+  # holds *every* connection we currently hold — primaries, replicas, and any node
+  # connected on demand for a MOVED/ASK redirect that isn't in CLUSTER SLOTS yet — so
+  # a topology re-fetch tries every known-good endpoint, not just the ones the last
+  # slot map covered.
+  defp get_known_nodes(data) do
+    data.registry
+    |> Registry.select([{{{:"$1", :_}, :_, :_}, [], [:"$1"]}])
+    |> Enum.uniq()
+    |> Enum.map(fn node_id ->
+      {:ok, _canonical_host, port} = split_host_port(node_id)
+      {Map.fetch!(data.node_addresses, node_id), port}
+    end)
+  end
+
+  @doc false
+  @spec map_address(atom(), String.t(), :inet.port_number()) ::
+          {String.t(), :inet.port_number()}
+  def map_address(slot_table, host, port) do
+    case :ets.lookup(slot_table, :address_mapper) do
+      [{:address_mapper, mapper}] -> apply_address_mapper(mapper, host, port)
+      [] -> {host, port}
+    end
+  end
+
+  defp map_slots_addresses(nil, slots_data), do: slots_data
+
+  defp map_slots_addresses(mapper, slots_data) do
+    for [start_slot, end_slot | nodes] <- slots_data do
+      mapped_nodes =
+        for [host, port | rest] <- nodes do
+          {host, port} = apply_address_mapper(mapper, host, port)
+          [host, port | rest]
+        end
+
+      [start_slot, end_slot | mapped_nodes]
+    end
+  end
+
+  defp apply_address_mapper(nil, host, port), do: {host, port}
+
+  defp apply_address_mapper(mapper, host, port) when is_function(mapper, 2) do
+    case mapper.(host, port) do
+      {mapped_host, mapped_port} when is_binary(mapped_host) and is_integer(mapped_port) ->
+        {mapped_host, mapped_port}
+
+      other ->
+        raise ArgumentError,
+              "the :address_mapper function must return a {host, port} tuple, " <>
+                "got: #{inspect(other)} for #{host}:#{port}"
+    end
+  end
+
+  # Splits a "host:port" address on its *last* colon. IPv6 hosts contain colons of
+  # their own (e.g. "::1:7000"), so splitting on every colon and matching
+  # [host, port] breaks on them (see issue #306). This is the single place that
+  # turns the internal "host:port" node-id / redirection address format back into
+  # {host, port}; Redix.Cluster.parse_redirection/1 reuses it. Redirection
+  # addresses are server-controlled, so this returns :error on malformed input
+  # instead of raising (issue #325).
+  @spec split_host_port(String.t()) :: {:ok, String.t(), :inet.port_number()} | :error
+  def split_host_port(address) do
+    with [host, port_str] when host != "" <- :string.split(address, ":", :trailing),
+         {port, ""} when port in 0..65535 <- Integer.parse(port_str) do
+      {:ok, host, port}
+    else
+      _other -> :error
+    end
+  end
+
+  # Builds the node identity used as the Registry key/slot-table entry: `host`
+  # resolved to its underlying IP, so the same physical node reached under two
+  # different address forms (a hostname from CLUSTER SLOTS vs the raw IP a
+  # MOVED/ASK redirect gives it, or vice versa, common with
+  # `cluster-preferred-endpoint-type` in managed/NAT'd deployments) converges on
+  # one Registry entry instead of each form getting its own connection that the
+  # next refresh tears down as "not needed" (because it was computed from the
+  # *other* form). `host` itself is never used to dial the node. Resolution
+  # failure falls back to the literal host.
+  defp canonical_node_id(host, port) do
+    host = to_charlist(host)
+
+    canonical_host =
+      with {:error, :einval} <- :inet.parse_address(host),
+           {:error, _reason} <- :inet.getaddr(host, :inet),
+           {:error, _reason} <- :inet.getaddr(host, :inet6) do
+        host
+      else
+        {:ok, ip} -> :inet.ntoa(ip)
+      end
+
+    "#{canonical_host}:#{port}"
+  end
+
+  # A finite deadline (System.monotonic_time/1 in ms) past which no *further* node is
+  # probed, bounding the whole sweep's wall-clock (issue #335). `:infinity` opts out
+  # (the initial discovery fetch, which must reach a reachable seed however long the
+  # partly-down seed list takes). `nil` conn_opts[:timeout] can't happen —
+  # StartOptions.sanitize/2 always fills it in — but :infinity can, and means "no bound".
+  defp fetch_deadline(%__MODULE__{conn_opts: conn_opts}) do
+    case Keyword.fetch!(conn_opts, :timeout) do
+      :infinity -> :infinity
+      timeout when is_integer(timeout) -> System.monotonic_time(:millisecond) + timeout
+    end
+  end
+
+  defp past_deadline?(:infinity), do: false
+  defp past_deadline?(deadline), do: System.monotonic_time(:millisecond) >= deadline
+
+  # `node_errors` accumulates a `{host, port, reason}` tuple per node that was
+  # tried and failed, in the order tried, so that when every node is exhausted
+  # the caller can see *why* each node was rejected instead of a single opaque
+  # :no_reachable_node.
+  defp fetch_cluster_slots(all_nodes, conn_opts, deadline) do
+    fetch_cluster_slots(all_nodes, conn_opts, deadline, _node_errors = [])
+  end
+
+  defp fetch_cluster_slots(_all_nodes = [], _conn_opts, _deadline, node_errors) do
+    {:error, {:no_reachable_node, Enum.reverse(node_errors)}}
+  end
+
+  defp fetch_cluster_slots([{host, port} | rest], conn_opts, deadline, node_errors) do
+    # The first node is always tried (at the start of a sweep the deadline is in the
+    # future), so a refresh always attempts at least one node. A node that consumes the
+    # whole budget — a black hole timing out at `:timeout` — trips this check before the
+    # *next* node, capping the sweep instead of paying `:timeout` per remaining node.
+    # Fast failures (connection refused) don't advance the clock, so a healthy node
+    # later in the list is still reached. Skipped nodes are retried on the next refresh.
+    if past_deadline?(deadline) do
+      {:error, {:no_reachable_node, Enum.reverse(node_errors)}}
+    else
+      try_fetch_slots(host, port, conn_opts, rest, deadline, node_errors)
+    end
+  end
+
+  defp try_fetch_slots(host, port, conn_opts, rest, deadline, node_errors) do
+    transport = if(conn_opts[:ssl], do: :ssl, else: :gen_tcp)
+
+    opts =
+      conn_opts
+      |> Keyword.delete(:name)
+      |> Keyword.merge(host: to_charlist(host), port: port)
+
+    timeout = opts[:timeout]
+
+    case Redix.Connector.connect(opts, _unused_conn_pid = self()) do
+      {:ok, socket, _address} ->
+        try do
+          case Redix.Connector.sync_command(transport, socket, ["CLUSTER", "SLOTS"], timeout) do
+            {:ok, slots} ->
+              case validate_and_normalize_slots(slots, host) do
+                {:ok, normalized} ->
+                  {:ok, normalized}
+
+                :error ->
+                  node_errors = [{host, port, :invalid_cluster_slots_reply} | node_errors]
+                  fetch_cluster_slots(rest, conn_opts, deadline, node_errors)
+              end
+
+            {:error, reason} ->
+              fetch_cluster_slots(rest, conn_opts, deadline, [{host, port, reason} | node_errors])
+          end
+        after
+          transport.close(socket)
+        end
+
+      {:error, reason} ->
+        fetch_cluster_slots(rest, conn_opts, deadline, [{host, port, reason} | node_errors])
+
+      {:stop, reason} ->
+        fetch_cluster_slots(rest, conn_opts, deadline, [{host, port, reason} | node_errors])
+    end
+  end
+
+  defguardp is_valid_slot_range(start_slot, end_slot)
+            when is_integer(start_slot) and is_integer(end_slot) and
+                   start_slot in 0..(@hash_slots - 1)//1 and end_slot in 0..(@hash_slots - 1)//1 and
+                   start_slot <= end_slot
+
+  # Validates and normalizes a CLUSTER SLOTS reply in one pass. A buggy server or proxy
+  # can answer with a reply that doesn't match the shape we expect, and we just want
+  # to go to the next server (and not crash anything).
+  defp validate_and_normalize_slots(slots_data, answering_host) when is_list(slots_data) do
+    ranges =
+      Enum.map(slots_data, fn
+        [start_slot, end_slot, primary | replicas]
+        when is_valid_slot_range(start_slot, end_slot) ->
+          nodes = Enum.map([primary | replicas], &normalize_node_entry(&1, answering_host))
+          [start_slot, end_slot | nodes]
+
+        invalid_range ->
+          throw(
+            {:invalid_slots_reply,
+             "invalid CLUSTER SLOTS reply with range: #{inspect(invalid_range)}"}
+          )
+      end)
+
+    {:ok, ranges}
+  catch
+    {:invalid_slots_reply, message} ->
+      Logger.error(message)
+      :error
+  end
+
+  defp validate_and_normalize_slots(_other, _answering_host) do
+    :error
+  end
+
+  defguardp is_valid_port(port) when is_integer(port) and port in 0..65_535
+
+  defp normalize_node_entry([host, port | rest], answering_host)
+       when host in [nil, ""] and is_valid_port(port), do: [answering_host, port | rest]
+
+  defp normalize_node_entry([host, port | rest], _answering_host) when is_valid_port(port),
+    do: [host, port | rest]
+
+  defp normalize_node_entry(other, _answering_host),
+    do: throw({:invalid_slots_reply, "invalid CLUSTER SLOTS reply: #{inspect(other)}"})
+
+  # Rewrites the slot table to reflect `slots_data`. Covered slots are overwritten
+  # in place (so reshards/reassignments are seamless and a concurrent lookup never
+  # sees a covered slot disappear), and slots that are no longer covered by *any*
+  # range — i.e. became unassigned — are deleted so routing can't point at a node
+  # that no longer owns them (see issue #314).
+  defp update_slot_map(data, slots_data) do
+    ranges =
+      for slot_range <- slots_data do
+        [start_slot, end_slot, [host, port | _] | replica_entries] = slot_range
+        primary_id = canonical_node_id(host, port)
+
+        replica_ids =
+          if data.read_from_replicas do
+            for [r_host, r_port | _] <- replica_entries, do: canonical_node_id(r_host, r_port)
+          else
+            []
+          end
+
+        Enum.each(start_slot..end_slot, fn slot ->
+          :ets.insert(data.slot_table, {slot, primary_id, replica_ids})
+        end)
+
+        {start_slot, end_slot}
+      end
+
+    # CLUSTER SLOTS ranges are disjoint, so summing their widths is the covered-slot
+    # count. When every slot is covered (the steady state of a healthy cluster) no
+    # slot can have become unassigned, so we skip the full-table scan + per-slot
+    # deletion entirely — and never build a 16384-element set just to delete nothing.
+    # Pruning only matters for a partially-covered cluster (mid-setup, or one that
+    # lost coverage), where a stale mapping would otherwise route to a node that no
+    # longer owns the slot (issue #314).
+    covered_count =
+      Enum.reduce(ranges, 0, fn {start_slot, end_slot}, acc ->
+        acc + (end_slot - start_slot + 1)
+      end)
+
+    if covered_count < @hash_slots do
+      prune_uncovered_slots(data.slot_table, ranges)
+    end
+
+    :ok
+  end
+
+  defp prune_uncovered_slots(slot_table, ranges) do
+    existing_slots = :ets.select(slot_table, [{{:"$1", :_, :_}, [], [:"$1"]}])
+
+    for slot <- existing_slots, not slot_covered?(slot, ranges) do
+      :ets.delete(slot_table, slot)
+    end
+  end
+
+  defp slot_covered?(slot, ranges) do
+    Enum.any?(ranges, fn {start_slot, end_slot} -> slot >= start_slot and slot <= end_slot end)
+  end
+
+  defp ensure_connections(data, slots_data) do
+    needed_nodes = nodes_to_connect(data, slots_data)
+
+    registered_nodes =
+      data.registry
+      |> Registry.select([
+        {{{:"$1", :"$2"}, :"$3", :"$4"}, [], [{{:"$1", :"$2", :"$3", :"$4"}}]}
+      ])
+      |> Enum.group_by(&elem(&1, 0), fn {_node_id, index, pid, role} -> {index, pid, role} end)
+
+    data =
+      Enum.reduce(needed_nodes, data, fn {node_id, host, port, role}, acc ->
+        members = Map.get(registered_nodes, node_id, [])
+
+        if Enum.any?(members, fn {_index, _pid, registered_role} -> registered_role != role end) do
+          # Every member carries the node role and its matching READONLY state. A
+          # failover must replace the full pool so no member keeps the old state.
+          restart_node_pool(acc, node_id, members, host, port, role)
+        else
+          ensure_node_pool(acc, node_id, members, host, port, role)
+        end
+      end)
+
+    needed_ids = MapSet.new(needed_nodes, fn {node_id, _, _, _} -> node_id end)
+
+    Enum.reduce(registered_nodes, data, fn {node_id, members}, acc ->
+      if node_id in needed_ids do
+        acc
+      else
+        # Demonitor *before* terminating so the deliberate `terminate_child` DOWN
+        # doesn't land in `handle_down/3` and immediately resurrect a node that
+        # just left the cluster (see issue #305).
+        acc = demonitor_node(acc, node_id)
+        acc = %{acc | node_addresses: Map.delete(acc.node_addresses, node_id)}
+
+        Enum.each(members, fn {_index, pid, _role} ->
+          if Process.alive?(pid) do
+            DynamicSupervisor.terminate_child(acc.pool_supervisor, pid)
+          end
+        end)
+
+        acc
+      end
+    end)
+  end
+
+  defp ensure_node_pool(data, node_id, members, host, port, role) do
+    members_by_index =
+      Map.new(members, fn {index, pid, member_role} -> {index, {pid, member_role}} end)
+
+    Enum.reduce(0..(pool_size_for_role(data, role) - 1), data, fn index, acc ->
+      case Map.get(members_by_index, index) do
+        {pid, ^role} when is_pid(pid) ->
+          if Process.alive?(pid) do
+            acc
+          else
+            {_result, acc} =
+              start_and_monitor_connection(acc, node_id, index, host, port, role)
+
+            acc
+          end
+
+        nil ->
+          {_result, acc} = start_and_monitor_connection(acc, node_id, index, host, port, role)
+          acc
+      end
+    end)
+  end
+
+  # Builds the list of `{node_id, host, port, role}` tuples the cluster should be
+  # connected to. Primaries always; replicas only when `:read_from_replicas` is on.
+  # Primaries are listed first so `uniq_by` keeps the primary role if a node ever
+  # appears in both lists.
+  defp nodes_to_connect(data, slots_data) do
+    primaries =
+      Enum.map(slots_data, fn [_start, _end, [host, port | _] | _replicas] ->
+        {canonical_node_id(host, port), host, port, :primary}
+      end)
+
+    replicas =
+      if data.read_from_replicas do
+        for [_start, _end, _primary | replica_entries] <- slots_data,
+            [host, port | _] <- replica_entries do
+          {canonical_node_id(host, port), host, port, :replica}
+        end
+      else
+        []
+      end
+
+    Enum.uniq_by(primaries ++ replicas, fn {node_id, _, _, _} -> node_id end)
+  end
+
+  # Tears down all connections registered for `node_id` and starts a fresh pool with
+  # the given `role`. Used when a node's role changed after a failover (#318).
+  # Demonitors *before* terminating (like the no-longer-needed branch in
+  # `ensure_connections/2`) so the deliberate `terminate_child` DOWN doesn't land
+  # in `handle_down/3` and resurrect the connection under its *old* role.
+  defp restart_node_pool(data, node_id, members, host, port, role) do
+    [{_index, _pid, old_role} | _] = members
+
+    :telemetry.execute([:redix, :cluster, :node_role_changed], %{}, %{
+      cluster: data.cluster_name,
+      address: node_id,
+      from: old_role,
+      to: role
+    })
+
+    data = demonitor_node(data, node_id)
+
+    Enum.each(members, fn {_index, pid, _registered_role} ->
+      DynamicSupervisor.terminate_child(data.pool_supervisor, pid)
+    end)
+
+    {_result, data} = start_and_monitor_node_pool(data, node_id, host, port, role)
+    data
+  end
+
+  # Starts all pool members and returns the first successful member. A redirect needs
+  # one PID for its current command, while later commands use sticky lookup.
+  defp start_and_monitor_node_pool(data, node_id, host, port, role) do
+    Enum.reduce(0..(pool_size_for_role(data, role) - 1), {nil, data}, fn
+      index, {first_result, acc} ->
+        {result, acc} = start_and_monitor_connection(acc, node_id, index, host, port, role)
+
+        first_result =
+          case {first_result, result} do
+            {nil, result} -> result
+            {{:error, _reason}, {:ok, _pid}} -> result
+            {first_result, _next_result} -> first_result
+          end
+
+        {first_result, acc}
+    end)
+  end
+
+  defp pool_size_for_role(data, :primary), do: data.primary_pool_size
+  defp pool_size_for_role(data, :replica), do: data.replica_pool_size
+
+  # Returns `{result, data}` where `result` is `{:ok, pid}` or `{:error, reason}`.
+  # Callers that only care about the updated data can discard the result.
+  defp start_and_monitor_connection(data, node_id, index, host, port, role) do
+    case start_connection(
+           data.pool_supervisor,
+           data.registry,
+           node_id,
+           index,
+           host,
+           port,
+           data.conn_opts,
+           role
+         ) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        data = %{data | node_addresses: Map.put(data.node_addresses, node_id, host)}
+        {{:ok, pid}, %{data | monitors: Map.put(data.monitors, ref, {node_id, index, role})}}
+
+      # A concurrent monitor restart (or the connection's own retry) may have
+      # already registered this node. Treat it as success — but make sure we're
+      # monitoring the live pid, otherwise the Manager would silently stop
+      # tracking the node for restart (see issue #305).
+      {:error, {:already_started, pid}} ->
+        data = %{data | node_addresses: Map.put(data.node_addresses, node_id, host)}
+
+        if monitoring_member?(data, node_id, index) do
+          {{:ok, pid}, data}
+        else
+          ref = Process.monitor(pid)
+
+          {{:ok, pid}, %{data | monitors: Map.put(data.monitors, ref, {node_id, index, role})}}
+        end
+
+      {:error, reason} ->
+        :telemetry.execute([:redix, :cluster, :node_connection_failed], %{}, %{
+          cluster: data.cluster_name,
+          address: node_id,
+          reason: reason,
+          kind: :start_failed
+        })
+
+        {{:error, reason}, data}
+    end
+  end
+
+  defp start_connection(
+         pool_supervisor,
+         registry,
+         node_id,
+         index,
+         host,
+         port,
+         conn_opts,
+         role
+       ) do
+    opts =
+      conn_opts
+      |> Keyword.delete(:name)
+      |> Keyword.merge(
+        host: host,
+        port: port,
+        sync_connect: false,
+        # The Registry value records the node's role so keyless commands can be
+        # routed to primaries (see `get_random_connection/1`).
+        name: {:via, Registry, {registry, {node_id, index}, role}}
+      )
+      |> maybe_put_readonly(role)
+
+    # :temporary, not the default :permanent: the Manager owns the connection
+    # lifecycle (it monitors every connection and restarts it on DOWN, with the
+    # :already_started adoption path), so the DynamicSupervisor must never restart
+    # one itself. A node that fails *setup* with a semantic error stops its
+    # Redix.Connection by design; a :permanent child would crash-loop with no
+    # backoff, blow past the supervisor's restart intensity in milliseconds, and
+    # take the whole :one_for_all cluster tree down. As :temporary the crash is
+    # absorbed and handled by handle_down/3, which parks a semantically-failed node
+    # for the periodic topology refresh to re-attempt instead of restarting it in a
+    # tight loop, degrading it to "unavailable" (issue #334).
+    child_spec = Supervisor.child_spec({Redix, opts}, restart: :temporary)
+    DynamicSupervisor.start_child(pool_supervisor, child_spec)
+  end
+
+  # Replica connections issue READONLY after connecting so they serve reads.
+  defp maybe_put_readonly(opts, :replica), do: Keyword.put(opts, :readonly, true)
+  defp maybe_put_readonly(opts, :primary), do: opts
+end

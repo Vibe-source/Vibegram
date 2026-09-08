@@ -2,7 +2,6 @@ defmodule Vibe.Repo.Migrations.CreateInitialSchema do
   use Ecto.Migration
 
   def change do
-    # Users Table
     create table(:users, primary_key: false) do
       add :id, :uuid, primary_key: true
       add :username, :string, null: false
@@ -16,7 +15,6 @@ defmodule Vibe.Repo.Migrations.CreateInitialSchema do
       add :profile_image, :text
       add :last_seen, :utc_datetime
       
-      # PreKey Fields
       add :signed_pre_key_id, :integer
       add :signed_pre_key, :text
       add :signed_pre_key_signature, :text
@@ -29,7 +27,6 @@ defmodule Vibe.Repo.Migrations.CreateInitialSchema do
     create unique_index(:users, [:login_token])
     create index(:users, [:secure_id])
 
-    # Chats Table
     create table(:chats, primary_key: false) do
       add :id, :string, primary_key: true # Node uses generated string IDs
       add :is_group, :boolean, default: false
@@ -38,7 +35,6 @@ defmodule Vibe.Repo.Migrations.CreateInitialSchema do
       timestamps()
     end
 
-    # Chat Participants Table
     create table(:chat_participants) do
       add :chat_id, references(:chats, type: :string, on_delete: :delete_all), null: false
       add :user_id, references(:users, type: :uuid, on_delete: :delete_all), null: false
@@ -52,7 +48,6 @@ defmodule Vibe.Repo.Migrations.CreateInitialSchema do
     create unique_index(:chat_participants, [:chat_id, :user_id])
     create index(:chat_participants, [:user_id])
 
-    # Messages Table
     create table(:messages, primary_key: false) do
       add :id, :uuid, primary_key: true
       add :chat_id, references(:chats, type: :string, on_delete: :delete_all), null: false
@@ -69,7 +64,6 @@ defmodule Vibe.Repo.Migrations.CreateInitialSchema do
 
     create index(:messages, [:chat_id, :timestamp])
 
-    # Message Reads Table
     create table(:message_reads) do
       add :message_id, references(:messages, type: :uuid, on_delete: :delete_all), null: false
       add :reader_id, references(:users, type: :uuid, on_delete: :delete_all), null: false
@@ -79,7 +73,6 @@ defmodule Vibe.Repo.Migrations.CreateInitialSchema do
 
     create unique_index(:message_reads, [:message_id, :reader_id])
 
-    # Subscriptions Table (Push Notifications)
     create table(:subscriptions) do
       add :user_id, references(:users, type: :uuid, on_delete: :delete_all), null: false
       add :endpoint, :text, null: false

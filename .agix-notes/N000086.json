@@ -1,0 +1,18 @@
+{
+  "id": 86,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Profile hero zigzag root cause: mediaTop, mediaH and bandHeight in ChatProfileAvatarMorphView were each pixelRound()ed per frame, so media bottom = round(mediaTop)+round(mediaH) disagreed with band = round(bandHeight) by up to 1px and oscillated as p swept. Second cause: profileHeroScrollBand's GeometryReader minY fed pull/away back into the band height while the spring ran. Fix = interpolate continuously (round endpoints only) and gate pull/away on !heroMorphInFlight.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787832223,
+  "updated_at": 1787832223
+}

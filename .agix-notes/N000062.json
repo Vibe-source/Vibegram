@@ -1,0 +1,18 @@
+{
+  "id": 62,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Reaction height invalidation is thin: chatListRowSignatureFields (ios/ChatModule/ChatListViewModels.swift:1754) carries ONLY ('reactionEmoji', row.reactionEmoji), which is derived as reactions.first?.emoji (:1028). So nil→first emoji flips the signature, but count changes, isSelected changes, and adding/removing a SECOND emoji do not — and those change the strip's width and (on wrap) its height. chatListRowContentEqual (:1666) does compare the full lhs.reactions array, so the CELL reconfigures while the cached height in liveHeightStore does not: that is the 'chip overlaps the text, then the cell height jumps' sequence. Fix = append a reactions component to chatListRowSignatureFields (APPEND ONLY — chatListRowSignatureFlippedFieldNames diffs positionally against persisted arrays) and bump the height-formula revision in ChatListView.swift:~1031.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787760804,
+  "updated_at": 1787760804
+}

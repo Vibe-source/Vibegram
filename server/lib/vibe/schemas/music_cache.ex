@@ -1,8 +1,6 @@
 defmodule Vibe.MusicCache do
   @moduledoc """
   Schema for caching music search results.
-  Caches by video_id (unique song identifier) and title+artist for lookups.
-  This ensures we use actual song names, not user typos.
   """
   use Ecto.Schema
   import Ecto.Changeset
@@ -31,7 +29,6 @@ defmodule Vibe.MusicCache do
     field :external_links, :map, default: %{}
     field :metadata, :map, default: %{}
 
-    # Audio file caching
     field :cached_file_path, :string  # Local/volume path to cached audio
     field :file_size_bytes, :integer  # File size for Content-Length
     field :cached_at, :utc_datetime   # When file was cached
@@ -47,7 +44,6 @@ defmodule Vibe.MusicCache do
     now = DateTime.utc_now()
     normalized_query = normalize_for_search(query)
 
-    # Try to find by similar title/artist match
     from(m in __MODULE__,
       where: is_nil(m.stream_expires_at) or m.stream_expires_at > ^now,
       where: fragment("LOWER(?) LIKE ? OR LOWER(?) LIKE ?",
@@ -60,15 +56,12 @@ defmodule Vibe.MusicCache do
   end
 
   @doc """
-  Get a specific track by video_id.
-  Best for exact lookups when replaying a song.
+  Get a specific track by video_id (identity lookup).
   """
   def get_by_video_id(video_id) when is_binary(video_id) do
-    now = DateTime.utc_now()
-
     from(m in __MODULE__,
       where: m.video_id == ^video_id,
-      where: is_nil(m.stream_expires_at) or m.stream_expires_at > ^now,
+      order_by: [desc: m.updated_at],
       limit: 1
     )
     |> Repo.one()
@@ -77,13 +70,22 @@ defmodule Vibe.MusicCache do
   def get_by_video_id(_), do: nil
 
   @doc """
+  True when the ephemeral extractor `stream_url` is still considered fresh.
+  Cached Supabase files (`cached_file_path`) are permanent and ignore this.
+  """
+  def stream_url_fresh?(%__MODULE__{stream_expires_at: nil}), do: true
+
+  def stream_url_fresh?(%__MODULE__{stream_expires_at: expires_at}) do
+    DateTime.compare(expires_at, DateTime.utc_now()) == :gt
+  end
+
+  def stream_url_fresh?(_), do: false
+
+  @doc """
   Cache music search results.
-  Uses video_id as the unique key (not the user's query).
-  This way, typos in search don't affect cache accuracy.
   """
   def cache_results(query, tracks, source \\ "youtube") do
     query_hash = hash_query(query)
-    # Stream URLs typically expire in 6 hours
     expires_at = DateTime.utc_now() |> DateTime.add(6 * 60 * 60, :second)
 
     Enum.each(tracks, fn track ->
@@ -91,9 +93,7 @@ defmodule Vibe.MusicCache do
       title = track[:title] || track["title"]
       artist = track[:artist] || track["artist"]
 
-      # Skip if no video_id
       if video_id do
-        # Use video_id as unique key, update if exists
         existing = get_by_video_id(video_id)
 
         attrs = %{
@@ -105,7 +105,7 @@ defmodule Vibe.MusicCache do
           artist: artist,
           album: track[:album] || track["album"],
           duration: track[:duration] || track["duration"],
-          duration_seconds: track[:duration_seconds] || track["duration_seconds"],
+          duration_seconds: coerce_seconds(track[:duration_seconds] || track["duration_seconds"]),
           cover_url: track[:cover] || track[:cover_url] || track["cover"],
           stream_url: track[:stream_url] || track[:preview_url] || track["stream_url"],
           stream_expires_at: expires_at,
@@ -115,12 +115,10 @@ defmodule Vibe.MusicCache do
         }
 
         result = if existing do
-          # Update existing entry with new stream URL
           existing
           |> changeset(attrs)
           |> Repo.update()
         else
-          # Insert new entry
           %__MODULE__{}
           |> changeset(attrs)
           |> Repo.insert()
@@ -135,6 +133,20 @@ defmodule Vibe.MusicCache do
       end
     end)
   end
+
+  @doc false
+  def coerce_seconds(nil), do: nil
+  def coerce_seconds(v) when is_integer(v), do: v
+  def coerce_seconds(v) when is_float(v), do: round(v)
+
+  def coerce_seconds(v) when is_binary(v) do
+    case Float.parse(v) do
+      {f, _} -> round(f)
+      :error -> nil
+    end
+  end
+
+  def coerce_seconds(_), do: nil
 
   @doc """
   Search cache by title and/or artist name.

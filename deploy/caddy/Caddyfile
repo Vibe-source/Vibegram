@@ -1,0 +1,90 @@
+{
+	email {$ACME_EMAIL}
+	# Cloudflare terminates TLS at the edge and cloudflared dials out; nothing listens publicly.
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+		client_ip_headers CF-Connecting-IP X-Forwarded-For
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+(access_log) {
+	# File (not just stdout): fail2ban's caddy-auth jail tails this on the
+	# host via the bind mount in compose.yml.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+		format json
+	}
+}
+
+# Chat core — websockets pass through reverse_proxy by default, no extra config.
+http://api.{$VIBE_DOMAIN} {
+	import security_headers
+	import access_log
+	encode gzip zstd
+
+	@internal path /internal/*
+	respond @internal 403
+
+	request_body {
+		max_size 130MB
+	}
+
+	reverse_proxy core:4000
+}
+
+# Isolated agent runtime — provider ingress (/v1/*) and voice sockets.
+http://agents.{$VIBE_DOMAIN} {
+	import security_headers
+	import access_log
+	encode gzip zstd
+
+	@internal path /internal/*
+	respond @internal 403
+
+	request_body {
+		max_size 8MB
+	}
+
+	reverse_proxy agent-runtime:4100
+}
+
+# Dashboards + log search. Grafana owns auth; Loki and Prometheus stay unpublished.
+http://logs.{$VIBE_DOMAIN} {
+	import security_headers
+	import access_log
+	encode gzip zstd
+
+	reverse_proxy grafana:3000
+}
+
+# www exists in DNS; without this it 404s the moment the origin ports close.
+http://www.{$VIBE_DOMAIN} {
+	redir https://{$VIBE_DOMAIN}{uri} permanent
+}
+
+# Bare domain — SPA served by core. Same /internal/* block: core's router is
+# host-agnostic, so those routes are reachable here too without it.
+http://{$VIBE_DOMAIN} {
+	import security_headers
+	import access_log
+	encode gzip zstd
+
+	@internal path /internal/*
+	respond @internal 403
+
+	reverse_proxy core:4000
+}

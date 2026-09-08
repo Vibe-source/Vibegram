@@ -1,0 +1,18 @@
+{
+  "id": 78,
+  "status": "open",
+  "priority": 1,
+  "kind": "decision",
+  "body": "View-once list never paints sharp pixels (concealed still + tiny free-float particles). Consumed incoming ids persist across reopen and skip disk/memory image cache. Sender open does not consume. AVURLAsset removed from isUsableLocalVideoPreview so cellForItem cannot hang main.",
+  "selector": "ios/ChatModule/ChatListView.swift::ChatListView.consumeViewOnceMediaIfNeeded",
+  "path": "ios/ChatModule/ChatListView.swift",
+  "fqn": "ChatListView.consumeViewOnceMediaIfNeeded",
+  "line": 17509,
+  "anchor_hash": "13e8bcab2cff79da1a30f0effab893be3eebb75a800b7dc19e830f95a17cd3f8",
+  "branch": "main",
+  "commit": "976f6743c48673d437c1888db94b2627a35089b5",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787818960,
+  "updated_at": 1787818960
+}

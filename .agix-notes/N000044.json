@@ -1,0 +1,18 @@
+{
+  "id": 44,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Server MLS gates deployed: git push mako main e42bf06. Incoming welcome_status fields, post_welcome membership, claim_key_package shared-chat+cap. Commit fan-out not in this deploy — docs/mls-commit-fanout.md.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "e42bf0668ba90602f8b3b1cbc209fd9e47e91882",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787751752,
+  "updated_at": 1787751752
+}

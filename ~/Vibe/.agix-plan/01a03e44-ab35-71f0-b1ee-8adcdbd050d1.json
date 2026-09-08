@@ -1,0 +1,45 @@
+{
+  "session": "01a03e44-ab35-71f0-b1ee-8adcdbd050d1",
+  "task": "fix the voice not einitlay o ope is closing its…",
+  "steps": [
+    {
+      "what": "Repair mls_test.exs welcome tests + add negative tests; run mix test",
+      "id": "1",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "N000038: claim_key_package rate limit or DM-exists precondition",
+      "id": "2",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "N000036: design MLS commit fan-out (docs) before coding",
+      "id": "3",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Deploy server (welcome incoming* fields + membership gate)",
+      "id": "4",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787751749
+}

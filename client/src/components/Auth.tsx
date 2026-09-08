@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { Copy, Check, Eye, EyeOff, Shield } from 'lucide-react';
 import { ContourField } from './vfx/ContourField';
 import {
     deriveKeyFromPassphrase, decryptPrivateKey, importPublicKey
@@ -8,7 +9,6 @@ import { getApiUrl } from '../utils';
 import { keyStore } from '../localKeyStore';
 import './Auth.css';
 
-// Centralize session management
 const saveSession = (session: any) => keyStore.saveSession(session);
 
 interface AuthProps {
@@ -16,19 +16,39 @@ interface AuthProps {
     setView: (view: any) => void;
 }
 
+type AuthStep = 'form' | 'reveal';
+
 const Auth: React.FC<AuthProps> = ({ onSuccess }) => {
     const [username, setUsername] = useState('');
-    const [secretKey, setSecretKey] = useState(''); // For login
+    const [secretKey, setSecretKey] = useState('');
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [formType, setFormType] = useState<'login' | 'register'>('register');
+    const [step, setStep] = useState<AuthStep>('form');
+    const [revealedSecret, setRevealedSecret] = useState('');
+    const [secretVisible, setSecretVisible] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const [ackSaved, setAckSaved] = useState(false);
+    const [pendingSuccess, setPendingSuccess] = useState<{
+        userId: string;
+        username: string;
+        secureId: string;
+        loginToken: string;
+        keys: CryptoKeyPair;
+    } | null>(null);
 
-    // Helper: Generate a high-entropy secret key (Hex format for robustness)
+    const prefersReducedMotion = useReducedMotion();
+    const panelTransition = prefersReducedMotion
+        ? { duration: 0 }
+        : { duration: 0.22, ease: [0.22, 1, 0.36, 1] as const };
+    const panelInitial = prefersReducedMotion ? false : { opacity: 0, y: 10 };
+    const panelAnimate = { opacity: 1, y: 0 };
+    const panelExit = prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -8 };
+
     const generateSecretKey = () => {
-        const array = new Uint8Array(32); // 32 bytes = 256 bits
+        const array = new Uint8Array(32);
         crypto.getRandomValues(array);
         const hex = Array.from(array).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-        // Format as blocks of 4 for readability
         const chunks = [];
         for (let i = 0; i < hex.length; i += 4) {
             chunks.push(hex.slice(i, i + 4));
@@ -42,45 +62,27 @@ const Auth: React.FC<AuthProps> = ({ onSuccess }) => {
         setError('');
 
         try {
-            console.log('[Auth] Starting registration (Server-side Crypto)...');
-
-            // 1. Generate Secret Key (Keep dashes to match Mobile)
             const rawSecret = generateSecretKey();
-            // Mobile uses the raw secret with dashes for both password and key derivation
-            console.log('[Auth] Generated secret key');
-
-            // 2. Register on server (Server generates keys)
             const apiUrl = getApiUrl();
-            console.log(`[Auth] calling register API at: ${apiUrl}/api/register`);
 
             const res = await fetch(`${apiUrl}/api/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
                 body: JSON.stringify({
                     username,
-                    password: rawSecret, // Send raw secret (dashed)
+                    password: rawSecret,
                     deviceId: crypto.randomUUID(),
                     identityKey: 'v1'
                 })
             });
 
             const data = await res.json();
-            console.log('[Auth] Server response:', res.status, data.userId);
             if (!res.ok) throw new Error(data.error || 'Registration failed');
 
-            // 3. Decrypt the server-provided Private Key
-            console.log('[Auth] Decrypting server-provided keys...');
-            // Derive key using the same dashed secret
             const decryptionKey = await deriveKeyFromPassphrase(rawSecret, username.toLowerCase().trim());
             const privateKey = await decryptPrivateKey(data.encryptedPrivateKey, decryptionKey);
-
-            // 4. Import the Public Key
-            // Mobile uses exportPublicKeyPem (SPKI base64). Web crypto.subtle needs to import it.
-            // 4. Import the Public Key
-            // Mobile uses exportPublicKeyPem (SPKI base64). Web crypto.subtle needs to import it.
             const publicKey = await importPublicKey(data.publicKey);
 
-            // 5. Save locally
             try {
                 const privJwk = await crypto.subtle.exportKey('jwk', privateKey);
                 const pubJwk = await crypto.subtle.exportKey('jwk', publicKey);
@@ -91,18 +93,23 @@ const Auth: React.FC<AuthProps> = ({ onSuccess }) => {
                     privateKeyJwk: privJwk, publicKeyJwk: pubJwk,
                     secretKey: rawSecret
                 });
-                console.log('[Auth] Session saved successfully');
             } catch (saveError) {
                 console.warn('[Auth] Session save failed:', saveError);
             }
 
-            // 6. Success
-            console.log('[Auth] Registration complete');
-            onSuccess({
-                userId: data.userId, username: data.username, secureId: data.secureId,
-                loginToken: data.token || data.loginToken, keys: { privateKey, publicKey }
+            // Gate entry behind one-time secret reveal (matches mobile restore model)
+            setRevealedSecret(rawSecret);
+            setPendingSuccess({
+                userId: data.userId,
+                username: data.username,
+                secureId: data.secureId,
+                loginToken: data.token || data.loginToken,
+                keys: { privateKey, publicKey }
             });
-
+            setStep('reveal');
+            setSecretVisible(false);
+            setCopied(false);
+            setAckSaved(false);
         } catch (e: any) {
             console.error('[Auth] Registration error:', e);
             setError(e.message || 'Registration failed');
@@ -117,10 +124,7 @@ const Auth: React.FC<AuthProps> = ({ onSuccess }) => {
         setError('');
 
         try {
-            // Sanitize input: uppercase, keep dashes, remove spaces/invalid chars
-            // Allow 0-9, A-F, and -
             const cleanSecret = secretKey.trim().toUpperCase().replace(/[^A-F0-9-]/g, '');
-            console.log('[Auth] Attempting login with credential length:', cleanSecret.length);
 
             const res = await fetch(`${getApiUrl()}/api/login`, {
                 method: 'POST',
@@ -136,11 +140,9 @@ const Auth: React.FC<AuthProps> = ({ onSuccess }) => {
             if (!res.ok) throw new Error(data.error || 'Login failed');
             if (!data.encryptedPrivateKey) throw new Error('Account does not support key sync. Please reset.');
 
-            // 2. Derive Key & Decrypt
             const decryptionKey = await deriveKeyFromPassphrase(cleanSecret, data.username.toLowerCase());
             const privateKey = await decryptPrivateKey(data.encryptedPrivateKey, decryptionKey);
 
-            // 3. Import Public Key
             let pubKeyStr = data.publicKey;
             if (!pubKeyStr) {
                 try {
@@ -155,7 +157,6 @@ const Auth: React.FC<AuthProps> = ({ onSuccess }) => {
             if (!pubKeyStr) throw new Error('Could not retrieve public encryption key.');
 
             const publicKey = await importPublicKey(pubKeyStr);
-
             const privJwk = await crypto.subtle.exportKey('jwk', privateKey);
             const pubJwk = await crypto.subtle.exportKey('jwk', publicKey);
 
@@ -170,7 +171,6 @@ const Auth: React.FC<AuthProps> = ({ onSuccess }) => {
                 userId: data.userId, username: data.username, secureId: data.secureId,
                 loginToken: data.token || data.loginToken, keys: { privateKey, publicKey }
             });
-
         } catch (e: any) {
             console.error('[Auth] Login Error:', e);
             setError(e.message || 'Login failed. Check your Secret Key.');
@@ -179,126 +179,235 @@ const Auth: React.FC<AuthProps> = ({ onSuccess }) => {
         }
     };
 
+    const handleCopySecret = async () => {
+        try {
+            await navigator.clipboard.writeText(revealedSecret);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        } catch {
+            setError('Could not copy — select and copy the key manually.');
+        }
+    };
 
-
-
+    const handleEnterApp = () => {
+        if (!ackSaved || !pendingSuccess) return;
+        onSuccess(pendingSuccess);
+    };
 
     return (
         <div className="auth-container">
-            <ContourField className="auth-shader" intensity={0.55} seed={3.7} />
-            <div className="auth-veil" aria-hidden="true" />
+            <div className="auth-split">
+                <section className="auth-form-side" aria-label="Authentication">
+                    <div className="auth-form-inner">
+                        <div className="auth-brand">
+                            <svg width="22" height="22" viewBox="0 0 18 18" aria-hidden="true">
+                                <circle cx="9" cy="9" r="7.4" fill="none" stroke="currentColor" strokeWidth="1.1" opacity="0.55" />
+                                <circle cx="9" cy="9" r="2.4" fill="currentColor" />
+                                <circle cx="14.6" cy="4.2" r="1.5" fill="currentColor" opacity="0.85" />
+                            </svg>
+                            <span>vibe</span>
+                        </div>
 
-            <div className="auth-panel">
-                <div className="auth-brand" aria-hidden="true">
-                    <svg width="22" height="22" viewBox="0 0 18 18">
-                        <circle cx="9" cy="9" r="7.4" fill="none" stroke="currentColor" strokeWidth="1.1" opacity="0.55" />
-                        <circle cx="9" cy="9" r="2.4" fill="currentColor" />
-                        <circle cx="14.6" cy="4.2" r="1.5" fill="currentColor" opacity="0.85" />
-                    </svg>
-                    <span>vibe</span>
-                </div>
+                        <AnimatePresence mode="wait">
+                            {step === 'reveal' ? (
+                                <motion.div
+                                    key="reveal"
+                                    initial={panelInitial}
+                                    animate={panelAnimate}
+                                    exit={panelExit}
+                                    transition={panelTransition}
+                                    className="auth-content"
+                                >
+                                    <header className="auth-header">
+                                        <h1 className="auth-title">Save your secret key</h1>
+                                        <p className="auth-subtitle">
+                                            This is your only key. Copy and store it somewhere safe.
+                                            Anyone with this key can unlock your identity — we cannot recover it for you.
+                                        </p>
+                                    </header>
 
-                <AnimatePresence mode="wait">
-                    <motion.div
-                        key={formType}
-                        initial={{ opacity: 0, y: 14 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-                        className="auth-content-wrapper"
-                    >
-                        {formType === 'register' ? (
-                            <>
-                                <div className="auth-header">
-                                    <p className="auth-kicker">[ NEW IDENTITY ]</p>
-                                    <h1 className="auth-title">Enter the <em>mesh.</em></h1>
-                                    <p className="auth-subtitle">
-                                        Pick a name. A 256-bit secret key is generated on your device — no phone
-                                        number, no email, nothing to trace.
-                                    </p>
-                                </div>
-
-                                <form onSubmit={(e) => { e.preventDefault(); handleRegister(); }} className="auth-form">
-                                    <div className="auth-field">
-                                        <label htmlFor="auth-username">USERNAME</label>
-                                        <input
-                                            id="auth-username"
-                                            type="text"
-                                            placeholder="how peers will know you"
-                                            autoComplete="off"
-                                            autoCapitalize="none"
-                                            value={username}
-                                            onChange={e => setUsername(e.target.value)}
-                                            disabled={isLoading}
-                                        />
+                                    <div className="auth-secret-box">
+                                        <div className="auth-secret-label-row">
+                                            <Shield size={14} aria-hidden="true" />
+                                            <span>Secret key</span>
+                                        </div>
+                                        <div className="auth-secret-value" aria-live="polite">
+                                            {secretVisible ? revealedSecret : '••••-••••-••••-••••-••••-••••-••••-••••'}
+                                        </div>
+                                        <div className="auth-secret-actions">
+                                            <button
+                                                type="button"
+                                                className="auth-secret-action"
+                                                onClick={() => setSecretVisible(v => !v)}
+                                            >
+                                                {secretVisible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+                                                {secretVisible ? 'Hide' : 'Reveal'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="auth-secret-action"
+                                                onClick={handleCopySecret}
+                                            >
+                                                {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+                                                {copied ? 'Copied' : 'Copy'}
+                                            </button>
+                                        </div>
                                     </div>
 
-                                    <button className="auth-submit" disabled={isLoading || !username}>
-                                        {isLoading ? <span className="auth-spinner" aria-label="Loading" /> : (
-                                            <>Generate my key <span aria-hidden="true">→</span></>
-                                        )}
-                                    </button>
-                                </form>
-
-                                <div className="auth-switch">
-                                    <span>Already hold a key?</span>
-                                    <button className="auth-switch-link" onClick={() => setFormType('login')}>
-                                        Sign in
-                                    </button>
-                                </div>
-                            </>
-                        ) : (
-                            <>
-                                <div className="auth-header">
-                                    <p className="auth-kicker">[ RESTORE IDENTITY ]</p>
-                                    <h1 className="auth-title">Welcome <em>back.</em></h1>
-                                    <p className="auth-subtitle">
-                                        Your secret key decrypts everything locally. It never leaves this device.
-                                    </p>
-                                </div>
-
-                                <form onSubmit={(e) => { e.preventDefault(); handleLogin(); }} className="auth-form">
-                                    <div className="auth-field">
-                                        <label htmlFor="auth-secret">SECRET KEY</label>
+                                    <label className="auth-ack">
                                         <input
-                                            id="auth-secret"
-                                            type="password"
-                                            placeholder="XXXX-XXXX-XXXX-…"
-                                            autoComplete="off"
-                                            value={secretKey}
-                                            onChange={e => setSecretKey(e.target.value)}
-                                            disabled={isLoading}
+                                            type="checkbox"
+                                            checked={ackSaved}
+                                            onChange={e => setAckSaved(e.target.checked)}
                                         />
-                                    </div>
+                                        <span>I saved my secret key somewhere safe</span>
+                                    </label>
 
-                                    <button className="auth-submit" disabled={isLoading || !secretKey}>
-                                        {isLoading ? <span className="auth-spinner" aria-label="Loading" /> : (
-                                            <>Decrypt &amp; sign in <span aria-hidden="true">→</span></>
-                                        )}
+                                    <button
+                                        type="button"
+                                        className="auth-submit"
+                                        disabled={!ackSaved}
+                                        onClick={handleEnterApp}
+                                    >
+                                        Continue
                                     </button>
-                                </form>
 
-                                <div className="auth-switch">
-                                    <span>No identity yet?</span>
-                                    <button className="auth-switch-link" onClick={() => setFormType('register')}>
-                                        Create one
-                                    </button>
-                                </div>
-                            </>
-                        )}
+                                    {error && (
+                                        <div className="auth-error" role="alert">
+                                            {error}
+                                        </div>
+                                    )}
+                                </motion.div>
+                            ) : (
+                                <motion.div
+                                    key={formType}
+                                    initial={panelInitial}
+                                    animate={panelAnimate}
+                                    exit={panelExit}
+                                    transition={panelTransition}
+                                    className="auth-content"
+                                >
+                                    {formType === 'register' ? (
+                                        <>
+                                            <header className="auth-header">
+                                                <h1 className="auth-title">Create account</h1>
+                                            </header>
 
-                        {error && (
-                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="auth-error">
-                                {error}
-                            </motion.div>
-                        )}
-                    </motion.div>
-                </AnimatePresence>
+                                            <form
+                                                onSubmit={(e) => { e.preventDefault(); handleRegister(); }}
+                                                className="auth-form"
+                                            >
+                                                <div className="auth-field">
+                                                    <label htmlFor="auth-username">Username</label>
+                                                    <input
+                                                        id="auth-username"
+                                                        type="text"
+                                                        placeholder="Username"
+                                                        autoComplete="username"
+                                                        autoCapitalize="none"
+                                                        value={username}
+                                                        onChange={e => setUsername(e.target.value)}
+                                                        disabled={isLoading}
+                                                    />
+                                                </div>
 
-                <div className="auth-meta" aria-hidden="true">
-                    <span>E2E · AES-256-GCM</span>
-                    <span>KEYS NEVER LEAVE DEVICE</span>
-                </div>
+                                                <button
+                                                    type="submit"
+                                                    className="auth-submit"
+                                                    disabled={isLoading || !username.trim()}
+                                                >
+                                                    {isLoading
+                                                        ? <span className="auth-spinner" aria-label="Loading" />
+                                                        : 'Create account'}
+                                                </button>
+                                            </form>
+
+                                            <p className="auth-switch">
+                                                <span>Already have an account?</span>
+                                                <button
+                                                    type="button"
+                                                    className="auth-switch-link"
+                                                    onClick={() => { setFormType('login'); setError(''); }}
+                                                >
+                                                    Sign in
+                                                </button>
+                                            </p>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <header className="auth-header">
+                                                <h1 className="auth-title">Sign in</h1>
+                                            </header>
+
+                                            <form
+                                                onSubmit={(e) => { e.preventDefault(); handleLogin(); }}
+                                                className="auth-form"
+                                            >
+                                                <div className="auth-field">
+                                                    <label htmlFor="auth-secret">Secret key</label>
+                                                    <input
+                                                        id="auth-secret"
+                                                        type="password"
+                                                        placeholder="XXXX-XXXX-XXXX-…"
+                                                        autoComplete="current-password"
+                                                        spellCheck={false}
+                                                        value={secretKey}
+                                                        onChange={e => setSecretKey(e.target.value)}
+                                                        disabled={isLoading}
+                                                    />
+                                                </div>
+
+                                                <button
+                                                    type="submit"
+                                                    className="auth-submit"
+                                                    disabled={isLoading || !secretKey.trim()}
+                                                >
+                                                    {isLoading
+                                                        ? <span className="auth-spinner" aria-label="Loading" />
+                                                        : 'Sign in'}
+                                                </button>
+                                            </form>
+
+                                            <p className="auth-switch">
+                                                <span>Need an account?</span>
+                                                <button
+                                                    type="button"
+                                                    className="auth-switch-link"
+                                                    onClick={() => { setFormType('register'); setError(''); }}
+                                                >
+                                                    Create account
+                                                </button>
+                                            </p>
+                                        </>
+                                    )}
+
+                                    {error && (
+                                        <div className="auth-error" role="alert">
+                                            {error}
+                                        </div>
+                                    )}
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+
+                        <div className="auth-meta" aria-hidden="true">
+                            <span>E2E · AES-256-GCM</span>
+                            <span>Keys stay on device</span>
+                        </div>
+                    </div>
+                </section>
+
+                <aside className="auth-visual" aria-hidden="true">
+                    <ContourField className="auth-shader" intensity={0.72} seed={3.7} />
+                    <div className="auth-visual-veil" />
+                    <div className="auth-visual-mark">
+                        <svg width="36" height="36" viewBox="0 0 18 18">
+                            <circle cx="9" cy="9" r="7.4" fill="none" stroke="currentColor" strokeWidth="0.9" opacity="0.45" />
+                            <circle cx="9" cy="9" r="2.2" fill="currentColor" />
+                            <circle cx="14.6" cy="4.2" r="1.35" fill="currentColor" opacity="0.8" />
+                        </svg>
+                    </div>
+                </aside>
             </div>
         </div>
     );

@@ -1,0 +1,18 @@
+{
+  "id": 26,
+  "status": "open",
+  "priority": 1,
+  "kind": "finding",
+  "body": "Empty MLS cell is NO SESSION after joiner discard: welcome_status was sender-only so joiners looked like orphans; refreshPeerConfirmation dropped UserDefaults mapping while sqlite group remained. Fix: incoming welcome counts, markPeerConfirmed on join, envelope group-id rebind.",
+  "selector": "ios/Sources/Core/VibeSecureEstablishment.swift::VibeSecureEstablishment.refreshPeerConfirmation",
+  "path": "ios/Sources/Core/VibeSecureEstablishment.swift",
+  "fqn": "VibeSecureEstablishment.refreshPeerConfirmation",
+  "line": 688,
+  "anchor_hash": "6f5b89ec67353e652d382448500083925719b89b9aaa948c75b0752d6d736856",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787746802,
+  "updated_at": 1787746802
+}

@@ -1,0 +1,18 @@
+{
+  "id": 3,
+  "status": "open",
+  "priority": 2,
+  "kind": "finding",
+  "body": "Video-note self-close fix: startSessionAndRecording now schedules initial AVCaptureMovieFileOutput recording once on sessionQueue, preventing prepareCameraAndStart and viewDidAppear from racing into duplicate initial starts. agix edit reparsed successfully. Device build was attempted via agix build; package resolution is blocked before compilation because this workspace denies SwiftPM sandbox-exec, including cached offline resolution.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "58d7cf90f0521bca4dfba3406ac790d76726c8cf",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787738371,
+  "updated_at": 1787738371
+}

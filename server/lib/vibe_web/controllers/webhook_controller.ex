@@ -56,9 +56,7 @@ defmodule VibeWeb.WebhookController do
     Logger.warning("Invalid webhook payload: #{inspect(params)}")
   end
 
-  # ============================================
   # Event Handlers
-  # ============================================
 
   defp handle_subscription_created(data) do
     attrs = data["attributes"]
@@ -179,9 +177,7 @@ defmodule VibeWeb.WebhookController do
     Logger.warning("Payment failed for subscription #{ls_subscription_id}")
   end
 
-  # ============================================
   # Helpers
-  # ============================================
 
   defp parse_datetime(nil), do: nil
 

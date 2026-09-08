@@ -1,0 +1,18 @@
+{
+  "id": 95,
+  "status": "open",
+  "priority": 2,
+  "kind": "decision",
+  "body": "Shipped profile hero/theme/avatar refresh pass: interpolated pull compensation + seam stretch, clear untinted join blur, hero-only top edge-effect suppression, high-contrast action chips, live theme wallpaper background, synchronous first profile render, local reliable back pop, Light/Dark/System picker and fixed ChatMain/system-style resolution, avatar replacement broadcast to visible node/profile views. Final agix-wrapped generic iOS Debug code build green.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "main",
+  "commit": "669744ce1ab5a51672994a655487c81281d52784",
+  "agent": "",
+  "author": "Vibe Team",
+  "created_at": 1787845593,
+  "updated_at": 1787845593
+}

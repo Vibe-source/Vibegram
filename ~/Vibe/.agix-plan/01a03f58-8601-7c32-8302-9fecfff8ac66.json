@@ -1,0 +1,45 @@
+{
+  "session": "01a03f58-8601-7c32-8302-9fecfff8ac66",
+  "task": "Uh, this issue is the same family multiple part…",
+  "steps": [
+    {
+      "what": "Add ChatViewOnceShineCoverView (blur + animated sparkle shader)",
+      "id": "1",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Mount cover on ChatListCell for view-once media/video/videoNote",
+      "id": "2",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Consume view-once on open/playback; disintegrate with existing delete shader",
+      "id": "3",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    },
+    {
+      "what": "Add file to pbxproj, xcodebuild, memory.md",
+      "id": "4",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787770387
+}

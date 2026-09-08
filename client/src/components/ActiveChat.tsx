@@ -5,15 +5,92 @@ import './ChatScreen.css';
 import { motion, AnimatePresence, useMotionValue, animate, useTransform } from 'framer-motion';
 import { useDrag } from '@use-gesture/react';
 import {
-    ArrowLeft, ArrowUp, Mic, X, Paperclip, Copy,
+    ArrowLeft, ArrowUp, Mic, X, Paperclip, Copy, FileText, ExternalLink,
     AlertCircle, Trash2, Pencil, CornerUpLeft, Search, Check, CheckCheck, Phone, Smile, Lock
 } from 'lucide-react';
 import Haptics from '../haptics';
 import VoiceBubble from './VoiceBubble';
 import GifPicker from './GifPicker';
+import MessageBubbleTail from './MessageBubbleTail';
+import ContentParts, { getVibeContentEnvelope } from './ContentParts';
+import ConnectionManager from '../ConnectionManager';
 import { Chat, Message } from '../types';
 import { formatTime, formatDuration } from '../utils';
 import PatternWallpaper from './PatternWallpaper';
+import { VIBE_APPEARANCE } from '../theme/appearance';
+
+function agentImageSource(m: Message, decryptedMedia: { [id: string]: string }): string | undefined {
+    const decrypted = decryptedMedia[m.id] || decryptedMedia[m.mediaUrl || ''];
+    return decrypted || (m.metadata?.isAgentMessage ? m.mediaUrl : undefined);
+}
+
+function renderFileAttachment(m: Message) {
+    if (!m.mediaUrl) {
+        return <div className="msg-error-text">File unavailable</div>;
+    }
+
+    const attachment = m.metadata?.attachment;
+    const fileName = m.metadata?.fileName || attachment?.name || attachment?.caption || 'Attachment';
+    const mimeType = m.metadata?.mimeType || attachment?.mimeType || '';
+    const kind =
+        mimeType === 'application/pdf' || attachment?.type === 'pdf'
+            ? 'PDF'
+            : mimeType === 'text/html' || attachment?.type === 'html'
+                ? 'HTML'
+                : 'File';
+
+    return (
+        <a
+            className="msg-file-card"
+            href={m.mediaUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+        >
+            <FileText size={22} aria-hidden="true" />
+            <span className="msg-file-card__text">
+                <span className="msg-file-card__name">{fileName}</span>
+                <span className="msg-file-card__kind">{kind}</span>
+            </span>
+            <ExternalLink size={16} aria-hidden="true" />
+        </a>
+    );
+}
+
+function emitProviderEvent(chatId: string, payload: Record<string, string>): void {
+    const socket = ConnectionManager.getInstance().getSocket();
+    if (!socket?.isConnected()) return;
+
+    // Reuse the channel Chat.tsx already holds for the open chat — a second join
+    // on the same topic makes Phoenix close the live one (duplicate-join rule).
+    const topic = `chat:${chatId}`;
+    type JoinedChannel = { topic: string; state: string; push: (event: string, payload: object) => unknown };
+    const joined = (socket as unknown as { channels?: JoinedChannel[] }).channels?.find(
+        (ch) => ch.topic === topic && ch.state === 'joined'
+    );
+    if (joined) {
+        joined.push('provider-event', payload);
+        return;
+    }
+
+    const channel = socket.channel(topic, {});
+    channel.join()
+        .receive('ok', () => {
+            channel.push('provider-event', payload)
+                .receive('ok', () => channel.leave())
+                .receive('error', () => channel.leave())
+                .receive('timeout', () => channel.leave());
+        })
+        .receive('error', () => channel.leave())
+        .receive('timeout', () => channel.leave());
+}
+
+function handleContentPartAction(chatId: string, messageId: string, actionId: string): void {
+    emitProviderEvent(chatId, { type: 'action', actionId, messageId });
+}
+
+function handleContentPartCall(chatId: string): void {
+    emitProviderEvent(chatId, { type: 'call.requested' });
+}
 
 interface ChatInterfaceProps {
     activeChat: Chat;
@@ -127,15 +204,16 @@ const MessageRow = React.memo(({
         }
 
         if (m.type === 'image' || m.type === 'gif') {
+            const imageSource = agentImageSource(m, decryptedMedia);
             return (
                 <div className="msg-media">
-                    {decryptedMedia[m.id] || decryptedMedia[m.mediaUrl || ''] || m.mediaUrl ? (
-                        (decryptedMedia[m.id] || decryptedMedia[m.mediaUrl || '']) ? (
+                    {imageSource || m.mediaUrl ? (
+                        imageSource ? (
                             <img
-                                src={decryptedMedia[m.id] || decryptedMedia[m.mediaUrl || '']}
+                                src={imageSource}
                                 alt={m.type === 'gif' ? 'GIF' : 'Photo'}
                                 className="msg-image"
-                                onClick={() => setLightboxImage(decryptedMedia[m.id] || decryptedMedia[m.mediaUrl || ''])}
+                                onClick={() => setLightboxImage(imageSource)}
                             />
                         ) : (
                             <div className="media-skeleton"><div className="media-skeleton-inner"></div></div>
@@ -149,6 +227,10 @@ const MessageRow = React.memo(({
 
         if (m.type === 'voice') {
             return <VoiceBubble src={decryptedMedia[m.id] || decryptedMedia[m.mediaUrl || '']} />;
+        }
+
+        if (m.type === 'file') {
+            return renderFileAttachment(m);
         }
 
         if (m.type === 'call') {
@@ -233,6 +315,11 @@ const MessageRow = React.memo(({
                     onPointerCancel={handlePointerUp}
                     onDoubleClick={() => handleCopy(m)}
                 >
+                    <MessageBubbleTail
+                        isMe={isMe}
+                        cornerRadius={VIBE_APPEARANCE.messageCornerRadius}
+                        curvature={VIBE_APPEARANCE.messageTailCurvature}
+                    />
                     {m.replyToId && (() => {
                         const repliedMsg = activeChat.messages.find(rm => rm.id === m.replyToId);
                         const rText = repliedMsg ? (repliedMsg.type === 'text' ? getMsgText(repliedMsg) : (repliedMsg.type === 'image' ? 'Photo' : 'Voice')) : 'Deleted';
@@ -246,6 +333,22 @@ const MessageRow = React.memo(({
                     })()}
 
                     {renderMessageContent(m)}
+
+                    {/* vibe.content.v1 rich parts under bubble text */}
+                    {(() => {
+                        const envelope = getVibeContentEnvelope(
+                            m as Message & { metadata?: { content?: unknown } }
+                        );
+                        if (!envelope) return null;
+                        return (
+                            <ContentParts
+                                content={envelope}
+                                accent={VIBE_APPEARANCE.accent}
+                                onAction={(actionId) => handleContentPartAction(activeChat.chatId, m.id, actionId)}
+                                onCall={() => handleContentPartCall(activeChat.chatId)}
+                            />
+                        );
+                    })()}
 
                     <div className="msg-time">
                         {formatTime(m.timestamp)}
@@ -306,14 +409,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         }
 
         if (m.type === 'image' || m.type === 'gif') {
+            const imageSource = agentImageSource(m, decryptedMedia);
             return (
                 <div className="msg-media">
-                    {decryptedMedia[m.id] || decryptedMedia[m.mediaUrl || ''] ? (
+                    {imageSource ? (
                         <img
-                            src={decryptedMedia[m.id] || decryptedMedia[m.mediaUrl || '']}
+                            src={imageSource}
                             alt={m.type === 'gif' ? 'GIF' : 'Photo'}
                             className="msg-image"
-                            onClick={() => setLightboxImage(decryptedMedia[m.id] || decryptedMedia[m.mediaUrl || ''])}
+                            onClick={() => setLightboxImage(imageSource)}
                         />
                     ) : (
                         <div className="media-skeleton"><div className="media-skeleton-inner"></div></div>
@@ -324,6 +428,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
         if (m.type === 'voice') {
             return <VoiceBubble src={decryptedMedia[m.id] || decryptedMedia[m.mediaUrl || '']} />;
+        }
+
+        if (m.type === 'file') {
+            return renderFileAttachment(m);
         }
 
         if (m.type === 'call') {
@@ -527,24 +635,26 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                             />
                         </div>
                         <button
+                            type="button"
                             className="icon-btn chat-search-close-btn"
+                            onClick={() => { setIsSearching(false); setSearchQuery(''); }}
                         >
                             <X size={18} />
                         </button>
                     </div>
                 ) : (
                     <>
-                        <button className="icon-btn" onClick={() => setView('chats')}>
+                        <button type="button" className="icon-btn" onClick={() => setView('chats')}>
                             <ArrowLeft size={18} />
                         </button>
                         <div className="header-title-area header-title-container" onClick={() => setView('contact')}>
                             <div className="header-title-column">
                                 <h2 className="header-title-text">{activeChat?.friendName}</h2>
                                 {activeChat?.friendId && typingUsers.has(activeChat.friendId.toUpperCase()) ? (
-                                    <span className="typing-shine header-typing-status">typing...</span>
+                                    <span className="typing-shine header-typing-status">typing…</span>
                                 ) : (
                                     activeChat?.friendId && onlineUsers.has(activeChat.friendId.toUpperCase()) ? (
-                                        <span className="header-last-seen" style={{ color: '#34d399' }}>Online</span>
+                                        <span className="header-last-seen header-online">Online</span>
                                     ) : (
                                         <span className="header-last-seen">Last seen recently</span>
                                     )
@@ -552,13 +662,18 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                             </div>
                         </div>
                         <div className="header-actions-right">
-                            <div onClick={() => setView('contact')} className="header-contact-btn">
+                            <div onClick={() => setView('contact')} className="header-contact-btn" role="button" tabIndex={0}>
                                 {activeChat?.friendImage ? (
                                     <div className="header-avatar-circle">
-                                        <img src={activeChat.friendImage} className="header-avatar-img" />
+                                        <img src={activeChat.friendImage} className="header-avatar-img" alt="" />
                                     </div>
                                 ) : (
-                                    <div className="icon-btn">
+                                    <div
+                                        className="header-avatar-circle header-avatar-fallback"
+                                        style={{
+                                            background: `linear-gradient(135deg, var(--bubble-me-solid, #8B7CFF), var(--bubble-me, #08C6B4))`,
+                                        }}
+                                    >
                                         {(activeChat?.friendName || '?')[0]?.toUpperCase()}
                                     </div>
                                 )}
@@ -566,7 +681,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                         </div>
                     </>
                 )}
-            </header >
+            </header>
 
             {/* Scrollable Viewport */}
             < div className="chat-viewport" ref={viewportRef} onScroll={handleScroll} >
@@ -859,6 +974,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                         ) : (
                             <motion.button
                                 key="send-btn"
+                                type="button"
                                 initial={{ opacity: 0, scale: 0.5 }}
                                 animate={{ opacity: 1, scale: 1 }}
                                 exit={{ opacity: 0, scale: 0.5 }}
@@ -870,12 +986,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                                     border: 'none', cursor: 'pointer',
                                     marginLeft: 6,
-                                    background: 'var(--accent)',
-                                    color: '#18181b',
-                                    boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+                                    background: 'var(--bubble-me-gradient, var(--accent))',
+                                    color: '#04211e',
+                                    boxShadow: '0 6px 16px -4px rgba(8, 198, 180, 0.45)'
                                 }}
                             >
-                                <ArrowUp size={20} strokeWidth={3} color="#18181b" />
+                                <ArrowUp size={20} strokeWidth={3} color="#04211e" />
                             </motion.button>
                         )}
                     </AnimatePresence>
@@ -921,7 +1037,28 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                                 >
                                     {/* Re-render bubble content */}
                                     <div className={`msg-box cloned-bubble-inner ${contextMenu.isMe ? 'msg-box--sent' : 'msg-box--received'} ${contextMenu.message.type === 'image' ? 'msg-box--image' : ''} ${contextMenu.message.status === 'error' ? 'msg-box--error' : ''}`}>
+                                        <MessageBubbleTail
+                                            isMe={contextMenu.isMe}
+                                            cornerRadius={VIBE_APPEARANCE.messageCornerRadius}
+                                            curvature={VIBE_APPEARANCE.messageTailCurvature}
+                                        />
                                         {renderMessageContent(contextMenu.message)}
+                                        {(() => {
+                                            const envelope = getVibeContentEnvelope(
+                                                contextMenu.message as Message & {
+                                                    metadata?: { content?: unknown };
+                                                }
+                                            );
+                                            if (!envelope) return null;
+                                            return (
+                                                <ContentParts
+                                                    content={envelope}
+                                                    accent={VIBE_APPEARANCE.accent}
+                                                    onAction={(actionId) => handleContentPartAction(activeChat.chatId, contextMenu.message.id, actionId)}
+                                                    onCall={() => handleContentPartCall(activeChat.chatId)}
+                                                />
+                                            );
+                                        })()}
                                     </div>
                                 </motion.div>
                             </div>

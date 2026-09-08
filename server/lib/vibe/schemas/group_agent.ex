@@ -79,7 +79,6 @@ defmodule Vibe.Chat.GroupAgent do
     end
   end
 
-  # ── CRUD ──
 
   def create(attrs, opts \\ []) do
     acting_user_id = Keyword.get(opts, :acting_user_id) || attrs[:created_by] || attrs["created_by"]

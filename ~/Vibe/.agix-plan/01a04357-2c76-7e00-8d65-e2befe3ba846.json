@@ -1,0 +1,18 @@
+{
+  "session": "01a04357-2c76-7e00-8d65-e2befe3ba846",
+  "task": "Please take a look at the, uh, audio. Profile v…",
+  "steps": [
+    {
+      "what": "Install Debug build on attached iPhone",
+      "id": "5",
+      "why": "",
+      "files": [],
+      "owner": "",
+      "proves": [],
+      "mark": "completed"
+    }
+  ],
+  "state": "done",
+  "by": "",
+  "at": 1787836877
+}

@@ -1,0 +1,17 @@
+{
+  "id": 3,
+  "status": "resolved",
+  "priority": 2,
+  "kind": "handoff",
+  "body": "Reaction work plan (4 parts). P3: reactionHeightOffset = size.height + 14 at ChatListViewCells.swift:5165/5421/5614 -> strip needs only height + 4 gap (strip sits at bubble.maxY-6-h; bottomPad 6 for text, 0 fullbleed, 7 voice). P2: ChatReactionChipView.apply background for isMe must be opaque appearance.textColorMe (+ count colour = bubbleMeGradient.first, clear border). P4: overlay gestureRecognizerShouldBegin vetoes taps inside bubbleSnapshot.frame; snapshot INCLUDES the reaction strip, so tapping the pill never dismisses - pass the strip rect in snapshot coords into the overlay and let it through. P1: expand = swap picker content to search row + 8-col catalog grid (promote ChatEmojiEntry/Category/CatalogBuilder from private in ChatGifPanel.swift), overlay layoutMenus expanded branch pins panel at safeTop, pushes bubble to panel.maxY+gap, hides contextMenu.",
+  "selector": "",
+  "path": "",
+  "fqn": "",
+  "line": 0,
+  "anchor_hash": "",
+  "branch": "core/timeline-p4",
+  "commit": "55313ddbe0caf6ab5cfd6f3ad89323e50231f276",
+  "agent": "",
+  "created_at": 1786303240,
+  "updated_at": 1786304087
+}

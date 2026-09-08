@@ -1,0 +1,28 @@
+server:
+  http_listen_port: 9080
+  log_level: warn
+
+positions:
+  filename: /promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+# One source for everything: podman is configured with the journald log driver
+# (containers.conf), so container output and host units land in the same journal.
+scrape_configs:
+  - job_name: journal
+    journal:
+      path: /var/log/journal
+      max_age: 12h
+      labels:
+        job: journal
+    relabel_configs:
+      - source_labels: ['__journal_container_name']
+        target_label: container
+      - source_labels: ['__journal__systemd_unit']
+        target_label: unit
+      - source_labels: ['__journal_priority_keyword']
+        target_label: level
+      - source_labels: ['__journal_syslog_identifier']
+        target_label: syslog_identifier

@@ -1,15 +1,433 @@
 import UIKit
 
-private struct ChatReactionFxStyle {
+private func fxColor(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> UIColor {
+  UIColor(red: red / 255.0, green: green / 255.0, blue: blue / 255.0, alpha: 1.0)
+}
+
+/// Palette and particle recipe for one reaction family.
+struct ChatReactionEffectProfile {
   let accent: UIColor
   let ring: UIColor
-  let particleColors: [UIColor]
-  let particleCount: Int
+  let replicaGlowColors: [UIColor]
+  let replicaCount: Int
   let spread: ClosedRange<CGFloat>
   let rise: ClosedRange<CGFloat>
   let ringEndScale: CGFloat
   let bubblePulseScale: CGFloat
   let flightRotation: CGFloat
+  /// Telegram-style shout particles thrown alongside the emoji replicas.
+  let words: [String]
+
+  static func make(
+    accent: UIColor,
+    ring: UIColor,
+    glows: [UIColor],
+    words: [String] = [],
+    count: Int = 9,
+    spread: ClosedRange<CGFloat> = 13.0...29.0,
+    rise: ClosedRange<CGFloat> = 3.0...12.0,
+    ringScale: CGFloat = 2.0,
+    bubbleScale: CGFloat = 1.018,
+    rotation: CGFloat = 0.05
+  ) -> ChatReactionEffectProfile {
+    ChatReactionEffectProfile(
+      accent: accent,
+      ring: ring,
+      replicaGlowColors: glows,
+      replicaCount: count,
+      spread: spread,
+      rise: rise,
+      ringEndScale: ringScale,
+      bubblePulseScale: bubbleScale,
+      flightRotation: rotation,
+      words: words
+    )
+  }
+}
+
+/// A named reaction family: its curated emoji, the browse groups its tab spans,
+/// and the burst every emoji in it plays.
+struct ChatReactionCategory {
+  let id: String
+  let title: String
+  let symbolName: String
+  let glyph: String
+  let emojis: [String]
+  let browseGroups: [ChatEmojiCategory]
+  let searchHints: [String]
+  let effect: ChatReactionEffectProfile
+}
+
+/// One source of truth for the picker's tabs and the FX profiles: every emoji
+/// resolves to a category, and every category owns a designed burst.
+enum ChatReactionCatalog {
+  static let collapsedEmojis: [String] = ["⭐️", "❤️", "👍", "👎", "🔥", "🥰", "👏"]
+
+  static let categories: [ChatReactionCategory] = [
+    ChatReactionCategory(
+      id: "smileys",
+      title: "Smileys",
+      symbolName: "face.smiling",
+      glyph: "😀",
+      emojis: [
+        "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "🥲", "🙂", "🙃", "😉", "😊",
+        "😇", "😌", "😋", "😛", "😜", "🤪", "😝", "🤗", "🤭", "🤫", "🤔", "🤨", "😐",
+        "😑", "😶", "🙄", "😏", "😴", "🤤", "😪", "🤠", "🥳", "😎", "🤓", "🧐", "🤡",
+        "👻", "💀", "👽", "🤖", "😺", "😸", "😹",
+      ],
+      browseGroups: [.smileys],
+      searchHints: ["face", "grin", "smil"],
+      effect: .make(
+        accent: fxColor(250, 194, 31),
+        ring: fxColor(255, 224, 102),
+        glows: [fxColor(252, 179, 20), fxColor(255, 234, 122), fxColor(255, 205, 60)],
+        words: ["HA", "HEH", "lol", "haha", "hehe"],
+        count: 11, spread: 16.0...34.0, rise: 6.0...20.0, ringScale: 2.3,
+        bubbleScale: 1.024, rotation: 0.12
+      )
+    ),
+    ChatReactionCategory(
+      id: "hearts",
+      title: "Hearts",
+      symbolName: "heart.fill",
+      glyph: "❤️",
+      emojis: [
+        "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "💕", "💞", "💓",
+        "💗", "💖", "💘", "💝", "💟", "😍", "🥰", "😘", "😗", "😙", "😚", "😻", "💋",
+        "🌹", "💐", "🫶",
+      ],
+      browseGroups: [],
+      searchHints: ["heart", "kiss", "love", "rose"],
+      effect: .make(
+        accent: fxColor(255, 76, 120),
+        ring: fxColor(255, 143, 176),
+        glows: [fxColor(255, 64, 110), fxColor(255, 143, 176), fxColor(255, 189, 209)],
+        words: ["love", "aww", "xo", "mwah"],
+        count: 12, spread: 15.0...33.0, rise: 10.0...26.0, ringScale: 2.5,
+        bubbleScale: 1.026, rotation: -0.11
+      )
+    ),
+    ChatReactionCategory(
+      id: "hands",
+      title: "Gestures",
+      symbolName: "hand.thumbsup.fill",
+      glyph: "👍",
+      emojis: [
+        "👍", "👎", "👌", "🤌", "🤏", "✌️", "🤞", "🫰", "🤟", "🤘", "🤙", "👈", "👉",
+        "👆", "👇", "☝️", "🫵", "👋", "🤚", "🖐️", "✋", "🖖", "🫱", "🫲", "🫳", "🫴",
+        "👏", "🙌", "👐", "🤲", "🤝", "🙏", "💪", "✍️", "🦾", "🫡",
+      ],
+      browseGroups: [.people],
+      searchHints: ["hand", "finger", "thumb"],
+      effect: .make(
+        accent: fxColor(56, 160, 252),
+        ring: fxColor(135, 197, 255),
+        glows: [fxColor(69, 168, 255), fxColor(158, 216, 255), fxColor(214, 238, 255)],
+        words: ["yes", "ok", "+1", "nice"],
+        count: 9, spread: 15.0...31.0, rise: 3.0...12.0, ringScale: 2.1,
+        bubbleScale: 1.02, rotation: 0.09
+      )
+    ),
+    ChatReactionCategory(
+      id: "moods",
+      title: "Feelings",
+      symbolName: "face.dashed",
+      glyph: "😢",
+      emojis: [
+        "😢", "😭", "😞", "😔", "😟", "😕", "🙁", "☹️", "😣", "😖", "😫", "😩", "🥺",
+        "🥹", "😤", "😠", "😡", "🤬", "😨", "😰", "😱", "😳", "🤯", "🤢", "🤮", "🥵",
+        "🥶", "😵", "🫠", "😬", "🤥", "😒", "😓", "🤕", "🤒", "😷",
+      ],
+      browseGroups: [],
+      searchHints: ["cry", "sad", "angry", "pout", "frown", "weary"],
+      effect: .make(
+        accent: fxColor(120, 143, 190),
+        ring: fxColor(168, 186, 219),
+        glows: [fxColor(110, 132, 176), fxColor(168, 186, 219), fxColor(214, 224, 240)],
+        words: ["omg", "nooo", "ugh", "wow"],
+        count: 8, spread: 12.0...26.0, rise: 1.0...9.0, ringScale: 1.9,
+        bubbleScale: 1.016, rotation: -0.08
+      )
+    ),
+    ChatReactionCategory(
+      id: "animals",
+      title: "Animals",
+      symbolName: "pawprint.fill",
+      glyph: "🐻",
+      emojis: [
+        "🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷",
+        "🐸", "🐵", "🙈", "🙉", "🙊", "🐔", "🐧", "🐦", "🐤", "🦆", "🦅", "🦉", "🦇",
+        "🐺", "🐗", "🐴", "🦄", "🐝", "🦋", "🐌", "🐞", "🐢", "🐍", "🐙", "🦀", "🐠",
+        "🐬", "🐳", "🦈", "🌸", "🌼", "🌻", "🌈", "🌿", "🍀", "🌳", "🌊",
+      ],
+      browseGroups: [.nature],
+      searchHints: ["cat", "dog", "flower", "tree", "leaf"],
+      effect: .make(
+        accent: fxColor(94, 190, 122),
+        ring: fxColor(152, 219, 170),
+        glows: [fxColor(84, 186, 116), fxColor(160, 222, 176), fxColor(226, 244, 210)],
+        words: ["aww", "cute", "rawr"],
+        count: 10, spread: 14.0...30.0, rise: 8.0...22.0, ringScale: 2.2,
+        bubbleScale: 1.021, rotation: 0.1
+      )
+    ),
+    ChatReactionCategory(
+      id: "food",
+      title: "Food",
+      symbolName: "fork.knife",
+      glyph: "🍔",
+      emojis: [
+        "🍏", "🍎", "🍐", "🍊", "🍋", "🍌", "🍉", "🍇", "🍓", "🫐", "🍒", "🍑", "🥭",
+        "🍍", "🥝", "🍅", "🥑", "🌽", "🌶️", "🥦", "🍞", "🥐", "🧀", "🥚", "🍳", "🥓",
+        "🍔", "🍟", "🍕", "🌭", "🥪", "🌮", "🌯", "🥗", "🍝", "🍜", "🍣", "🍱", "🍩",
+        "🍪", "🎂", "🧁", "🍰", "🍫", "🍬", "🍭", "🍿", "☕️", "🍵", "🍺", "🍻", "🥂",
+        "🍷", "🥤",
+      ],
+      browseGroups: [.food],
+      searchHints: ["food", "fruit", "drink"],
+      effect: .make(
+        accent: fxColor(240, 132, 56),
+        ring: fxColor(250, 186, 118),
+        glows: [fxColor(240, 122, 46), fxColor(250, 190, 118), fxColor(255, 224, 168)],
+        words: ["yum", "mmm", "nom"],
+        count: 9, spread: 13.0...27.0, rise: 4.0...15.0, ringScale: 2.0,
+        bubbleScale: 1.019, rotation: 0.07
+      )
+    ),
+    ChatReactionCategory(
+      id: "activity",
+      title: "Activity",
+      symbolName: "figure.run",
+      glyph: "⚽️",
+      emojis: [
+        "⚽️", "🏀", "🏈", "⚾️", "🥎", "🎾", "🏐", "🏉", "🎱", "🏓", "🏸", "🥅", "🏒",
+        "🏑", "🏏", "⛳️", "🏹", "🎣", "🥊", "🥋", "⛸️", "🎿", "⛷️", "🏂", "🏋️", "🤸",
+        "⛹️", "🏌️", "🧘", "🏄", "🏊", "🚴", "🚵", "🏆", "🥇", "🥈", "🥉", "🎯", "🎮",
+        "🕹️", "🎲", "♟️", "🎸", "🎺", "🥁", "🎧", "🎤", "🎬",
+      ],
+      browseGroups: [.activity],
+      searchHints: ["ball", "sport", "medal", "music"],
+      effect: .make(
+        accent: fxColor(72, 186, 214),
+        ring: fxColor(140, 216, 234),
+        glows: [fxColor(58, 178, 210), fxColor(146, 218, 236), fxColor(206, 240, 248)],
+        words: ["go", "lets go", "yes"],
+        count: 10, spread: 18.0...36.0, rise: 5.0...17.0, ringScale: 2.2,
+        bubbleScale: 1.022, rotation: 0.14
+      )
+    ),
+    ChatReactionCategory(
+      id: "travel",
+      title: "Travel",
+      symbolName: "airplane",
+      glyph: "✈️",
+      emojis: [
+        "🚀", "✈️", "🛸", "🚁", "🚂", "🚗", "🏎️", "🏍️", "🛵", "🚲", "⛵️", "🚤", "🛳️",
+        "⚓️", "🗺️", "🏝️", "🏔️", "⛰️", "🌋", "🏕️", "🏖️", "🌅", "🌄", "🌇", "🌆", "🏙️",
+        "🌃", "🌉", "🗽", "🗼", "🏰", "🎡", "🎢", "🎠", "⛲️", "🧭", "⏳", "🌍", "🌎",
+        "🌏", "🛩️", "🚦",
+      ],
+      browseGroups: [.travel],
+      searchHints: ["rocket", "car", "plane", "island"],
+      effect: .make(
+        accent: fxColor(122, 132, 246),
+        ring: fxColor(174, 181, 252),
+        glows: [fxColor(110, 122, 246), fxColor(178, 186, 252), fxColor(222, 226, 255)],
+        words: ["woosh", "zoom", "go"],
+        count: 10, spread: 20.0...42.0, rise: 12.0...30.0, ringScale: 2.4,
+        bubbleScale: 1.023, rotation: 0.18
+      )
+    ),
+    ChatReactionCategory(
+      id: "objects",
+      title: "Objects",
+      symbolName: "lightbulb.fill",
+      glyph: "💡",
+      emojis: [
+        "🔥", "⭐️", "🌟", "✨", "💫", "💥", "⚡️", "💧", "💯", "❗️", "❓", "✅", "❌",
+        "⚠️", "🔔", "🔒", "🔑", "💰", "💎", "🎁", "💡", "📱", "💻", "⌨️", "🖥️", "📷",
+        "🎥", "📺", "⏰", "⏱️", "🔍", "🔧", "🔨", "🧲", "🧪", "💊", "📚", "📝", "✏️",
+        "📌", "📎", "📊", "📈", "📉", "🗑️", "🚫", "💤", "💩",
+      ],
+      browseGroups: [.objects, .symbols],
+      searchHints: ["fire", "star", "sparkle", "bolt"],
+      effect: .make(
+        accent: fxColor(255, 125, 41),
+        ring: fxColor(255, 174, 74),
+        glows: [fxColor(255, 107, 31), fxColor(255, 179, 61), fxColor(255, 219, 107)],
+        words: ["whoa", "boom", "100", "fire"],
+        count: 11, spread: 12.0...28.0, rise: 14.0...32.0, ringScale: 2.3,
+        bubbleScale: 1.025, rotation: -0.13
+      )
+    ),
+    ChatReactionCategory(
+      id: "celebration",
+      title: "Party",
+      symbolName: "party.popper.fill",
+      glyph: "🎉",
+      emojis: [
+        "🎉", "🎊", "🥳", "🎈", "🎁", "🎂", "🍾", "🥂", "🎆", "🎇", "🧨", "🎀", "🎗️",
+        "🏆", "🥇", "👑", "💐", "🪅", "🪩", "🕺", "💃", "🎵", "🎶", "🤩", "🙌",
+      ],
+      browseGroups: [],
+      searchHints: ["party", "confetti", "balloon", "trophy", "celebrat"],
+      effect: .make(
+        accent: fxColor(242, 74, 135),
+        ring: fxColor(250, 176, 64),
+        glows: [
+          fxColor(255, 69, 130), fxColor(255, 207, 51), fxColor(79, 212, 242),
+          fxColor(143, 199, 77),
+        ],
+        words: ["yay", "woo", "PARTY", "nice"],
+        count: 14, spread: 20.0...40.0, rise: 6.0...20.0, ringScale: 2.6,
+        bubbleScale: 1.028, rotation: 0.16
+      )
+    ),
+  ]
+
+  /// Quick row first, then every curated emoji, deduped on the normalized form.
+  static let allEmojis: [String] = {
+    var seen = Set<String>()
+    var ordered: [String] = []
+    for emoji in ChatReactionCatalog.collapsedEmojis
+      + ChatReactionCatalog.categories.flatMap({ $0.emojis })
+    where seen.insert(ChatReactionKey.normalized(emoji)).inserted {
+      ordered.append(emoji)
+    }
+    return ordered
+  }()
+
+  static var defaultCategory: ChatReactionCategory { categories[0] }
+
+  /// Curated membership first, then the emoji's Unicode block, then smileys.
+  static func category(for emoji: String) -> ChatReactionCategory {
+    let key = ChatReactionKey.normalized(emoji)
+    if let index = curatedIndex[key] { return categories[index] }
+    if let group = browseGroup(for: emoji), let index = browseIndex[group] {
+      return categories[index]
+    }
+    return defaultCategory
+  }
+
+  static func category(withId id: String) -> ChatReactionCategory? {
+    categories.first { $0.id == id }
+  }
+
+  /// Which Unicode block an emoji sits in, using the browse ranges the panel shares.
+  static func browseGroup(for emoji: String) -> ChatEmojiCategory? {
+    guard let scalar = ChatReactionKey.normalized(emoji).unicodeScalars.first else { return nil }
+    if scalar.value >= 0x1F1E6, scalar.value <= 0x1F1FF { return .flags }
+    for group in ChatEmojiCategory.browseCases
+    where group.scalarRanges.contains(where: { $0.contains(scalar.value) }) {
+      return group
+    }
+    return nil
+  }
+
+  private static let curatedIndex: [String: Int] = {
+    var index: [String: Int] = [:]
+    for (position, category) in ChatReactionCatalog.categories.enumerated() {
+      for emoji in category.emojis {
+        let key = ChatReactionKey.normalized(emoji)
+        if index[key] == nil { index[key] = position }
+      }
+    }
+    return index
+  }()
+
+  private static let browseIndex: [ChatEmojiCategory: Int] = {
+    var index: [ChatEmojiCategory: Int] = [:]
+    for (position, category) in ChatReactionCatalog.categories.enumerated() {
+      for group in category.browseGroups where index[group] == nil {
+        index[group] = position
+      }
+    }
+    return index
+  }()
+}
+
+final class ChatReactionTransitionCoordinator {
+  static let shared = ChatReactionTransitionCoordinator()
+
+  struct Token: Hashable {
+    fileprivate let chatId: String
+    fileprivate let messageId: String
+    fileprivate let id: UUID
+  }
+
+  private struct MessageKey: Hashable {
+    let chatId: String
+    let messageId: String
+  }
+
+  private struct Flight {
+    let id: UUID
+    let emoji: String
+    var isFlying: Bool
+    var transportAccepted: Bool
+  }
+
+  private let lock = NSLock()
+  private var flights: [MessageKey: Flight] = [:]
+
+  private init() {}
+
+  func begin(chatId: String, messageId: String, emoji: String) -> Token {
+    let token = Token(chatId: chatId, messageId: messageId, id: UUID())
+    withLock {
+      flights[MessageKey(chatId: chatId, messageId: messageId)] = Flight(
+        id: token.id, emoji: emoji, isFlying: true, transportAccepted: false)
+    }
+    return token
+  }
+
+  func isCurrent(_ token: Token) -> Bool {
+    withLock {
+      flights[MessageKey(chatId: token.chatId, messageId: token.messageId)]?.id == token.id
+    }
+  }
+
+  func isFlying(chatId: String, messageId: String, emoji: String) -> Bool {
+    withLock {
+      guard let flight = flights[MessageKey(chatId: chatId, messageId: messageId)] else {
+        return false
+      }
+      return flight.emoji == emoji && flight.isFlying
+    }
+  }
+
+  func finishFlight(_ token: Token) {
+    withLock {
+      let key = MessageKey(chatId: token.chatId, messageId: token.messageId)
+      guard var flight = flights[key], flight.id == token.id else { return }
+      flight.isFlying = false
+      if flight.transportAccepted {
+        flights.removeValue(forKey: key)
+      } else {
+        flights[key] = flight
+      }
+    }
+  }
+
+  func resolveTransport(_ token: Token, accepted: Bool) -> Bool {
+    withLock {
+      let key = MessageKey(chatId: token.chatId, messageId: token.messageId)
+      guard var flight = flights[key], flight.id == token.id else { return false }
+      if !accepted || !flight.isFlying {
+        flights.removeValue(forKey: key)
+      } else {
+        flight.transportAccepted = true
+        flights[key] = flight
+      }
+      return true
+    }
+  }
+
+  private func withLock<T>(_ body: () -> T) -> T {
+    lock.lock()
+    defer { lock.unlock() }
+    return body()
+  }
 }
 
 final class ChatReactionFxModule {
@@ -25,46 +443,58 @@ final class ChatReactionFxModule {
     bubbleView: UIView?,
     completion: @escaping () -> Void
   ) {
-    let style = style(for: emoji, tintOverride: nil)
-    let duration: TimeInterval = 0.55
+    let style = profile(for: emoji, tintOverride: nil)
+    let duration: TimeInterval = 0.30
 
     let container = UIView(frame: hostView.bounds)
+    container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     container.backgroundColor = .clear
     container.isUserInteractionEnabled = false
     container.clipsToBounds = false
     hostView.addSubview(container)
 
+    let source = container.convert(sourcePoint, from: hostView)
+    let target = container.convert(targetPoint, from: hostView)
+    let wrapper = UIView(frame: CGRect(x: 0, y: 0, width: 44, height: 44))
+    wrapper.center = source
+    wrapper.alpha = 1
+    wrapper.isUserInteractionEnabled = false
+    container.addSubview(wrapper)
+
     let label = UILabel()
     label.text = emoji
     label.font = UIFont.systemFont(ofSize: 30)
-    label.sizeToFit()
-    label.center = sourcePoint
+    label.textAlignment = .center
+    label.frame = wrapper.bounds
+    label.alpha = 1
+    label.layer.contentsScale = UIScreen.main.scale
     label.layer.shadowColor = UIColor.black.withAlphaComponent(0.26).cgColor
-    label.layer.shadowRadius = 8.0
-    label.layer.shadowOffset = CGSize(width: 0.0, height: 3.0)
+    label.layer.shadowRadius = 5.0
+    label.layer.shadowOffset = CGSize(width: 0.0, height: 2.0)
     label.layer.shadowOpacity = 1.0
-    container.addSubview(label)
+    wrapper.addSubview(label)
 
-    let dx = targetPoint.x - sourcePoint.x
-    let dy = targetPoint.y - sourcePoint.y
-    let arcLift = max(34.0, min(100.0, abs(dx) * 0.35 + abs(dy) * 0.25))
+    let dx = target.x - source.x
+    let dy = target.y - source.y
+    let arcLift = max(18.0, min(48.0, abs(dx) * 0.16 + abs(dy) * 0.10))
     let control = CGPoint(
-      x: sourcePoint.x + (dx * 0.5),
-      y: min(sourcePoint.y, targetPoint.y) - arcLift
+      x: source.x + (dx * 0.5),
+      y: min(source.y, target.y) - arcLift
     )
 
     let travelPath = UIBezierPath()
-    travelPath.move(to: sourcePoint)
-    travelPath.addQuadCurve(to: targetPoint, controlPoint: control)
+    travelPath.move(to: source)
+    travelPath.addQuadCurve(to: target, controlPoint: control)
 
     let position = CAKeyframeAnimation(keyPath: "position")
     position.path = travelPath.cgPath
     position.duration = duration
-    position.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+    position.calculationMode = .paced
+    position.timingFunction = CAMediaTimingFunction(name: .easeOut)
 
     let scale = CAKeyframeAnimation(keyPath: "transform.scale")
-    scale.values = [1.0, 1.18, 0.98, 0.88]
-    scale.keyTimes = [0.0, 0.22, 0.76, 1.0]
+    scale.values = [1.0, 1.12, 1.0]
+    scale.keyTimes = [0.0, 0.38, 1.0]
     scale.duration = duration
 
     let rotation = CAKeyframeAnimation(keyPath: "transform.rotation.z")
@@ -76,37 +506,22 @@ final class ChatReactionFxModule {
     let group = CAAnimationGroup()
     group.animations = [position, scale, rotation]
     group.duration = duration
-    group.fillMode = .forwards
-    group.isRemovedOnCompletion = false
-    label.layer.add(group, forKey: "reactionFlight")
-    label.layer.position = targetPoint
-
-    UIView.animateKeyframes(
-      withDuration: duration,
-      delay: 0.0,
-      options: [.calculationModeCubic, .beginFromCurrentState]
-    ) {
-      UIView.addKeyframe(withRelativeStartTime: 0.0, relativeDuration: 0.76) {
-        label.alpha = 1.0
-      }
-      UIView.addKeyframe(withRelativeStartTime: 0.72, relativeDuration: 0.28) {
-        label.alpha = 0.0
-      }
-    }
+    wrapper.layer.position = target
+    wrapper.layer.add(group, forKey: "reactionFlight")
 
     if let bubbleView {
       let base = bubbleView.transform
-      DispatchQueue.main.asyncAfter(deadline: .now() + (duration * 0.64)) { [weak bubbleView] in
+      DispatchQueue.main.asyncAfter(deadline: .now() + (duration * 0.58)) { [weak bubbleView] in
         guard let bubbleView else { return }
         UIView.animate(
-          withDuration: 0.10,
+          withDuration: 0.08,
           delay: 0.0,
           options: [.curveEaseOut, .beginFromCurrentState]
         ) {
           bubbleView.transform = base.scaledBy(x: style.bubblePulseScale, y: style.bubblePulseScale)
         } completion: { _ in
           UIView.animate(
-            withDuration: 0.14,
+            withDuration: 0.10,
             delay: 0.0,
             options: [.curveEaseOut, .beginFromCurrentState]
           ) {
@@ -117,8 +532,8 @@ final class ChatReactionFxModule {
     }
 
     DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-      label.layer.removeAllAnimations()
-      label.removeFromSuperview()
+      wrapper.layer.removeAllAnimations()
+      wrapper.removeFromSuperview()
       container.removeFromSuperview()
       completion()
     }
@@ -130,38 +545,15 @@ final class ChatReactionFxModule {
     in hostView: UIView,
     tintOverride: UIColor?
   ) {
-    let style = style(for: emoji, tintOverride: tintOverride)
+    let style = profile(for: emoji, tintOverride: tintOverride)
 
-    let effectLayer = CALayer()
-    effectLayer.frame = hostView.bounds
-    effectLayer.masksToBounds = false
-    hostView.layer.addSublayer(effectLayer)
-
-    let centerDot = CALayer()
-    centerDot.bounds = CGRect(x: 0.0, y: 0.0, width: 10.0, height: 10.0)
-    centerDot.cornerRadius = 5.0
-    centerDot.position = point
-    centerDot.backgroundColor = style.accent.withAlphaComponent(0.92).cgColor
-    effectLayer.addSublayer(centerDot)
-
-    let dotScale = CABasicAnimation(keyPath: "transform.scale")
-    dotScale.fromValue = 0.55
-    dotScale.toValue = 2.1
-    dotScale.duration = 0.32
-    dotScale.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-    let dotOpacity = CABasicAnimation(keyPath: "opacity")
-    dotOpacity.fromValue = 0.9
-    dotOpacity.toValue = 0.0
-    dotOpacity.duration = 0.32
-    dotOpacity.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-    let dotGroup = CAAnimationGroup()
-    dotGroup.animations = [dotScale, dotOpacity]
-    dotGroup.duration = 0.32
-    dotGroup.fillMode = .forwards
-    dotGroup.isRemovedOnCompletion = false
-    centerDot.add(dotGroup, forKey: "dotPulse")
+    let effectView = UIView(frame: hostView.bounds)
+    effectView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    effectView.backgroundColor = .clear
+    effectView.isUserInteractionEnabled = false
+    effectView.clipsToBounds = false
+    hostView.addSubview(effectView)
+    let arrival = effectView.convert(point, from: hostView)
 
     let ringRadius: CGFloat = 8.0
     let ringLayer = CAShapeLayer()
@@ -170,90 +562,182 @@ final class ChatReactionFxModule {
         ovalIn: CGRect(
           x: -ringRadius, y: -ringRadius, width: ringRadius * 2.0, height: ringRadius * 2.0)
       ).cgPath
-    ringLayer.position = point
+    ringLayer.position = arrival
     ringLayer.fillColor = UIColor.clear.cgColor
-    ringLayer.strokeColor = style.ring.cgColor
-    ringLayer.lineWidth = 2.0
-    effectLayer.addSublayer(ringLayer)
+    ringLayer.strokeColor = style.ring.withAlphaComponent(0.42).cgColor
+    ringLayer.lineWidth = 1.0
+    ringLayer.shadowColor = style.accent.withAlphaComponent(0.18).cgColor
+    ringLayer.shadowOpacity = 1
+    ringLayer.shadowRadius = 3
+    ringLayer.shadowOffset = .zero
+    effectView.layer.addSublayer(ringLayer)
 
     let ringScale = CABasicAnimation(keyPath: "transform.scale")
     ringScale.fromValue = 0.72
-    ringScale.toValue = style.ringEndScale
-    ringScale.duration = 0.44
+    ringScale.toValue = min(style.ringEndScale, 2.15)
+    ringScale.duration = 0.34
     ringScale.timingFunction = CAMediaTimingFunction(name: .easeOut)
 
     let ringOpacity = CABasicAnimation(keyPath: "opacity")
-    ringOpacity.fromValue = 1.0
+    ringOpacity.fromValue = 0.42
     ringOpacity.toValue = 0.0
-    ringOpacity.duration = 0.44
+    ringOpacity.duration = 0.34
     ringOpacity.timingFunction = CAMediaTimingFunction(name: .easeOut)
 
     let ringGroup = CAAnimationGroup()
     ringGroup.animations = [ringScale, ringOpacity]
-    ringGroup.duration = 0.44
+    ringGroup.duration = 0.34
     ringGroup.fillMode = .forwards
     ringGroup.isRemovedOnCompletion = false
     ringLayer.add(ringGroup, forKey: "ringPulse")
 
-    let count = max(4, style.particleCount)
+    let count = max(5, style.replicaCount)
     for idx in 0..<count {
-      let color = style.particleColors[idx % style.particleColors.count]
-      addParticle(
+      let glow = style.replicaGlowColors[idx % style.replicaGlowColors.count]
+      addReplica(
+        emoji: emoji,
         index: idx,
         total: count,
-        from: point,
-        color: color,
+        from: arrival,
+        glowColor: glow,
         style: style,
-        in: effectLayer
+        in: effectView
       )
     }
 
-    let emojiPop = UILabel()
-    emojiPop.text = emoji
-    emojiPop.font = UIFont.systemFont(ofSize: 24)
-    emojiPop.sizeToFit()
-    emojiPop.center = point
-    emojiPop.alpha = 0.0
-    emojiPop.transform = CGAffineTransform(scaleX: 0.56, y: 0.56)
-    hostView.addSubview(emojiPop)
 
-    UIView.animateKeyframes(
-      withDuration: 0.56,
-      delay: 0.0,
-      options: [.calculationModeCubic, .beginFromCurrentState]
-    ) {
-      UIView.addKeyframe(withRelativeStartTime: 0.0, relativeDuration: 0.28) {
-        emojiPop.alpha = 1.0
-        emojiPop.transform = CGAffineTransform(scaleX: 1.15, y: 1.15)
-      }
-      UIView.addKeyframe(withRelativeStartTime: 0.28, relativeDuration: 0.72) {
-        emojiPop.alpha = 0.0
-        emojiPop.center = CGPoint(x: point.x, y: point.y - 12.0)
-        emojiPop.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
+    let words = style.words
+    if !words.isEmpty {
+      let wordCount = min(words.count, 5)
+      let start = Int.random(in: 0..<words.count)
+      for idx in 0..<wordCount {
+        addWordParticle(
+          text: words[(start + idx) % words.count],
+          index: idx,
+          total: wordCount,
+          from: arrival,
+          color: style.replicaGlowColors[idx % style.replicaGlowColors.count],
+          style: style,
+          in: effectView
+        )
       }
     }
 
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.90) {
-      effectLayer.removeFromSuperlayer()
-      emojiPop.removeFromSuperview()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.62) {
+      effectView.removeFromSuperview()
     }
   }
 
-  private func addParticle(
+  /// Telegram's coloured shout particles: they fly wider and outlive the emoji replicas.
+  private func addWordParticle(
+    text: String,
     index: Int,
     total: Int,
     from point: CGPoint,
     color: UIColor,
-    style: ChatReactionFxStyle,
-    in effectLayer: CALayer
+    style: ChatReactionEffectProfile,
+    in effectView: UIView
   ) {
-    let particle = CALayer()
-    let size = random(3.0...6.0)
-    particle.bounds = CGRect(x: 0.0, y: 0.0, width: size, height: size)
-    particle.cornerRadius = size * 0.5
-    particle.position = point
-    particle.backgroundColor = color.withAlphaComponent(0.96).cgColor
-    effectLayer.addSublayer(particle)
+    let size = random(14.0...20.0)
+    let base = UIFont.systemFont(ofSize: size, weight: .heavy)
+    let font =
+      base.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: size) } ?? base
+    let label = UILabel()
+    label.attributedText = NSAttributedString(
+      string: text,
+      attributes: [
+        .font: font,
+        .foregroundColor: color,
+        .strokeColor: UIColor.white,
+        .strokeWidth: -3.4,
+      ])
+    label.textAlignment = .center
+    label.sizeToFit()
+    label.center = point
+    label.layer.contentsScale = UIScreen.main.scale
+    label.layer.shadowColor = UIColor.black.withAlphaComponent(0.30).cgColor
+    label.layer.shadowOpacity = 1
+    label.layer.shadowRadius = 2.5
+    label.layer.shadowOffset = CGSize(width: 0.0, height: 1.0)
+    effectView.addSubview(label)
+
+    // Fan across the upper half so words arc out of the bubble, never straight down.
+    let sweep = CGFloat.pi * 1.32
+    let angle =
+      -CGFloat.pi * 0.5 - (sweep * 0.5) + (sweep * (CGFloat(index) + 0.5) / CGFloat(max(1, total)))
+      + random(-0.10...0.10)
+    let travel = random(style.spread) * 1.9 + 12.0
+    let lift = random(style.rise) * 1.3
+    let endPoint = CGPoint(
+      x: point.x + cos(angle) * travel,
+      y: point.y + sin(angle) * travel - lift
+    )
+    let control = CGPoint(
+      x: (point.x + endPoint.x) * 0.5,
+      y: min(point.y, endPoint.y) - random(10.0...26.0)
+    )
+    let path = UIBezierPath()
+    path.move(to: point)
+    path.addQuadCurve(to: endPoint, controlPoint: control)
+
+    let duration: CFTimeInterval = 0.58
+    let move = CAKeyframeAnimation(keyPath: "position")
+    move.path = path.cgPath
+    move.calculationMode = .paced
+    move.duration = duration
+    move.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+    let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+    spin.fromValue = 0.0
+    spin.toValue = random(-0.55...0.55)
+    spin.duration = duration
+
+    let scale = CAKeyframeAnimation(keyPath: "transform.scale")
+    scale.values = [0.35, 1.14, 0.92]
+    scale.keyTimes = [0.0, 0.28, 1.0]
+    scale.duration = duration
+    scale.timingFunctions = [
+      CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .easeIn),
+    ]
+
+    let opacity = CAKeyframeAnimation(keyPath: "opacity")
+    opacity.values = [0.0, 1.0, 1.0, 0.0]
+    opacity.keyTimes = [0.0, 0.12, 0.66, 1.0]
+    opacity.duration = duration
+
+    let group = CAAnimationGroup()
+    group.animations = [move, spin, scale, opacity]
+    group.duration = duration
+    group.fillMode = .forwards
+    group.isRemovedOnCompletion = false
+    label.layer.add(group, forKey: "wordBurst")
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.02) {
+      label.removeFromSuperview()
+    }
+  }
+
+  private func addReplica(
+    emoji: String,
+    index: Int,
+    total: Int,
+    from point: CGPoint,
+    glowColor: UIColor,
+    style: ChatReactionEffectProfile,
+    in effectView: UIView
+  ) {
+    let replica = UILabel(frame: CGRect(x: 0, y: 0, width: 22, height: 22))
+    replica.text = emoji
+    replica.font = UIFont.systemFont(ofSize: random(10.0...14.0))
+    replica.textAlignment = .center
+    replica.center = point
+    replica.alpha = 1
+    replica.layer.contentsScale = UIScreen.main.scale
+    replica.layer.shadowColor = glowColor.withAlphaComponent(0.32).cgColor
+    replica.layer.shadowOpacity = 1
+    replica.layer.shadowRadius = 3
+    replica.layer.shadowOffset = .zero
+    effectView.addSubview(replica)
 
     let baseAngle = (CGFloat(index) / CGFloat(max(1, total))) * .pi * 2.0
     let jitter = random(-0.16...0.16)
@@ -268,19 +752,18 @@ final class ChatReactionFxModule {
     let move = CABasicAnimation(keyPath: "position")
     move.fromValue = point
     move.toValue = endPoint
-    move.duration = 0.48
+    move.duration = 0.40
     move.timingFunction = CAMediaTimingFunction(name: .easeOut)
 
-    let opacity = CABasicAnimation(keyPath: "opacity")
-    opacity.fromValue = 1.0
-    opacity.toValue = 0.0
-    opacity.duration = 0.48
-    opacity.timingFunction = CAMediaTimingFunction(name: .easeOut)
+    let opacity = CAKeyframeAnimation(keyPath: "opacity")
+    opacity.values = [1.0, 1.0, 0.0]
+    opacity.keyTimes = [0.0, 0.62, 1.0]
+    opacity.duration = 0.40
 
     let scale = CAKeyframeAnimation(keyPath: "transform.scale")
-    scale.values = [0.4, 1.0, 0.2]
-    scale.keyTimes = [0.0, 0.35, 1.0]
-    scale.duration = 0.48
+    scale.values = [0.55, 1.0, 0.78]
+    scale.keyTimes = [0.0, 0.30, 1.0]
+    scale.duration = 0.40
     scale.timingFunctions = [
       CAMediaTimingFunction(name: .easeOut),
       CAMediaTimingFunction(name: .easeIn),
@@ -288,126 +771,36 @@ final class ChatReactionFxModule {
 
     let group = CAAnimationGroup()
     group.animations = [move, opacity, scale]
-    group.duration = 0.48
+    group.duration = 0.40
     group.fillMode = .forwards
     group.isRemovedOnCompletion = false
-    particle.add(group, forKey: "burst")
+    replica.layer.add(group, forKey: "replicaBurst")
 
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.52) {
-      particle.removeFromSuperlayer()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+      replica.removeFromSuperview()
     }
   }
 
-  private func style(for emoji: String, tintOverride: UIColor?) -> ChatReactionFxStyle {
-    let fallback = tintOverride ?? UIColor(red: 0.25, green: 0.67, blue: 0.99, alpha: 1.0)
-    switch emoji {
-    case "❤️":
-      return ChatReactionFxStyle(
-        accent: UIColor(red: 1.00, green: 0.30, blue: 0.47, alpha: 1.0),
-        ring: UIColor(red: 1.00, green: 0.56, blue: 0.69, alpha: 1.0),
-        particleColors: [
-          UIColor(red: 1.00, green: 0.25, blue: 0.43, alpha: 1.0),
-          UIColor(red: 1.00, green: 0.56, blue: 0.69, alpha: 1.0),
-          UIColor(red: 1.00, green: 0.74, blue: 0.82, alpha: 1.0),
-        ],
-        particleCount: 10,
-        spread: 14.0...32.0,
-        rise: 6.0...18.0,
-        ringEndScale: 2.4,
-        bubblePulseScale: 1.022,
-        flightRotation: -0.10
-      )
-    case "👍":
-      return ChatReactionFxStyle(
-        accent: UIColor(red: 0.22, green: 0.63, blue: 0.99, alpha: 1.0),
-        ring: UIColor(red: 0.53, green: 0.77, blue: 1.00, alpha: 1.0),
-        particleColors: [
-          UIColor(red: 0.27, green: 0.66, blue: 1.00, alpha: 1.0),
-          UIColor(red: 0.62, green: 0.85, blue: 1.00, alpha: 1.0),
-        ],
-        particleCount: 8,
-        spread: 14.0...30.0,
-        rise: 2.0...10.0,
-        ringEndScale: 2.0,
-        bubblePulseScale: 1.019,
-        flightRotation: 0.08
-      )
-    case "🔥":
-      return ChatReactionFxStyle(
-        accent: UIColor(red: 1.00, green: 0.49, blue: 0.16, alpha: 1.0),
-        ring: UIColor(red: 1.00, green: 0.68, blue: 0.29, alpha: 1.0),
-        particleColors: [
-          UIColor(red: 1.00, green: 0.42, blue: 0.12, alpha: 1.0),
-          UIColor(red: 1.00, green: 0.70, blue: 0.24, alpha: 1.0),
-          UIColor(red: 1.00, green: 0.86, blue: 0.42, alpha: 1.0),
-        ],
-        particleCount: 11,
-        spread: 12.0...28.0,
-        rise: 12.0...30.0,
-        ringEndScale: 2.2,
-        bubblePulseScale: 1.025,
-        flightRotation: -0.14
-      )
-    case "🎉":
-      return ChatReactionFxStyle(
-        accent: UIColor(red: 0.95, green: 0.29, blue: 0.53, alpha: 1.0),
-        ring: UIColor(red: 0.98, green: 0.69, blue: 0.25, alpha: 1.0),
-        particleColors: [
-          UIColor(red: 1.00, green: 0.27, blue: 0.51, alpha: 1.0),
-          UIColor(red: 1.00, green: 0.81, blue: 0.20, alpha: 1.0),
-          UIColor(red: 0.31, green: 0.83, blue: 0.95, alpha: 1.0),
-          UIColor(red: 0.56, green: 0.78, blue: 0.30, alpha: 1.0),
-        ],
-        particleCount: 14,
-        spread: 18.0...36.0,
-        rise: 4.0...14.0,
-        ringEndScale: 2.5,
-        bubblePulseScale: 1.026,
-        flightRotation: 0.11
-      )
-    case "👎":
-      return ChatReactionFxStyle(
-        accent: UIColor(red: 0.58, green: 0.64, blue: 0.78, alpha: 1.0),
-        ring: UIColor(red: 0.72, green: 0.77, blue: 0.88, alpha: 1.0),
-        particleColors: [
-          UIColor(red: 0.54, green: 0.59, blue: 0.71, alpha: 1.0),
-          UIColor(red: 0.72, green: 0.77, blue: 0.88, alpha: 1.0),
-        ],
-        particleCount: 7,
-        spread: 12.0...25.0,
-        rise: 1.0...8.0,
-        ringEndScale: 1.9,
-        bubblePulseScale: 1.017,
-        flightRotation: -0.07
-      )
-    case "💩":
-      return ChatReactionFxStyle(
-        accent: UIColor(red: 0.62, green: 0.45, blue: 0.30, alpha: 1.0),
-        ring: UIColor(red: 0.74, green: 0.59, blue: 0.42, alpha: 1.0),
-        particleColors: [
-          UIColor(red: 0.56, green: 0.40, blue: 0.27, alpha: 1.0),
-          UIColor(red: 0.72, green: 0.55, blue: 0.37, alpha: 1.0),
-        ],
-        particleCount: 6,
-        spread: 10.0...22.0,
-        rise: 2.0...9.0,
-        ringEndScale: 1.8,
-        bubblePulseScale: 1.015,
-        flightRotation: 0.06
-      )
-    default:
-      return ChatReactionFxStyle(
-        accent: fallback,
-        ring: fallback.withAlphaComponent(0.74),
-        particleColors: [fallback, fallback.withAlphaComponent(0.76)],
-        particleCount: 8,
-        spread: 13.0...29.0,
-        rise: 3.0...12.0,
-        ringEndScale: 2.0,
-        bubblePulseScale: 1.018,
-        flightRotation: 0.05
-      )
-    }
+  /// Every emoji resolves through its catalog category, so nothing falls back to a stub.
+  private func profile(for emoji: String, tintOverride: UIColor?) -> ChatReactionEffectProfile {
+    let base = ChatReactionCatalog.category(for: emoji).effect
+    guard let tint = tintOverride else { return base }
+    return ChatReactionEffectProfile(
+      accent: tint,
+      ring: tint.withAlphaComponent(0.74),
+      replicaGlowColors: [tint, tint.withAlphaComponent(0.76)] + base.replicaGlowColors,
+      replicaCount: base.replicaCount,
+      spread: base.spread,
+      rise: base.rise,
+      ringEndScale: base.ringEndScale,
+      bubblePulseScale: base.bubblePulseScale,
+      flightRotation: base.flightRotation,
+      words: base.words
+    )
+  }
+
+  private static func normalizedEmoji(_ emoji: String) -> String {
+    ChatReactionKey.normalized(emoji)
   }
 
   private func random(_ range: ClosedRange<CGFloat>) -> CGFloat {
