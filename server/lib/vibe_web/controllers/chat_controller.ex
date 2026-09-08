@@ -9,14 +9,11 @@ defmodule VibeWeb.ChatController do
   def create(conn, %{"friendId" => friend_id}) do
     my_id = conn.assigns.current_user.id
 
-    # Validate friend exists to avoid foreign key errors.
     case Accounts.get_user(friend_id) do
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "User not found"})
 
       %{is_agent: true} ->
-        # Published standalone agents OR the reserved computer-bridge workers
-        # (Claude/Codex — agent users with no Agent record) can be DM'd.
         if Agents.published_agent_user?(friend_id) or
              LocalAgentWorker.resolve_by_agent_user_id(friend_id) != nil do
           do_create_chat(conn, my_id, friend_id)
@@ -346,8 +343,6 @@ defmodule VibeWeb.ChatController do
 
     case Chat.clear_messages(chat_id, user_id) do
       {:ok, result} ->
-        # Only this user's devices: clearing is per-participant, and telling the peer
-        # would leak that their history was dropped.
         Chat.broadcast_user_chat_event(
           chat_id,
           "chat-cleared",

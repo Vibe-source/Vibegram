@@ -1,44 +1,6 @@
 defmodule Vibe.GroupKeys do
   @moduledoc """
   Relay for group epoch keys — the distribution half of `vibe_core::group`.
-
-  Covers what MLS cannot: **channels**, where a new subscriber must be able to
-  read the backlog (MLS forward secrecy makes that impossible by design), and
-  **groups past the MLS member cap**, where the tree operation and Welcome
-  fan-out for a join stop being acceptable on a phone.
-
-  The server never sees an epoch key. `sealed_key` arrives already encrypted to
-  the recipient by the sender's device; this module checks who may post, who may
-  read, and how much — never what.
-
-  ## The attack this module is mostly about
-
-  An epoch key is not like a Welcome. A Welcome is useless to anyone but its
-  recipient and cannot be forged without the group's secrets. An epoch key blob
-  is just "here is a key, install it" — so if *anyone* could post one, an
-  attacker could:
-
-  * post a high epoch with a key of their choosing, which the recipient's
-    keyring accepts (installs are monotone, and a higher epoch looks like a
-    legitimate rotation), after which the victim seals outgoing messages under a
-    key the attacker knows; and
-  * make real history unreadable, because the monotonicity rule that stops
-    rollbacks also stops the *genuine* key for that epoch from being installed
-    afterwards.
-
-  So authority is checked here, on every post, against the same participant
-  roles the chat itself uses:
-
-  * **channel** — `owner` or `admin` only. Subscribers receive keys, never issue
-    them.
-  * **group** — any non-deleted participant, because any member may add another
-    and therefore may need to open an epoch.
-  * **anything else** — refused. A DM has no epochs; it is MLS.
-
-  This is defence in depth, not the whole defence: a client must still refuse a
-  key from a sender it does not consider the group's key authority. But the
-  check is cheap and it makes the attack require a compromised admin rather than
-  any account at all.
   """
 
   import Ecto.Query, warn: false
@@ -47,33 +9,17 @@ defmodule Vibe.GroupKeys do
   alias Vibe.Repo
   alias Vibe.Schemas.GroupEpochKey
 
-  # An epoch key is 32 bytes of AES-256 sealed to one recipient. Even an RSA-4096
-  # wrap plus envelope framing lands far under this; the ceiling exists so a
-  # hostile client cannot use the relay as free storage.
+  # An epoch key is 32 bytes of AES-256 sealed to one recipient.
   @max_sealed_key_bytes 8 * 1024
 
   # How many undelivered keys one sender may have outstanding to one recipient.
-  # A member legitimately needs one per epoch they are entitled to, and history
-  # backfill can mean several at once — but not hundreds. Past this the answer is
-  # to stop accepting rather than accumulate.
   @max_pending_per_sender 128
 
-  # Largest batch one call may post. Adding a member to a large channel means one
-  # row per epoch being granted, so batching is the normal path, not an
-  # optimisation.
+  # Largest batch one call may post.
   @max_batch 200
 
   @doc """
   Store epoch keys posted by `sender_user_id`.
-
-  `sender_user_id` must be the *authenticated* caller's id — a controller passes
-  `conn.assigns.current_user.id` and never a body field. There is deliberately no
-  "post on behalf of".
-
-  Returns `{:ok, count}`. Rows that collide with a key the recipient already has
-  for that `(chat, epoch)` are **skipped, not failed**: a retry after a partial
-  delivery is the common case, and making it an error would turn an ordinary
-  retry into a stuck client.
   """
   def post_epoch_keys(sender_user_id, params) when is_binary(sender_user_id) and is_map(params) do
     chat_id = params["chatId"] || params["chat_id"]
@@ -86,9 +32,6 @@ defmodule Vibe.GroupKeys do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
       rows = Enum.map(rows, &Map.merge(&1, %{inserted_at: now, updated_at: now}))
 
-      # `on_conflict: :nothing` is what makes a retry idempotent. Combined with
-      # the unique index it is also what stops a second, different key for an
-      # epoch a member already holds — the first one posted wins, permanently.
       {count, _} =
         Repo.insert_all(GroupEpochKey, rows,
           on_conflict: :nothing,
@@ -103,10 +46,6 @@ defmodule Vibe.GroupKeys do
 
   @doc """
   Every epoch key still waiting for `user_id`.
-
-  Scoped to `user_id` with no widening parameter, deliberately: an epoch key is
-  read access to a group's history, so serving one to the wrong user hands them
-  the conversation.
   """
   def pending_epoch_keys(user_id) when is_binary(user_id) do
     GroupEpochKey
@@ -119,11 +58,6 @@ defmodule Vibe.GroupKeys do
 
   @doc """
   Mark one epoch key installed.
-
-  Scoped by recipient as well as id, so one user cannot ack — and thereby hide —
-  another user's pending key. A row that does not belong to `user_id` is reported
-  as `:not_found` rather than `:forbidden`, so the caller learns nothing about
-  whether the id exists.
   """
   def ack_epoch_key(user_id, id) when is_binary(user_id) and is_binary(id) do
     query =
@@ -138,18 +72,12 @@ defmodule Vibe.GroupKeys do
       _ -> {:error, :not_found}
     end
   rescue
-    # A malformed uuid makes Postgres raise rather than return no rows. From the
-    # caller's point of view that is an ordinary "no such row".
     Ecto.Query.CastError -> {:error, :not_found}
   end
 
   def ack_epoch_key(_user_id, _id), do: {:error, :not_found}
 
-  # ── authority ─────────────────────────────────────────────────────────────
 
-  # Who may issue keys for this chat. See the module doc: this is the check that
-  # stops any account from installing a key of its choosing into a victim's
-  # keyring.
   defp authorize_sender(chat_id, sender_user_id) do
     case Vibe.Chat.get_room_type(chat_id) do
       "channel" ->
@@ -175,14 +103,11 @@ defmodule Vibe.GroupKeys do
         end
 
       other ->
-        # A DM is MLS and has no epochs; an unknown/missing room is not a chat
-        # this relay serves. Both are refused rather than defaulted.
         Logger.warning("[GroupKeys] refused epoch-key post for room_type=#{inspect(other)}")
         {:error, :not_allowed}
     end
   end
 
-  # ── validation ────────────────────────────────────────────────────────────
 
   defp validate_batch(entries) when is_list(entries) do
     cond do

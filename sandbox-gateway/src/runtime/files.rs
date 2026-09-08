@@ -1,4 +1,3 @@
-//! File read/write/tree via Docker's tar-based archive endpoints (bollard has no raw-byte API).
 use std::io::{Cursor, Read};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -20,7 +19,7 @@ use super::now_unix;
 
 const ROOTS: [&str; 2] = ["/home/agent", "/tmp"];
 
-/// Splits a validated path into (mount root, entry name relative to it) for the tar upload.
+/// Splits a validated path into (mount root.
 fn split_root_and_relative(path: &str) -> Result<(&'static str, String), GatewayError> {
     for root in ROOTS {
         if let Some(rel) = path.strip_prefix(&format!("{root}/")) {
@@ -40,6 +39,29 @@ fn parent_dir(path: &str) -> String {
     }
 }
 
+const MAX_TAR_BYTES: usize = 64 * 1024 * 1024;
+
+async fn collect_capped<S, B>(mut stream: S, max_bytes: usize) -> Result<Vec<u8>, GatewayError>
+where
+    S: futures_util::Stream<Item = Result<B, GatewayError>> + Unpin,
+    B: AsRef<[u8]>,
+{
+    let mut buf = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        let new_len = buf.len().checked_add(chunk.as_ref().len()).ok_or_else(|| {
+            GatewayError::PayloadTooLarge(format!("container archive exceeds {max_bytes} bytes"))
+        })?;
+        if new_len > max_bytes {
+            return Err(GatewayError::PayloadTooLarge(format!(
+                "container archive exceeds {max_bytes} bytes"
+            )));
+        }
+        buf.extend_from_slice(chunk.as_ref());
+    }
+    Ok(buf)
+}
+
 async fn download_tar(
     docker: &Docker,
     container_id: &str,
@@ -48,12 +70,10 @@ async fn download_tar(
     let options = DownloadFromContainerOptionsBuilder::new()
         .path(path)
         .build();
-    let mut stream = docker.download_from_container(container_id, Some(options));
-    let mut buf = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        buf.extend_from_slice(&chunk.map_err(from_docker_error)?);
-    }
-    Ok(buf)
+    let stream = docker
+        .download_from_container(container_id, Some(options))
+        .map(|chunk| chunk.map_err(from_docker_error));
+    collect_capped(stream, MAX_TAR_BYTES).await
 }
 
 pub async fn write_file(
@@ -157,8 +177,6 @@ pub async fn tree(
             .map_err(|e| GatewayError::Internal(anyhow::anyhow!(e)))?
             .to_string_lossy()
             .to_string();
-        // tar names a directory with a trailing slash, which counted as an extra level and
-        // hid every subdirectory at the depth boundary.
         let entry_name = entry_name.trim_end_matches('/');
         let entry_depth = entry_name.matches('/').count() as u32;
         if entry_depth > depth {
@@ -216,5 +234,26 @@ mod tests {
     #[test]
     fn parent_dir_of_top_level_root() {
         assert_eq!(parent_dir("/tmp"), "/");
+    }
+
+    #[tokio::test]
+    async fn collect_capped_accepts_small_stream() {
+        let stream = futures_util::stream::iter(vec![
+            Ok::<_, GatewayError>(vec![1_u8, 2]),
+            Ok(vec![3_u8]),
+        ]);
+        assert_eq!(collect_capped(stream, 3).await.unwrap(), vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn collect_capped_rejects_stream_over_limit() {
+        let stream = futures_util::stream::iter(vec![
+            Ok::<_, GatewayError>(vec![1_u8, 2]),
+            Ok(vec![3_u8, 4]),
+        ]);
+        assert!(matches!(
+            collect_capped(stream, 3).await,
+            Err(GatewayError::PayloadTooLarge(_))
+        ));
     }
 }

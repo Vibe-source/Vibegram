@@ -1,18 +1,6 @@
 defmodule Vibe.AI.ImageEditor do
   @moduledoc """
   AI image editing.
-
-  Primary path is OpenAI `gpt-image-2` via `POST /v1/images/edits`, which is the
-  only provider we use that accepts a real **mask** — that is what makes
-  "select an area, edit only that" a supported operation rather than a hint.
-  Mask semantics are OpenAI's: a PNG with an alpha channel, the same dimensions
-  as the source, where **transparent pixels mark the region to replace**.
-
-  Note the model treats the mask as guidance and may not honour its exact shape,
-  so callers should not promise pixel-exact containment to the user.
-
-  If `OPENAI_API_KEY` is absent we fall back to the previous Gemini
-  (`gemini-3-pro-image-preview`) whole-image path, which has no mask support.
   """
 
   require Logger
@@ -26,23 +14,13 @@ defmodule Vibe.AI.ImageEditor do
 
   @gemini_api "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent"
 
-  # Provider hard limit is 50MB per image; stay under it so we fail fast and
-  # locally rather than burning an upload to get a 400 back.
+  # Provider hard limit is 50MB per image.
   @max_image_bytes 40_000_000
 
   @type source :: String.t() | {:bytes, binary(), String.t()}
 
   @doc """
   Edits an image from a prompt.
-
-  `source` is either a URL / data-URL, or `{:bytes, binary, mime_type}`.
-
-  Options:
-    * `:mask` — `{:bytes, binary, mime_type}`, the alpha-channel PNG region mask
-    * `:size` — e.g. `"1024x1024"`; defaults to `"auto"`
-    * `:quality` — `"low" | "medium" | "high" | "auto"`; defaults to `"high"`
-
-  Returns the edited image as raw bytes — nothing is written to server storage.
   """
   @spec edit_image(source, String.t(), keyword()) ::
           {:ok, %{bytes: binary(), mime_type: String.t()}} | {:error, String.t()}
@@ -63,7 +41,6 @@ defmodule Vibe.AI.ImageEditor do
 
   def edit_image(_source, _prompt, _opts), do: {:error, "prompt cannot be empty"}
 
-  # ── OpenAI ────────────────────────────────────────────────────────────────
 
   defp edit_with_openai(api_key, bytes, mime, prompt, opts) do
     base_url = System.get_env("OPENAI_BASE_URL") || @openai_base
@@ -100,7 +77,6 @@ defmodule Vibe.AI.ImageEditor do
 
   defp handle_openai_response({:ok, %{status: status, body: body}}) when status in 200..299 do
     case Jason.decode(body) do
-      # gpt-image models always return b64_json; they do not support url delivery.
       {:ok, %{"data" => [%{"b64_json" => b64} | _]}} ->
         decoded_image(b64, "image/png")
 
@@ -123,7 +99,6 @@ defmodule Vibe.AI.ImageEditor do
     {:error, "Image model request failed"}
   end
 
-  # ── Gemini fallback (no mask) ─────────────────────────────────────────────
 
   defp edit_with_gemini(source, prompt) do
     case System.get_env("GEMINI_API_KEY") do
@@ -188,7 +163,6 @@ defmodule Vibe.AI.ImageEditor do
     end
   end
 
-  # ── Source reading ────────────────────────────────────────────────────────
 
   defp read_source({:bytes, bytes, mime}) when is_binary(bytes) do
     if byte_size(bytes) > @max_image_bytes do
@@ -201,7 +175,6 @@ defmodule Vibe.AI.ImageEditor do
   defp read_source("data:" <> _ = data_url), do: decode_data_url(data_url)
 
   defp read_source("http" <> _ = url) do
-    # SSRF gate — this URL can be attacker-influenced.
     with {:ok, _uri} <- SafeURL.validate(url),
          {:ok, data_url} <- Vision.fetch_and_encode(url) do
       decode_data_url(data_url)
@@ -219,12 +192,7 @@ defmodule Vibe.AI.ImageEditor do
     end
   end
 
-  # ── Output ────────────────────────────────────────────────────────────────
 
-  # Deliberately NOT persisted server-side. An earlier version wrote results to
-  # an unauthenticated /uploads path, which published the user's edited media to
-  # anyone holding the URL. Handing the bytes straight back means the result
-  # only ever comes to rest after the client has sealed it like any other media.
   defp decoded_image(base64_data, mime_type) when is_binary(base64_data) do
     case Base.decode64(base64_data, ignore: :whitespace) do
       {:ok, binary} -> {:ok, %{bytes: binary, mime_type: mime_type || "image/png"}}
@@ -234,7 +202,6 @@ defmodule Vibe.AI.ImageEditor do
 
   defp decoded_image(_, _), do: {:error, "Image model returned no data"}
 
-  # ── Helpers ───────────────────────────────────────────────────────────────
 
   defp maybe_field(parts, _key, nil), do: parts
   defp maybe_field(parts, _key, ""), do: parts

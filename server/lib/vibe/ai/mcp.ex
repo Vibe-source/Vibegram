@@ -1,19 +1,6 @@
 defmodule Vibe.AI.MCP do
   @moduledoc """
   Entry point for Model Context Protocol support.
-
-  An agent's MCP servers are declared per integration (see `MCP.Registry`), so
-  nothing here is specific to any one product: point an agent at any MCP
-  server and its tools appear in that agent's tool list with real JSON
-  Schemas, in every surface the agent runs in — DM, group, channel, or voice.
-
-  Two things make this more than a generic RPC bridge:
-
-    * **Discovery.** Tools arrive with schemas, so the model fills arguments
-      instead of guessing at a prose description of an action name.
-    * **Files.** A tool that returns bytes gets those bytes delivered to the
-      user as an attachment, while the model sees one line of text. That is
-      what makes "send me the invoice for customer X" possible at all.
   """
 
   require Logger
@@ -36,9 +23,7 @@ defmodule Vibe.AI.MCP do
   def gate_tool_id, do: @gate_tool_id
 
   @doc """
-  Discovered MCP tools shaped like the agent's built-in tool maps
-  (`%{name:, description:, input_schema:}`) so they can be concatenated
-  straight into the list handed to the provider.
+  Discovered MCP tools shaped like the agent's built-in tool maps (`%{name:.
   """
   def tool_specs(%AgentSchema{} = agent) do
     agent
@@ -56,19 +41,6 @@ defmodule Vibe.AI.MCP do
 
   @doc """
   Runs one namespaced MCP tool on behalf of an agent, in a specific chat.
-
-  Authorization is **chat-scoped, not requester-scoped**. Owner-only would be
-  wrong in both directions: it would break the whole point of adding your
-  agent to a group (every teammate's request would be refused), and it would
-  wrongly imply that identity alone is the grant. What actually authorizes an
-  MCP call is that the owner enabled `call_mcp_tool` on this agent *and*
-  attached it to this chat — `Chat.effective_agent_policy/3` is the single
-  place that decides both.
-
-  The check is repeated here even though the tool list was already scoped
-  when it was built: the list is a hint to the model, and a model can be
-  talked into calling a name it should not have. The gate that matters is the
-  one at execution.
   """
   def invoke(tool_name, arguments, agent_id, requester_user_id, chat_id \\ nil) do
     with {:ok, agent} <- authorize(agent_id, requester_user_id, chat_id),
@@ -77,8 +49,6 @@ defmodule Vibe.AI.MCP do
       normalized =
         Content.normalize(raw, owner_id: agent.owner_user_id, server_name: tool.server.name)
 
-      # These calls move money and change shipment state on someone's live
-      # system, so who asked and where must be reconstructable afterwards.
       Logger.info(
         "[MCP] call server=#{tool.server.name} tool=#{tool.remote_name} " <>
           "agent=#{agent.id} requester=#{redact_id(requester_user_id)} chat=#{redact_id(chat_id)} " <>
@@ -111,10 +81,6 @@ defmodule Vibe.AI.MCP do
 
   @doc """
   Rebuilds delivery outputs from an MCP tool result.
-
-  The agent loop serialises tool results to JSON for the model, so outputs
-  cannot ride along as atoms in a private key — they are reconstructed from
-  the same `files` list the model sees.
   """
   def outputs_from_result(result) when is_map(result) do
     result
@@ -157,12 +123,6 @@ defmodule Vibe.AI.MCP do
     }
   end
 
-  # Two accepted shapes:
-  #
-  #   * a chat is given — the chat's policy decides, so group and channel
-  #     members act with exactly the authority the owner attached;
-  #   * no chat (scheduled runs, event-triggered runs) — fall back to the
-  #     owner, because there is no room whose policy could grant anything.
   defp authorize(agent_id, requester_user_id, chat_id)
        when is_binary(agent_id) and is_binary(chat_id) and is_binary(requester_user_id) do
     with %AgentSchema{} = agent <- Agents.get_agent(agent_id, nil),
@@ -194,17 +154,6 @@ defmodule Vibe.AI.MCP do
 
   defp authorize(_agent_id, _requester_user_id, _chat_id), do: {:error, :owner_lookup_required}
 
-  # `Chat.channel_agent_policy/2` asks whether the *agent* is in the room; for
-  # DMs and groups it never asks about the requester, because every existing
-  # caller arrives through the chat socket, which already proved membership.
-  #
-  # That assumption is fine until the tool being gated can move money on a
-  # live system. Anyone who learned a chat id could otherwise drive someone
-  # else's agent by passing it here. So membership is proven again, at the
-  # point where the authority is actually spent.
-  #
-  # The owner is allowed through unconditionally: scheduled and event-driven
-  # runs act as the owner in rooms they own without sitting in the roster.
   defp requester_in_chat?(_chat_id, requester_user_id, %AgentSchema{owner_user_id: owner})
        when requester_user_id == owner,
        do: true
@@ -217,9 +166,6 @@ defmodule Vibe.AI.MCP do
   defp redact_id(value) when is_binary(value), do: String.slice(value, 0, 8)
   defp redact_id(_value), do: "-"
 
-  # The server name is part of the description because two servers can expose
-  # tools with the same purpose and the model needs to tell them apart when
-  # the namespaced name alone is cryptic.
   defp describe(%{description: description, server: server}) do
     base = description || "MCP tool"
     "#{base} (via #{server.name})"

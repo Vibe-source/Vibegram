@@ -9,7 +9,6 @@ defmodule Vibe.RelayRegistryTest do
     other_id = "other-#{System.unique_integer([:positive])}"
 
     on_exit(fn ->
-      # Best-effort cleanup for shared ETS table used by the running app.
       _ = RelayRegistry.unregister_relay(relay_id)
     end)
 
@@ -92,7 +91,6 @@ defmodule Vibe.RelayRegistryTest do
     assert {:ok, relay} = RelayRegistry.get_relay(relay_id)
     assert relay.current_peers == 2
 
-    # Ownership cannot be reassigned via updates.
     assert :ok =
              RelayRegistry.update_relay(relay_id, %{user_id: "attacker"}, as_user: owner_id)
 

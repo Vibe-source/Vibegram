@@ -13,8 +13,6 @@ defmodule Vibe.ChatAgentSenderTest do
 
     alice = insert_user("alice")
     bob = insert_user("bob")
-    # The bridge worker boots this exact id at application start (outside any test
-    # transaction), so fetch it instead of inserting — a fixed-id insert collides.
     claude =
       Repo.get(User, @claude_agent_user_id) ||
         insert_user("claude", %{id: @claude_agent_user_id, is_agent: true})
@@ -35,8 +33,7 @@ defmodule Vibe.ChatAgentSenderTest do
              )
   end
 
-  # Regression test for the impersonation hole: a plain participant should not be able
-  # to post as a bridge agent that has no actual role (no participant row) in this chat.
+  # Regression test for the impersonation hole:
   test "a user cannot post as a bridge agent that has no role in this chat", %{
     alice: alice,
     bob: bob

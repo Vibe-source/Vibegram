@@ -65,7 +65,6 @@ defmodule VibeWeb.ChannelThrottle do
     end
   end
 
-  # Drops keys whose newest stamp is older than every window; sampled so it stays cheap.
   defp maybe_sweep(now) do
     if :rand.uniform(200) == 1 do
       cutoff = now - @sweep_after_ms

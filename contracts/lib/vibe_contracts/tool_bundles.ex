@@ -10,8 +10,7 @@ defmodule VibeContracts.ToolBundles do
   @research ~w(search_google read_url)
   @team ~w(handoff_to_agent)
 
-  # A computer is a machine with a browser on it: the sandbox image ships Chromium, and an
-  # agent that can run shell but is told it has no browser is the bug this fixes.
+  # A computer is a machine with a browser on it:
   @bundles %{
     "computer" => @computer ++ @browser,
     "browser" => @browser,
@@ -19,7 +18,7 @@ defmodule VibeContracts.ToolBundles do
     "team" => @team
   }
 
-  # Coarse ids the agent-config UI has stored historically; each is an alias for its bundle.
+  # Coarse ids the agent-config UI has stored historically.
   @aliases %{"computer_run" => "computer", "browser_open" => "browser"}
 
   def bundles, do: @bundles

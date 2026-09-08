@@ -152,6 +152,10 @@ defmodule VibeWeb.AgentsController do
     if Vibe.Admins.can?(viewer, "agents.read") do
       Vibe.AI.LocalAgentWorker.workers()
       |> Map.values()
+      |> Enum.filter(fn worker ->
+        Vibe.AI.LocalAgentWorker.enabled?() and
+          Vibe.AI.LocalAgentWorker.dispatch_allowed?(worker, viewer.id)
+      end)
       |> Enum.sort_by(&Map.get(&1, :handle))
       |> Enum.map(&team_item/1)
     else
@@ -163,6 +167,8 @@ defmodule VibeWeb.AgentsController do
     %{
       id: worker[:agent_user_id],
       userId: worker[:agent_user_id],
+      agentUserId: worker[:agent_user_id],
+      isTeamWorker: Vibe.AI.LocalAgentWorker.server_runtime?(worker),
       username: worker[:username],
       publicLink: nil,
       displayName: worker[:name] || worker[:label],

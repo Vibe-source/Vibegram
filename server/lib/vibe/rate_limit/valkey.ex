@@ -1,8 +1,6 @@
 defmodule Vibe.RateLimit.Valkey do
   @moduledoc """
   Fixed-window rate limiting via Redix (INCR + PEXPIRE on a window-slot key).
-  Fails open to `Vibe.RateLimit.ETS` on any Redix error or if `Vibe.Redix`
-  isn't running, so a Valkey outage never blocks traffic; logs once a minute.
   """
   @behaviour Vibe.RateLimit.Backend
   require Logger

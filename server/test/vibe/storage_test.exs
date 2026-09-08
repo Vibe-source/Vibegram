@@ -1,15 +1,6 @@
 defmodule Vibe.StorageTest do
   @moduledoc """
-  `Vibe.Storage.backend/0` decides where every upload in the app lands, and
-  `rewrite_public_url/1` decides which host every stored media URL is served
-  from. Both are now driven by environment rather than an explicit flag, so
-  these tests exist to pin the two ways that can go wrong:
-
-    * rewriting a URL before the backend is even reachable, and
-    * rewriting a URL onto a host the object does not live on, which turns
-      working media into 404s the moment the backend flips.
-
-  Nothing here makes a network call or needs real credentials.
+  `Vibe.Storage.backend/0` decides where every upload in the app lands.
   """
 
   use ExUnit.Case, async: false
@@ -42,7 +33,6 @@ defmodule Vibe.StorageTest do
 
   describe "backend/0" do
     test "autodetects r2 with nothing configured" do
-      # Supabase is gone from the VPS, so autodetect has no second backend to pick.
       assert Storage.backend() == :r2
     end
 
@@ -54,9 +44,6 @@ defmodule Vibe.StorageTest do
     test "an explicit config wins in both directions" do
       set_full_r2_env()
 
-      # The escape hatch has to be able to force Supabase *back on* even with
-      # a complete R2 environment — otherwise there is no way to roll back a
-      # bad cutover without deleting credentials.
       Application.put_env(:vibe, :storage_backend, :supabase)
       assert Storage.backend() == :supabase
 
@@ -85,7 +72,6 @@ defmodule Vibe.StorageTest do
       set_full_r2_env()
       System.delete_env("R2_PUBLIC_BASE_URL")
 
-      # Uploads work without a CDN in front; only URL rewriting degrades.
       assert Storage.backend() == :r2
     end
   end
@@ -97,17 +83,19 @@ defmodule Vibe.StorageTest do
       supabase_url =
         "https://project.supabase.co/storage/v1/object/public/media/abc.jpg"
 
-      # The object is still in Supabase. Rewriting it onto the R2 host would
-      # 404 every piece of existing media the instant the backend flipped.
       assert Storage.rewrite_public_url(supabase_url) == supabase_url
     end
 
-    test "an r2 object URL is rewritten onto the public base" do
+    test "an r2 object URL always uses the durable API relay" do
       set_full_r2_env()
 
       r2_url = "https://acct.r2.cloudflarestorage.com/vibe-media/abc.jpg"
 
-      assert Storage.rewrite_public_url(r2_url) == "https://cdn.example.com/abc.jpg"
+      assert Storage.rewrite_public_url(r2_url) ==
+               "http://localhost:4002/api/media/o/abc.jpg"
+
+      assert Storage.rewrite_public_url("https://cdn.example.com/abc.jpg?download") ==
+               "http://localhost:4002/api/media/o/abc.jpg"
     end
 
     test "an unrelated URL is left alone" do

@@ -42,18 +42,11 @@ defmodule Vibe.MixProject do
       {:phoenix_live_view, "~> 0.19.0"},
       {:phoenix_live_reload, "~> 1.4", only: :dev},
       {:hackney, "~> 1.9"},
-      # For streaming HTTP (AI APIs)
       {:finch, "~> 0.18"},
-      # AWS SigV4 request signing for Cloudflare R2 (S3-compatible). We only use
-      # ExAws for its config/signing helpers (ExAws.S3.presigned_url) — actual
-      # HTTP requests still go through Finch, matching the rest of this codebase.
       {:ex_aws, "~> 2.5"},
       {:ex_aws_s3, "~> 2.5"},
-      # Shared contracts with the isolated agent runtime (docs/agent-platform-v1.md).
       {:vibe_contracts, path: "../contracts"},
-      # Optional Valkey-backed rate limits / caches when RATE_LIMIT_BACKEND=valkey.
       {:redix, "~> 1.5"},
-      # Optional BEAM clustering for a second node (CLUSTER_STRATEGY=gossip|dns).
       {:libcluster, "~> 3.4"},
       {:telemetry_metrics_prometheus_core, "~> 1.2"}
     ]

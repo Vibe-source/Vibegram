@@ -12,7 +12,7 @@ defmodule VibeContracts.MixProject do
   end
 
   def application do
-    [extra_applications: [:logger, :crypto]]
+    [extra_applications: [:logger, :crypto], mod: {VibeContracts.Application, []}]
   end
 
   defp deps do

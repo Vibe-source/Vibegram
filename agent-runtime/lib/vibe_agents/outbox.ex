@@ -46,15 +46,23 @@ defmodule VibeAgents.Outbox do
 
   defp schedule_tick, do: Process.send_after(self(), :tick, @tick_ms)
 
-  # Off in test: the sandboxed Repo has no owner for a background poller.
   defp enabled?, do: Application.get_env(:vibe_agents, :background_jobs, true)
 
+  # A run with a deferred row must not ship its later rows first: core appends
+  # text deltas in arrival order and never resequences.
   defp flush do
     now = DateTime.utc_now()
+
+    blocked =
+      OutboxEvent
+      |> where([o], is_nil(o.delivered_at) and not is_nil(o.next_attempt_at) and o.next_attempt_at > ^now)
+      |> select([o], o.run_id)
+      |> distinct(true)
 
     rows =
       OutboxEvent
       |> where([o], is_nil(o.delivered_at) and (is_nil(o.next_attempt_at) or o.next_attempt_at <= ^now))
+      |> where([o], o.run_id not in subquery(blocked))
       |> order_by([o], asc: o.run_id, asc: o.seq)
       |> limit(@batch_limit)
       |> Repo.all()
@@ -80,8 +88,14 @@ defmodule VibeAgents.Outbox do
 
   defp backoff(%OutboxEvent{} = row) do
     attempts = row.attempts + 1
-    delay_ms = min(@max_backoff_ms, @min_backoff_ms * Integer.pow(2, attempts - 1))
+    delay_ms = min(@max_backoff_ms, @min_backoff_ms * Integer.pow(2, min(attempts - 1, 16)))
     next_attempt_at = DateTime.add(DateTime.utc_now(), delay_ms, :millisecond)
+
+    if delay_ms == @max_backoff_ms and rem(attempts, 20) == 0 do
+      Logger.error(
+        "[VibeAgents.Outbox] run=#{row.run_id} seq=#{row.seq} undelivered after #{attempts} attempts"
+      )
+    end
 
     row
     |> OutboxEvent.changeset(%{attempts: attempts, next_attempt_at: next_attempt_at})

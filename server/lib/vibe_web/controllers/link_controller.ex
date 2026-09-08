@@ -1,19 +1,6 @@
 defmodule VibeWeb.LinkController do
   @moduledoc """
   Public share links (`https://vibegram.io/<handle>`) and their in-app resolution.
-
-  Three jobs:
-
-    * `preview/2` — the open-web page a bare handle lands on. It carries OG tags so
-      the link looks right when pasted anywhere, and immediately tries the `vibe://`
-      deep link so a phone with the app installed goes straight into the chat.
-      Anything that isn't a handle falls through to the React SPA, so adding this
-      route cannot shadow a web page.
-    * `resolve/2` — authenticated JSON the app calls to turn a handle (or a pasted
-      link) into something openable: a peer user id, an agent id, or a chat id.
-    * `aasa/2` — the Apple universal-links association file. Serving it is free; it
-      only takes effect once the app ships the matching associated-domains
-      entitlement (see `docs/share-links.md`).
   """
 
   use VibeWeb, :controller
@@ -31,7 +18,6 @@ defmodule VibeWeb.LinkController do
         |> send_resp(200, preview_html(target))
 
       _ ->
-        # Not a handle (or not public): let the web app own the path.
         VibeWeb.ApiController.index(conn, params)
     end
   end

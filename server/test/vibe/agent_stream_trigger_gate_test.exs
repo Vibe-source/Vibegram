@@ -1,10 +1,6 @@
 defmodule Vibe.AgentStreamTriggerGateTest do
   @moduledoc """
-  `message.stream` is an ingest path like any other and must clear the same
-  channel gate. It used to skip `ensure_event_trigger`, so a holder of the agent
-  secret could post into a channel whose agent policy does not allow event
-  triggers — and, because streams edit their own message frame by frame, keep
-  rewriting it afterwards. The normal event path always rejected that.
+  `message.stream` is an ingest path like any other and must clear the same channel gate.
   """
 
   use ExUnit.Case, async: false
@@ -61,8 +57,7 @@ defmodule Vibe.AgentStreamTriggerGateTest do
     }
   end
 
-  # کانال با ایجنت به‌عنوان agent_admin ساخته می‌شود؛ trigger پیش‌فرضش «event»
-  # نیست، یعنی دقیقاً همان چیدمانی که دروازه باید جلویش را بگیرد.
+  # کانال با ایجنت به‌عنوان agent_admin ساخته می‌شود؛ trigger پیش‌فرضش.
   defp attach_agent_to_channel(owner, agent) do
     {:ok, payload} =
       Chat.create_channel(owner.id, %{

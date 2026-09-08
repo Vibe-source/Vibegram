@@ -59,7 +59,6 @@ defmodule Vibe.SecurityAuthTest do
     assert {:ok, %User{id: id}} = Accounts.get_user_by_token(token)
     assert id == user.id
 
-    # Again, to prove the cached read resolves the same way as the cold one.
     assert {:ok, %User{id: ^id}} = Accounts.get_user_by_token(token)
 
     {:ok, _} = Accounts.revoke_session(user.id, session.id)
@@ -80,8 +79,6 @@ defmodule Vibe.SecurityAuthTest do
   end
 
   test "logout revokes a legacy token even when the cached user has it stripped", %{user: user} do
-    # The first read populates the cache; only the second returns the stripped
-    # struct, which is what a logout following any other request actually holds.
     {:ok, _cold} = Accounts.get_user_by_token(user.login_token)
     {:ok, cached} = Accounts.get_user_by_token(user.login_token)
     refute cached.login_token

@@ -30,7 +30,7 @@ defmodule VibeWeb.SavedMessageController do
     end
   end
 
-  # Private reaction on a saved item. Authority is the session user, never the body.
+  # Private reaction on a saved item.
   def reaction(conn, %{"original_message_id" => id} = params) do
     emoji = params["emoji"] || params["reaction_emoji"]
 

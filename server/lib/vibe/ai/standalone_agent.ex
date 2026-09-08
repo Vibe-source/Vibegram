@@ -21,8 +21,6 @@ defmodule Vibe.AI.StandaloneAgent do
     requested_output_mode = normalize_string(params["outputMode"] || params["output_mode"])
     reply_to_id = normalize_string(params["replyToId"] || params["reply_to_id"])
     requester_user_id = normalize_string(params["requesterUserId"] || params["requester_user_id"])
-    # Controller may attach a normalized vibe.content.v1 envelope here (Wave 2).
-    # When present, thread onto message metadata as "content" for rich clients.
     provider_content = provider_content_from_params(params)
 
     cond do
@@ -39,22 +37,6 @@ defmodule Vibe.AI.StandaloneAgent do
           not Chat.is_participant?(vibe_chat_id, agent.agent_user_id) ->
         {:error, :chat_not_attached}
 
-      # "post": deliver the caller's own words, with no model in the path.
-      #
-      # Some callers are not asking the agent anything — a monitor, a deploy script, a
-      # cron job. Their text is already written, and running it through the model first
-      # buys nothing: it costs a completion, adds seconds of latency, and makes the
-      # message depend on the most failure-prone thing in the system.
-      #
-      # That is not hypothetical. An agix alerting hook posted through `send`, and when the
-      # account's model credit ran out every alert stopped arriving — 422 request_failed
-      # out of `generate_outputs`, with the API, the secret, the publication state and the
-      # chat attachment all perfectly healthy. A notification channel that goes down
-      # because a *language model* is unavailable is a notification channel that fails at
-      # exactly the moment it is needed.
-      #
-      # Everything else still applies: the agent must be published, hold a valid secret,
-      # and be a participant in the chat. This skips generation, not authorisation.
       response_mode == "post" ->
         agent_turn_id =
           normalize_string(params["agentTurnId"] || params["agent_turn_id"]) ||
@@ -99,9 +81,6 @@ defmodule Vibe.AI.StandaloneAgent do
               agent_turn_id: agent_turn_id
             )
 
-          # Attach provider content onto each output's metadata so it flows into
-          # both the invoke response `outputs` map and Chat.add_message attrs
-          # (via output_metadata → deliver_output_to_chat metadata merge).
           outputs = put_provider_content_on_outputs(outputs, provider_content)
 
           AgentUsage.record_embedded(
@@ -351,17 +330,11 @@ defmodule Vibe.AI.StandaloneAgent do
       {:ok, _message} ->
         VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "message", payload)
 
-        # Built once and reused for every recipient's user-topic mirror.
         mirrored_message = Chat.mirrored_message_payload(payload)
 
         Chat.get_all_participant_settings(chat_id)
         |> Enum.each(fn participant ->
           if participant.user_id != agent.agent_user_id do
-            # The chat topic above only reaches devices with this chat on screen. Every
-            # other agent path already mirrors a `new_message` onto the participant's
-            # user topic so their chat list updates in real time; this one did not, which
-            # is why a standalone agent's reply could raise a push notification while Home
-            # still showed the previous message until the next list fetch.
             VibeWeb.Endpoint.broadcast!("user:#{participant.user_id}", "new_message", %{
               chat_id: chat_id,
               from_id: agent.agent_user_id,
@@ -396,10 +369,6 @@ defmodule Vibe.AI.StandaloneAgent do
     [
       "You are #{agent.display_name}, a custom AI agent inside the Vibe app.",
       "Respond clearly and practically.",
-      # A user-created agent's prompt REPLACES the built-in assistant's, so without this
-      # every agent on the platform shipped with web search enabled and nothing telling it
-      # how to research — one search, then an answer from snippets. The owner's own prompt
-      # is appended after this and still wins on voice, scope and persona.
       Vibe.AI.AgenticPolicy.prompt_guidance(agent.enabled_tools),
       "Do not introduce yourself again, restate your capabilities, or repeat onboarding copy in an ongoing chat unless the user explicitly asks for it.",
       "If the user sends a voice, audio, file, or image attachment, the current message may include a short attachment summary. Use that context directly instead of pretending the attachment is missing.",
@@ -416,8 +385,6 @@ defmodule Vibe.AI.StandaloneAgent do
         do: Vibe.AI.Tools.Platform.prompt_guidance(agent),
         else: nil
       ),
-      # The MCP servers describe their own usage rules; we pass those through
-      # instead of asking the owner to copy them into the agent prompt by hand.
       if(Vibe.AI.MCP.gate_tool_id() in (agent.enabled_tools || []),
         do: Vibe.AI.MCP.prompt_guidance(agent),
         else: nil
@@ -477,8 +444,6 @@ defmodule Vibe.AI.StandaloneAgent do
   defp normalize_response_mode(value) do
     case normalize_string(value) do
       "send" -> "send"
-      # Deliver the caller's text as it stands, without asking a model for anything. See
-      # the "post" branch in invoke/2 for why this exists.
       "post" -> "post"
       _ -> "reply"
     end
@@ -536,8 +501,6 @@ defmodule Vibe.AI.StandaloneAgent do
     end
   end
 
-  # Discovery talks to a remote server, so it is wrapped: an MCP server that is
-  # down should cost the agent its MCP tools for this turn, not the whole reply.
   defp mcp_tool_specs(agent) do
     if Vibe.AI.MCP.gate_tool_id() in (agent.enabled_tools || []) do
       Vibe.AI.MCP.tool_specs(agent)
@@ -625,8 +588,6 @@ defmodule Vibe.AI.StandaloneAgent do
         []
       end
 
-    # Tool artifacts were already authorized by the effective tool allowlist.
-    # Keep them even when older agent rows omitted the legacy "media" mode.
     text_outputs ++ rich_outputs ++ voice_outputs
   end
 
@@ -666,8 +627,6 @@ defmodule Vibe.AI.StandaloneAgent do
     end
   end
 
-  # An MCP tool that returned files: the bytes were already stored by
-  # `MCP.Content`, so the URLs just need to become delivery outputs.
   def tool_outputs_from_result("mcp__" <> _rest, result) when is_map(result) do
     Vibe.AI.MCP.outputs_from_result(result)
   end
@@ -764,11 +723,6 @@ defmodule Vibe.AI.StandaloneAgent do
     end
   end
 
-  # A turn can call search_music several times while it narrows down (resolve link → fails →
-  # search → refine). Shipping a card for EVERY call meant a turn whose answer named one
-  # track attached four, including the ones the agent had explicitly discarded. The agent's
-  # decision is its LAST successful music call, so that is the one that becomes cards;
-  # earlier attempts are dropped. Every non-music tool result passes through untouched.
   @doc false
   def select_music_tool_results(tool_results) do
     music_indices =
@@ -811,7 +765,6 @@ defmodule Vibe.AI.StandaloneAgent do
 
   defp error_result?(_result), do: false
 
-  # The same track resolved twice in one turn is one card.
   defp dedupe_media_outputs(outputs) do
     {deduped, _seen} =
       Enum.reduce(outputs, {[], MapSet.new()}, fn output, {kept, seen} ->
@@ -885,9 +838,6 @@ defmodule Vibe.AI.StandaloneAgent do
     track_source = map_value(track, :source) || source
     links = map_value(track, :links) || %{}
 
-    # Prefer durable app stream proxy when we have a track id so SoundCloud/YouTube
-    # playback goes through /api/music/stream (cache + re-resolve). Fall back to a
-    # direct extractor URL only when no id is available.
     media_url =
       cond do
         is_binary(normalize_string(video_id)) -> public_music_stream_url(video_id)
@@ -917,7 +867,6 @@ defmodule Vibe.AI.StandaloneAgent do
         "cover" => map_value(track, :cover),
         "source" => track_source,
         "links" => links,
-        # Flatten keys list parsers also read
         "previewUrl" => media_url,
         "streamUrl" => media_url,
         "mediaUrl" => media_url
@@ -966,8 +915,6 @@ defmodule Vibe.AI.StandaloneAgent do
     String.trim_trailing(public_api_base_url(), "/") <> path
   end
 
-  # Always absolute — clients treat leading "/" as a local filesystem path
-  # (see VoiceBubble resolveAudioURL) and "Couldn't load" if we ship relative mediaUrl.
   defp public_api_base_url do
     cond do
       base = present_env("PUBLIC_BASE_URL") ->
@@ -1084,8 +1031,6 @@ defmodule Vibe.AI.StandaloneAgent do
 
   defp runtime_history_entry(_message, _agent_user_id), do: nil
 
-  # Assistant turns carry the agent's display name in message metadata already
-  # (deliver_output_to_chat); user turns are left unnamed (see runtime handoff notes).
   defp runtime_history_author_name(message, true) do
     metadata = Map.get(message, :metadata) || Map.get(message, "metadata") || %{}
     map_value(metadata, :agentName) || map_value(metadata, :agent_name)
@@ -1093,9 +1038,6 @@ defmodule Vibe.AI.StandaloneAgent do
 
   defp runtime_history_author_name(_message, false), do: nil
 
-  # Same memory the built-in DM gets (AgentChannel.turn_memory_from_messages), derived from
-  # what this agent already delivered into the chat — so "send it again" resends the same
-  # track here too, instead of starting a fresh blind search.
   defp turn_memory_from_chat(chat_id, requester_user_id, agent_user_id)
        when is_binary(chat_id) and is_binary(requester_user_id) and is_binary(agent_user_id) do
     chat_id
@@ -1238,9 +1180,6 @@ defmodule Vibe.AI.StandaloneAgent do
 
   defp output_metadata(_), do: %{}
 
-  # params["providerContent"] is the normalized vibe.content.v1 envelope set by
-  # AgentsController.merge_provider_content/1. Only maps are accepted; anything
-  # else is treated as absent (zero behavior change).
   defp provider_content_from_params(%{"providerContent" => content}) when is_map(content),
     do: content
 

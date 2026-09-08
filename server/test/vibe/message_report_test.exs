@@ -40,7 +40,6 @@ defmodule Vibe.MessageReportTest do
     assert is_nil(report.reviewed_at)
     assert is_nil(report.resolved_at)
 
-    # No message content, sealed or otherwise, is copied into the record.
     stored = report |> Map.from_struct() |> Map.drop([:__meta__])
     refute Enum.any?(Map.values(stored), &(&1 == message.encrypted_content))
     refute Map.has_key?(stored, :encrypted_content)
@@ -65,7 +64,6 @@ defmodule Vibe.MessageReportTest do
     assert {:error, :invalid_reason} =
              Chat.report_message(chat_id, message.id, reporter.id, %{})
 
-    # Casing and dashes from the client still resolve to a known reason.
     assert {:ok, %{report: %{reason: "sexual_content"}}} =
              Chat.report_message(chat_id, message.id, reporter.id, %{
                "reason" => "Sexual-Content"
@@ -109,7 +107,6 @@ defmodule Vibe.MessageReportTest do
     assert Accounts.blocked?(reporter.id, author.id)
     assert Repo.aggregate(UserBlock, :count) == 1
 
-    # Re-reporting an already-blocked sender must succeed, not collide.
     assert {:ok, %{blocked: true}} =
              Chat.report_message(chat_id, message.id, reporter.id, %{
                "reason" => "abuse",
@@ -119,7 +116,6 @@ defmodule Vibe.MessageReportTest do
     assert Repo.aggregate(UserBlock, :count) == 1
     assert Repo.aggregate(MessageReport, :count) == 2
 
-    # An existing block is reported truthfully even when the caller does not ask.
     assert {:ok, %{blocked: true}} =
              Chat.report_message(chat_id, message.id, reporter.id, %{"reason" => "spam"})
   end

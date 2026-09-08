@@ -83,7 +83,6 @@ defmodule Vibe.PlatformsTest do
         "capabilities" => ["list_repos"]
       })
 
-    # Other user cannot use the connection even with same grantee id.
     assert {:error, :no_grant} =
              Platforms.invoke(other.id, "agent", "agent-1", %{
                "provider" => "github",
@@ -91,7 +90,6 @@ defmodule Vibe.PlatformsTest do
                "connection_id" => conn.id
              })
 
-    # Capability outside grant is denied.
     assert {:error, {:capability_not_allowed, _}} =
              Platforms.invoke(user.id, "agent", "agent-1", %{
                "provider" => "github",

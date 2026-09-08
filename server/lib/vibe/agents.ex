@@ -35,7 +35,6 @@ defmodule Vibe.Agents do
   def quota_for_user(user_id) do
     used =
       if is_nil(user_id) do
-        # Ecto raises on `== nil`; an ownerless caller simply has no agents.
         0
       else
         Repo.one(
@@ -49,8 +48,6 @@ defmodule Vibe.Agents do
     %{used: used, limit: limit, remaining: max(limit - used, 0)}
   end
 
-  # A nil owner has no agents. Ecto raises ArgumentError on `== nil` ("comparing with nil is
-  # forbidden"), and that raise used to travel all the way out and kill the whole agent turn.
   def list_agents(nil), do: []
 
   def list_agents(owner_user_id) do
@@ -145,10 +142,6 @@ defmodule Vibe.Agents do
     end
   end
 
-  # ایجنتِ تازه بدون chat مقصد ساخته می‌شد و کاربر هر بار مجبور بود دستی
-  # chat id بدهد. DM مالک‌↔ایجنت را همان‌جا می‌سازیم و به‌عنوان مقصد پیش‌فرض
-  # می‌نشانیم تا در UI هم دیده شود. اگر ساختِ DM شکست خورد، ایجنت را از دست
-  # نمی‌دهیم؛ `owner_dm_chat_id/1` در زمانِ رویداد دوباره تلاش می‌کند.
   defp ensure_default_destination_chat(%Agent{default_destination_chat_id: nil} = agent) do
     with {:ok, chat_id, _status} <-
            Vibe.Chat.ensure_dm_chat(agent.owner_user_id, agent.agent_user_id),
@@ -202,16 +195,12 @@ defmodule Vibe.Agents do
             })
             |> Repo.update!()
 
-          # status is privileged (excluded from owner_changeset); keep the existing
-          # toggle behaviour here via the internal changeset instead.
           updated
           |> Agent.changeset(%{status: normalize_status_update(updated, attrs)})
           |> Repo.update!()
         end)
         |> case do
           {:ok, updated} ->
-            # Joined chats cache this agent; an edit (e.g. the incoming-chat
-            # toggle) must not wait out the TTL to take effect.
             Vibe.Chat.JoinCache.invalidate_all()
             {:ok, Repo.preload(updated, :agent_user)}
 
@@ -252,12 +241,6 @@ defmodule Vibe.Agents do
 
   @doc """
   Issues a new agent secret.
-
-  Revocation is immediate by default: a rotation is usually a response to a
-  leaked key, and the safe behaviour must not be the one you have to remember
-  to ask for. Pass `grace_hours:` for a *planned* rotation — the outgoing
-  secret keeps verifying until the window closes, so live integrations can be
-  updated without a hard cutover. Capped at #{@max_secret_grace_hours} hours.
   """
   def rotate_secret(%Agent{} = agent, owner_user_id, opts \\ []) do
     if agent.owner_user_id != owner_user_id do
@@ -283,8 +266,6 @@ defmodule Vibe.Agents do
     end
   end
 
-  # بدونِ مهلت، ردِ رمزِ قبلی هم پاک می‌شود — وگرنه یک چرخشِ فوری بعد از یک
-  # چرخشِ مهلت‌دار، رمزِ قدیمی‌تر را همچنان معتبر می‌گذاشت.
   defp previous_secret_attrs(_agent, nil),
     do: %{previous_secret_hash: nil, previous_secret_expires_at: nil}
 
@@ -366,8 +347,6 @@ defmodule Vibe.Agents do
 
   def verify_secret(_agent, _secret), do: false
 
-  # رمزِ قبلی فقط تا پایانِ مهلت معتبر است. مقایسه همچنان زمان‌ثابت می‌ماند،
-  # ولی وقتی مهلتی در کار نیست اصلاً انجام نمی‌شود.
   defp previous_secret_valid?(%Agent{previous_secret_hash: hash} = agent, expected)
        when is_binary(hash) and hash != "" do
     case agent.previous_secret_expires_at do
@@ -382,8 +361,6 @@ defmodule Vibe.Agents do
 
   defp previous_secret_valid?(_agent, _expected), do: false
 
-  # پنجرهٔ منقضی‌شده اصلاً گزارش نمی‌شود تا UI «تا فلان ساعت» ننویسد در حالی که
-  # دیگر گذشته است.
   defp previous_secret_window(%Agent{previous_secret_hash: hash} = agent)
        when is_binary(hash) and hash != "" do
     case agent.previous_secret_expires_at do
@@ -791,8 +768,6 @@ defmodule Vibe.Agents do
       id: agent.id,
       userId: agent.agent_user_id,
       username: agent.agent_user && agent.agent_user.username,
-      # The one link an owner can share for this agent. Built here so the app, the
-      # builder, and the assistant all quote the same URL (see Vibe.Links).
       publicLink: Vibe.Links.agent_url(agent.agent_user && agent.agent_user.username),
       displayName: agent.display_name,
       status: agent.status,
@@ -817,7 +792,6 @@ defmodule Vibe.Agents do
       voiceProfile: agent.voice_profile,
       callbackUrl: agent.callback_url,
       secretHint: agent.secret_hint,
-      # تا این لحظه رمزِ قبلی هم پذیرفته می‌شود؛ nil یعنی فقط رمزِ فعلی کار می‌کند.
       previousSecretExpiresAt: previous_secret_window(agent),
       publishedAt: agent.published_at,
       lastInvokedAt: agent.last_invoked_at,
@@ -869,13 +843,8 @@ defmodule Vibe.Agents do
   def normalize_username(_), do: ""
 
   @doc """
-  Checks whether `username` can be assigned to the given agent (or, when
-  `agent` is nil, to a brand-new agent). Mirrors the validation used by
-  `ensure_valid_username!/1` but returns a tagged result instead of raising.
-
-  Returns `{:ok, normalized}` when available, or `{:error, reason}` where
-  reason is one of `:invalid_username`, `:reserved_username`, `:username_taken`,
-  or `:username_locked_after_publish`.
+  Checks whether `username` can be assigned to the given agent (or, when `agent` is nil, to a
+  brand-new agent).
   """
   def username_availability(username, agent \\ nil)
 
@@ -1116,11 +1085,6 @@ defmodule Vibe.Agents do
   defp create_shadow_user(_owner_user_id, attrs) do
     display_name = display_name_from_attrs(attrs)
 
-    # `create_agent/2` is NOT wrapped in a transaction, so the rollback-based validator used
-    # to blow up with "cannot call rollback outside of transaction" whenever a username was
-    # taken or invalid — an ordinary user mistake surfacing as a RuntimeError that unwound
-    # the whole agent-creation turn. Resolve the username with the tagged validator instead
-    # and let `with` in create_agent/2 return the error.
     with {:ok, username} <- resolve_shadow_username(display_name, attrs) do
       insert_shadow_user(display_name, username, attrs)
     end
@@ -1140,11 +1104,6 @@ defmodule Vibe.Agents do
     end
   end
 
-  # The username IS the agent's public identity — it's what `vibegram.io/<username>`
-  # resolves to — so it has to read like a handle a person chose. We derive the clean
-  # one from the display name and, when it's taken, refuse instead of minting
-  # `newsroom_9f3a1c`: the caller asks the owner to pick another one (and can offer
-  # `suggest_usernames/2`).
   defp derive_username(display_name) do
     case username_base(display_name) do
       nil -> {:error, :invalid_username}
@@ -1214,9 +1173,8 @@ defmodule Vibe.Agents do
   end
 
   @doc """
-  Clean handle candidates derived from a display name, filtered to the ones that are
-  actually free. Never contains random digits — these are meant to be *offered* to the
-  owner when their first choice is taken.
+  Clean handle candidates derived from a display name, filtered to the ones that are actually
+  free.
   """
   def suggest_usernames(display_name, opts \\ []) do
     limit = Keyword.get(opts, :limit, 4)

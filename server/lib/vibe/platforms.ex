@@ -1,9 +1,6 @@
 defmodule Vibe.Platforms do
   @moduledoc """
   User-scoped multi-platform OAuth connections, grants, and server-proxied tool calls.
-
-  Tokens are encrypted at rest and never returned in API payloads or agent prompts.
-  Agents receive capability names only; tool calls resolve grants server-side.
   """
 
   import Ecto.Query
@@ -20,13 +17,12 @@ defmodule Vibe.Platforms do
   @state_max_age_sec 600
   @bridge_agents ~w[claude codex grok agy vibe]
 
-  ## Catalog
+  # # Catalog
 
   def catalog, do: Catalog.list()
 
   def provider_info(provider_id), do: Catalog.get(provider_id)
 
-  ## Connections (public payloads — no secrets)
 
   def list_connections(user_id) when is_binary(user_id) do
     Repo.all(
@@ -77,7 +73,6 @@ defmodule Vibe.Platforms do
     }
   end
 
-  ## OAuth start / callback
 
   def start_authorize(user_id, provider_id, opts \\ [])
       when is_binary(user_id) and is_binary(provider_id) do
@@ -115,7 +110,6 @@ defmodule Vibe.Platforms do
         "login" => identity.external_account_login
       })
 
-      # Default grant: all bridge coding agents; per-agent grants remain opt-in.
       ensure_default_bridge_grants!(connection)
 
       {:ok, Repo.preload(connection, :grants)}
@@ -158,7 +152,6 @@ defmodule Vibe.Platforms do
     end
   end
 
-  ## Grants
 
   def list_grants(user_id, connection_id) do
     case get_connection(user_id, connection_id) do
@@ -255,7 +248,6 @@ defmodule Vibe.Platforms do
     end
   end
 
-  ## Agent-facing: list usable connections + invoke
 
   def list_usable_for_grantee(user_id, grantee_type, grantee_id)
       when is_binary(user_id) and is_binary(grantee_type) and is_binary(grantee_id) do
@@ -293,8 +285,6 @@ defmodule Vibe.Platforms do
     params = attrs["params"] || attrs[:params] || %{}
     connection_id = attrs["connection_id"] || attrs["connectionId"] || attrs[:connection_id]
 
-    # Owned Vibe agents with call_platform enabled get grants lazily so the
-    # user does not need a second "grant" step after connecting GitHub.
     _ = maybe_auto_grant_agent(user_id, grantee_type, grantee_id)
 
     with :ok <- require_provider_action(provider, action),
@@ -348,7 +338,6 @@ defmodule Vibe.Platforms do
     end
   end
 
-  ## State signing
 
   def sign_state(claims) when is_map(claims) do
     Phoenix.Token.sign(VibeWeb.Endpoint, @state_salt, claims)
@@ -361,7 +350,6 @@ defmodule Vibe.Platforms do
     end
   end
 
-  ## Internals
 
   defp upsert_connection(user_id, provider_id, identity, tokens, access_enc, refresh_enc) do
     expires_at = expires_at_from(tokens[:expires_in])
@@ -449,7 +437,6 @@ defmodule Vibe.Platforms do
       [] -> {:error, :no_grant}
       [{conn, grant}] -> {:ok, conn, grant}
       many ->
-        # Prefer most recently used
         {conn, grant} =
           Enum.max_by(many, fn {c, _} ->
             DateTime.to_unix(c.last_used_at || c.updated_at || c.inserted_at)

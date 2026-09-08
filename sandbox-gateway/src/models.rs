@@ -1,4 +1,5 @@
-//! Request/response DTOs for the sandbox-gateway API (spec docs/agent-platform-v1.md §3.6).
+//! Request/response DTOs for the sandbox-gateway API (spec.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -79,7 +80,7 @@ pub struct ExecResponse {
     pub error: Option<String>,
 }
 
-/// One recorded shell run, kept in memory so the owner can watch what the agent typed.
+/// One recorded shell run.
 #[derive(Debug, Clone, Serialize)]
 pub struct ExecLogEntry {
     pub seq: u64,
@@ -195,7 +196,7 @@ pub struct ScreenshotResponse {
     pub height: u32,
 }
 
-/// Who may drive the sandbox browser. Transitions live in `runtime::computer`.
+/// Who may drive the sandbox browser.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Control {
@@ -236,7 +237,6 @@ pub struct ComputerSessionClosedResponse {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ComputerFrameQuery {
     pub since: Option<u64>,
-    /// Optional: refreshes just this viewer's idle clock. Absent, every viewer is refreshed.
     pub session: Option<String>,
 }
 

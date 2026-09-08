@@ -1,4 +1,3 @@
-//! Bollard-backed sandbox lifecycle, exec, files and browser operations.
 pub mod browser;
 pub mod computer;
 pub mod containers;

@@ -92,7 +92,6 @@ defmodule VibeAgents.Tools.Browser do
     Logger.warning("[VibeAgents.Tools.Browser] screenshot #{byte_size(image)} bytes exceeds preview cap; skipped")
   end
 
-  # One event per real navigation: same url+title as the run's last emit means nothing moved.
   defp emit_computer_state(run, url, title) when is_binary(url) do
     unless last_computer_state(run.id) == {url, title} do
       Events.emit(run, "run.computer.state", %{"url" => url, "title" => title, "live" => true})

@@ -46,7 +46,6 @@ defmodule VibeAgents.CoreClient do
     end
   end
 
-  # 5xx and transport errors are retryable; a 4xx is the core rejecting the request outright.
   defp classify({:ok, %{status: status} = resp}) when status in 200..299, do: {:ok, resp}
   defp classify({:ok, %{status: status}}) when status >= 500, do: {:retry, {:http_error, status}}
   defp classify({:ok, %{status: status}}), do: {:error, {:http_error, status}}
@@ -82,7 +81,6 @@ defmodule VibeAgents.CoreClient do
   defmodule Finch do
     @moduledoc "Default HTTP transport for VibeAgents.CoreClient — real Finch requests."
 
-    # An unconfigured core url must read as a transport error: raising here kills the outbox.
     def request(_method, url, _body, _headers) when not is_binary(url), do: {:error, :core_url_unset}
 
     def request(method, url, body, headers) do

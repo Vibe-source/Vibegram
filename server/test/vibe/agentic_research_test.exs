@@ -2,13 +2,6 @@ defmodule Vibe.AI.AgenticResearchTest do
   @moduledoc """
   Guards the two properties that make the agent agentic, both of which regressed silently
   before they were tested:
-
-  1. Every prompt builder carries the same policy — the built-in assistant, user-created
-     agents and group agents. "Agentic" that only holds for the built-in assistant is not a
-     product behaviour.
-  2. Falling back to another provider does not demote the turn. Production ran on an
-     out-of-credit Anthropic key with every Claude selection silently served by the cheapest
-     OpenAI model at middling effort.
   """
 
   use ExUnit.Case, async: false
@@ -38,8 +31,6 @@ defmodule Vibe.AI.AgenticResearchTest do
     test "the built-in assistant prompt carries the shared policy, not a private copy" do
       prompt = Agent.default_system_prompt()
 
-      # Interpolated at compile time, so a failure here means the built-in prompt drifted
-      # back into its own copy of the rules — the exact divergence this module exists to end.
       for line <- policy_lines(AgenticPolicy.turn_shape()) do
         assert String.contains?(prompt, line), "built-in prompt lost turn-shape line: #{line}"
       end
@@ -199,8 +190,6 @@ defmodule Vibe.AI.AgenticResearchTest do
     end
 
     test "effort is clamped to what the substitute actually supports", %{port: port} do
-      # Haiku maps to Luna, which tops out at "high" — asking for "max" must not send an
-      # effort the provider will reject.
       assert {:ok, "ok", _state} = run_fallback(port, "claude-haiku-4-5-20251001", "max")
 
       assert_receive {:openai_request, %{"model" => "gpt-5.6-luna", "reasoning" => reasoning}}
@@ -222,7 +211,6 @@ defmodule Vibe.AI.AgenticResearchTest do
                  config
                )
 
-      # GroupAgent parses exactly this shape, so the fallback must not invent a new one.
       assert parsed["stop_reason"] == "end_turn"
       assert [%{"type" => "text", "text" => "ok"}] = parsed["content"]
     end

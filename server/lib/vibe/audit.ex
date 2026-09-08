@@ -1,13 +1,7 @@
 defmodule Vibe.Audit do
   @moduledoc """
-  Append-only security audit trail. `record/3` never raises — a logging
-  failure must never break the caller's actual request.
-
-  Action taxonomy in use: `login.success`, `login.failure`, `logout`,
-  `logout_all`, `register`, `profile.update`, `device.revoke`,
-  `session.revoke`, `identity.upgrade`. Metadata must never hold tokens,
-  secrets, or message text — only small, non-sensitive context (e.g. a
-  submitted username on a failed login).
+  Append-only security audit trail. `record/3` never raises — a logging failure must never
+  break the caller's actual request.
   """
 
   import Ecto.Query, warn: false
@@ -17,9 +11,8 @@ defmodule Vibe.Audit do
   alias Vibe.Schemas.AuditEvent
 
   @doc """
-  Records one audit event. `conn_or_nil` is a `Plug.Conn` (its ip/user-agent
-  are captured) or `nil` when called from a context with no request, e.g.
-  `Vibe.Accounts.revoke_device/2`. Always returns `:ok`.
+  Records one audit event. `conn_or_nil` is a `Plug.Conn` (its ip/user-agent are captured) or
+  `nil` when called from a context with no request.
   """
   def record(conn_or_nil, action, opts \\ []) do
     attrs = %{

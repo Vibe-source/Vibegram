@@ -13,5 +13,6 @@ config :vibe, VibeWeb.Endpoint,
   secret_key_base: "test_secret_key_base_test_secret_key_base_test_secret_key_base",
   server: false
 
+config :vibe, :background_jobs, false
 config :logger, level: :warning
 config :phoenix, :plug_init_mode, :runtime

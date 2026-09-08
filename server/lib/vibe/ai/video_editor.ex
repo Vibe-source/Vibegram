@@ -1,27 +1,6 @@
 defmodule Vibe.AI.VideoEditor do
   @moduledoc """
   AI video editing via Google's **Gemini Omni Flash** (`gemini-omni-flash-preview`).
-
-  This model is reached through the *Interactions* API, not `generateContent`.
-  Editing is conversational: each result carries an interaction id, and passing
-  it back as `previous_interaction_id` refines that same video instead of
-  starting over.
-
-  ## Limits that shape the whole feature
-
-    * **Input video for editing must be ≤ 10 seconds.** The client is expected to
-      have already trimmed to a ≤10s window; we re-check here so an over-long
-      clip fails locally instead of costing a rejected request.
-    * Output is **3–10s, 720p, 24fps**, aspect ratio `"9:16"` or `"16:9"`.
-    * There is **no mask / region parameter** — edits are prompt-directed only.
-      Do not surface an area-selection control for video.
-    * Editing *uploaded* video is unavailable in the EEA, Switzerland and the UK
-      (editing model-generated video via `previous_interaction_id` is not).
-    * Every output carries an invisible **SynthID** watermark.
-    * Output bills at roughly **$0.10 per second** of video.
-
-  Payloads above ~4MB must travel through the Files API rather than inline
-  base64, which is the normal case for a 10s clip, so we always upload.
   """
 
   require Logger
@@ -35,14 +14,6 @@ defmodule Vibe.AI.VideoEditor do
 
   @doc """
   Edits a ≤10s video clip from a prompt.
-
-  Options:
-    * `:previous_interaction_id` — continue refining an earlier result
-    * `:aspect_ratio` — `"9:16"` (default, matches video notes) or `"16:9"`
-
-  Returns the edited clip as raw bytes — nothing is written to server storage.
-  Hold on to `interaction_id` so the next prompt refines this video rather than
-  re-editing the original.
   """
   @spec edit_video(binary(), String.t(), String.t(), keyword()) ::
           {:ok, %{bytes: binary(), mime_type: String.t(), interaction_id: String.t() | nil}}
@@ -57,15 +28,12 @@ defmodule Vibe.AI.VideoEditor do
          {:ok, file_uri} <- upload_file(key, bytes, mime_type),
          {:ok, interaction} <- create_interaction(key, file_uri, prompt, opts),
          {:ok, video_bytes} <- extract_video(key, interaction) do
-      # Bytes go straight back to the client; nothing is persisted server-side,
-      # so the edited clip only comes to rest once the client has sealed it.
       {:ok, %{bytes: video_bytes, mime_type: "video/mp4", interaction_id: interaction["id"]}}
     end
   end
 
   def edit_video(_bytes, _mime, _prompt, _opts), do: {:error, "prompt cannot be empty"}
 
-  # ── Guards ────────────────────────────────────────────────────────────────
 
   defp api_key do
     case System.get_env("GEMINI_API_KEY") do
@@ -79,8 +47,6 @@ defmodule Vibe.AI.VideoEditor do
 
   defp check_size(_bytes), do: :ok
 
-  # Best-effort: if ffprobe is on the box, refuse an over-long clip before we
-  # pay for the upload. If it is not installed we let the API be the authority.
   defp check_duration(bytes, mime_type) do
     with path when is_binary(path) <- System.find_executable("ffprobe"),
          {:ok, tmp} <- write_temp(bytes, mime_type) do
@@ -125,7 +91,6 @@ defmodule Vibe.AI.VideoEditor do
     end
   end
 
-  # ── Files API (resumable: start, then upload+finalize) ────────────────────
 
   defp upload_file(key, bytes, mime_type) do
     size = byte_size(bytes)
@@ -196,7 +161,6 @@ defmodule Vibe.AI.VideoEditor do
     end
   end
 
-  # Video uploads land in PROCESSING; the model rejects them until ACTIVE.
   defp await_active(key, file, attempts \\ 30)
 
   defp await_active(_key, _file, 0), do: {:error, "Video processing timed out"}
@@ -225,7 +189,6 @@ defmodule Vibe.AI.VideoEditor do
 
   defp await_active(_key, _file, _attempts), do: {:error, "Uploaded file had no name"}
 
-  # ── Interactions API ──────────────────────────────────────────────────────
 
   defp create_interaction(key, file_uri, prompt, opts) do
     body =
@@ -235,12 +198,10 @@ defmodule Vibe.AI.VideoEditor do
           %{type: "text", text: prompt},
           %{type: "document", uri: file_uri}
         ],
-        # Unary generation — no background job, no server-side session.
         background: false,
         store: false,
         stream: false,
         generation_config: %{aspect_ratio: opts[:aspect_ratio] || "9:16"},
-        # Outputs over ~4MB cannot come back inline.
         response_format: %{delivery: "uri"}
       }
       |> maybe_put(:previous_interaction_id, opts[:previous_interaction_id])
@@ -268,7 +229,6 @@ defmodule Vibe.AI.VideoEditor do
   defp normalize_decode({:ok, decoded}), do: {:ok, decoded}
   defp normalize_decode(_), do: {:error, "Failed to parse video model response"}
 
-  # The regional block is a policy refusal, not a bug — say so plainly.
   defp interaction_error_message(status, body) when status in [400, 403] do
     text = if is_binary(body), do: body, else: inspect(body)
 
@@ -282,7 +242,6 @@ defmodule Vibe.AI.VideoEditor do
 
   defp interaction_error_message(status, _body), do: "Video model error (#{status})"
 
-  # ── Output extraction ─────────────────────────────────────────────────────
 
   defp extract_video(key, %{"steps" => steps}) when is_list(steps) do
     steps
@@ -319,7 +278,6 @@ defmodule Vibe.AI.VideoEditor do
     end
   end
 
-  # ── Helpers ───────────────────────────────────────────────────────────────
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, ""), do: map

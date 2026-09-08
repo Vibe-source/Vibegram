@@ -19,18 +19,12 @@ defmodule Vibe.Repo.Migrations.CreateGroupEpochKeys do
       timestamps()
     end
 
-    # The only query shape the client issues: "what is still waiting for me?".
     create index(:group_epoch_keys, [:recipient_user_id, :delivered_at])
 
-    # One key per member per epoch, enforced by the database rather than by the
-    # application remembering to check. A second, *different* key for an epoch a
-    # member already installed is how one sender could split a group into
-    # readers and non-readers, so it must be impossible rather than unlikely.
     create unique_index(:group_epoch_keys, [:recipient_user_id, :chat_id, :epoch],
              name: :group_epoch_keys_recipient_chat_epoch_index
            )
 
-    # Backs the per-sender flood cap.
     create index(:group_epoch_keys, [:recipient_user_id, :sender_user_id, :delivered_at])
   end
 end

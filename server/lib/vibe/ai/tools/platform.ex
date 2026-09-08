@@ -1,8 +1,6 @@
 defmodule Vibe.AI.Tools.Platform do
   @moduledoc """
   Agent tool surface for multi-platform connectors (GitHub PRs, Excel later, …).
-
-  Tokens never leave `Vibe.Platforms`; agents only see capability results.
   """
 
   alias Vibe.Agent, as: AgentSchema
@@ -54,7 +52,6 @@ defmodule Vibe.AI.Tools.Platform do
         {:ok, agent.owner_user_id, "agent", agent.id}
 
       nil ->
-        # Bridge-style invoke may pass bridge agent ids without a Vibe Agent row.
         bridge_id = normalize_bridge(input["grantee_id"] || input["granteeId"] || agent_id)
 
         if bridge_id do

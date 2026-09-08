@@ -1,12 +1,6 @@
 defmodule Vibe.RelayRegistry do
   @moduledoc """
   In-memory registry for VibeNet relay nodes.
-
-  Uses ETS for fast concurrent reads/writes.
-  Relays are ephemeral — they only exist while the relay node is connected.
-
-  Ownership is bound to `relay.user_id`. Only the registering user may
-  re-register, update, or unregister that relay id.
   """
 
   use GenServer
@@ -31,11 +25,6 @@ defmodule Vibe.RelayRegistry do
 
   @doc """
   Register a new relay node, or re-register when the caller owns the id.
-
-  Returns:
-  - `:ok` on insert or owner re-register
-  - `{:error, :forbidden}` when the id is already owned by another user
-  - `{:error, :invalid_relay}` when required fields are missing
   """
   def register_relay(relay) when is_map(relay) do
     relay_id = relay_id(relay)
@@ -63,9 +52,6 @@ defmodule Vibe.RelayRegistry do
 
   @doc """
   Update a relay's metadata.
-
-  When `as_user:` is provided, the caller must own the relay.
-  Returns `:ok`, `:not_found`, or `{:error, :forbidden}`.
   """
   def update_relay(relay_id, updates, opts \\ []) when is_map(updates) do
     as_user = Keyword.get(opts, :as_user)
@@ -73,7 +59,6 @@ defmodule Vibe.RelayRegistry do
     case :ets.lookup(@table, relay_id) do
       [{^relay_id, existing}] ->
         if is_nil(as_user) or relay_user_id(existing) == as_user do
-          # Never allow callers to reassign ownership via updates.
           safe_updates = Map.drop(updates, [:user_id, "user_id"])
           updated = Map.merge(existing, safe_updates)
           :ets.insert(@table, {relay_id, updated})
@@ -89,9 +74,6 @@ defmodule Vibe.RelayRegistry do
 
   @doc """
   Remove a relay from the registry.
-
-  When `as_user:` is provided, only the owner may delete.
-  Returns `:ok`, `:not_found`, or `{:error, :forbidden}`.
   """
   def unregister_relay(relay_id, opts \\ []) do
     as_user = Keyword.get(opts, :as_user)
@@ -194,7 +176,6 @@ defmodule Vibe.RelayRegistry do
 
   def relay_invite_key(_), do: nil
 
-  # ─── GenServer Callbacks ─────────────────────────────────────
 
   @impl true
   def init(_opts) do
@@ -202,14 +183,12 @@ defmodule Vibe.RelayRegistry do
     {:ok, %{table: table}}
   end
 
-  # ─── Helpers ─────────────────────────────────────────────────
 
   defp relay_id(relay) when is_map(relay) do
     Map.get(relay, :relay_id) || Map.get(relay, "relay_id")
   end
 
   defp normalize_relay(relay) when is_map(relay) do
-    # Prefer atom keys for internal storage consistency.
     %{
       relay_id: relay_id(relay),
       user_id: relay_user_id(relay),
@@ -240,14 +219,10 @@ defmodule Vibe.RelayRegistry do
   defp merge_owned_reregister(relay_id, user_id, normalized, original_relay) do
     case :ets.lookup(@table, relay_id) do
       [] ->
-        # The relay disappeared between insert_new/lookup; retry once so a
-        # concurrent owner disconnect cannot create a false forbidden result.
         register_relay(original_relay)
 
       [{^relay_id, existing}] ->
         if relay_user_id(existing) == user_id do
-          # Owner re-register: merge non-nil fields so omitted keys (e.g. bridge
-          # descriptor from a channel rejoin) do not wipe controller-set data.
           incoming = compact_nil_values(normalized)
 
           merged =
@@ -268,7 +243,6 @@ defmodule Vibe.RelayRegistry do
 
   defp calculate_uptime(started_at) do
     elapsed = System.system_time(:second) - started_at
-    # rough percentage based on 1 hour = 100%
     min(100, div(elapsed, 36))
   end
 

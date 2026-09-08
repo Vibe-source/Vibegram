@@ -1,33 +1,15 @@
 defmodule Vibe.AI.Tools.Search do
   @moduledoc """
   Gemini-grounded web search — now the FALLBACK path, not the primary one.
-
-  `Vibe.AI.Tools.Research` owns web search (Tavily). This module survives for the case
-  where `TAVILY_API_KEY` is absent, and because Gemini grounding is the only search we
-  have that needs no key of its own beyond `GEMINI_API_KEY`.
-
-  Its known limits, measured 2026-08-05, are why it is no longer primary: 10–21 s per
-  call, `vertexaisearch.cloud.google.com/grounding-api-redirect/…` URLs that cannot be
-  cited or fetched, and a `finishReason: "RECITATION"` failure on roughly one call in
-  three. See `Vibe.AI.Tools.Research` for the full note.
   """
 
   require Logger
 
-  # `gemini-3.0-flash` was retired and every web lookup 404'd ("is not found for API version
-  # v1beta") — search_google was simply dead. 2.5-flash is the newest model this project's
-  # key can actually call: measured 2026-07-25, the 3.x flash models return
-  # 429 "free_tier_requests, limit: 0". Override with GEMINI_SEARCH_MODEL after upgrading the
-  # Gemini plan, so a retirement or a plan change is config, not a code edit.
+  # `gemini-3.0-flash` was retired and every web lookup 404'd ("is not found.
   @default_gemini_model "gemini-2.5-flash"
 
   @doc """
-  Web search. Delegates to `Vibe.AI.Tools.Research`, which uses Tavily when a key is
-  configured and falls back to `gemini/1` below when it is not.
-
-  Kept as the entry point so every existing caller (the agent tool dispatch, the
-  per-agent tool tester, group agents) picks up the better search without a rename —
-  `search_google` is a tool id stored in every agent's `enabled_tools`.
+  Web search.
   """
   def google(params) when is_map(params), do: Vibe.AI.Tools.Research.search(params)
   def google(_params), do: %{error: "Missing search query"}
@@ -111,11 +93,9 @@ defmodule Vibe.AI.Tools.Search do
   defp parse_gemini_response(body, query) do
     case Jason.decode(body) do
       {:ok, %{"candidates" => [%{"content" => %{"parts" => parts}} | _]}} ->
-        # Extract text and grounding metadata
         text_parts = Enum.filter(parts, &Map.has_key?(&1, "text"))
         text = Enum.map_join(text_parts, "", & &1["text"])
 
-        # Try to parse JSON results from text
         case extract_json_results(text) do
           {:ok, results} ->
             {:ok, %{
@@ -126,7 +106,6 @@ defmodule Vibe.AI.Tools.Search do
             }}
 
           {:error, _} ->
-            # If no JSON, return the text as a single result summary
             {:ok, %{
               source: "gemini",
               count: 1,
@@ -136,7 +115,6 @@ defmodule Vibe.AI.Tools.Search do
         end
 
       {:ok, %{"candidates" => [%{"groundingMetadata" => metadata} | _]}} ->
-        # Handle grounding metadata format
         chunks = Map.get(metadata, "groundingChunks", [])
         results = Enum.map(chunks, fn chunk ->
           web = Map.get(chunk, "web", %{})
@@ -164,10 +142,8 @@ defmodule Vibe.AI.Tools.Search do
   end
 
   defp extract_json_results(text) do
-    # Try to find and parse JSON array in the response
     trimmed = String.trim(text)
 
-    # Remove markdown code blocks if present
     cleaned = trimmed
     |> String.replace(~r/^```json\s*/, "")
     |> String.replace(~r/^```\s*/, "")

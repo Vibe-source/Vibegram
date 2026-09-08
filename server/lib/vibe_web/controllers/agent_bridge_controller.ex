@@ -1,14 +1,6 @@
 defmodule VibeWeb.AgentBridgeController do
   @moduledoc """
   REST endpoints for pairing a user's computer (the agent bridge daemon).
-
-  Phone-authenticated:
-    * `POST   /api/agent-bridge/pairing` — mint a single-use pairing code (QR).
-    * `GET    /api/agent-bridge/status`  — is a paired computer connected now?
-    * `DELETE /api/agent-bridge`         — revoke all paired computers.
-
-  Daemon (no user auth — carries only the pairing code):
-    * `POST   /api/agent-bridge/pair`    — redeem a code for a long-lived token.
   """
   use VibeWeb, :controller
   require Logger
@@ -22,7 +14,7 @@ defmodule VibeWeb.AgentBridgeController do
     json(conn, result)
   end
 
-  # POST /api/agent-bridge/pair  (daemon — body: %{"pairing_code" => ..., "device_label" => ...})
+  # POST /api/agent-bridge/pair  (daemon — body:
   def pair(conn, params) do
     code = params["pairing_code"] || params["code"] || ""
     device_label = params["device_label"] || params["device"] || "computer"
@@ -43,13 +35,13 @@ defmodule VibeWeb.AgentBridgeController do
     end
   end
 
-  # POST /api/agent-bridge/request  (daemon — no auth; starts a scan-to-pair flow)
+  # POST /api/agent-bridge/request  (daemon.
   def start_request(conn, params) do
     device_label = params["device_label"] || params["device"] || "computer"
     json(conn, AgentBridge.create_request(device_label))
   end
 
-  # POST /api/agent-bridge/authorize  (authenticated phone — after scanning the QR)
+  # POST /api/agent-bridge/authorize  (authenticated phone.
   def authorize(conn, params) do
     request_id = params["request_id"] || params["requestId"] || ""
     user_id = conn.assigns.current_user.id

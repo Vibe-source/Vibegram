@@ -28,7 +28,6 @@ defmodule VibeAgents.Runs.Events do
 
     with {:ok, run_event} <- result do
       VibeAgents.Outbox.notify()
-      # Local fan-out for same-process waiters (e.g. provider ingress responseMode "reply").
       Phoenix.PubSub.broadcast(VibeAgents.PubSub, "run:" <> run.id, {:run_event, run_event})
     end
 

@@ -24,10 +24,7 @@ defmodule Vibe.Release do
     Application.load(@app)
   end
 
-  # Migrations take DDL locks that transaction-pooled PgBouncer cannot hold, so
-  # point them at Postgres directly when configured. with_repo/3 doesn't forward
-  # a :url opt to start_link, so override the repo's own env instead — read at
-  # start_link time, so this takes effect before with_repo starts the repo below.
+  # Migrations take DDL locks that transaction-pooled PgBouncer cannot hold.
   defp prefer_migration_url do
     case System.get_env("MIGRATION_DATABASE_URL") do
       url when is_binary(url) and url != "" ->

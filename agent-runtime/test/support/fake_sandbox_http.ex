@@ -27,7 +27,6 @@ defmodule VibeAgents.Test.FakeSandboxHTTP do
     end
   end
 
-  # Best effort: the table dies with the process that created it, so a miss is never fatal.
   defp record(method, url, body) do
     ensure_table()
     :ets.insert(@table, {System.unique_integer([:monotonic]), %{method: method, url: url, body: body}})

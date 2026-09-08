@@ -1,18 +1,6 @@
 defmodule Vibe.AgentPostModeTest do
   @moduledoc """
   `responseMode: "post"` — deliver the caller's words, run no model.
-
-  Why this exists: an agix alerting hook posted through `send`, and when the account's
-  model credit ran out every alert stopped arriving. The API was up, the secret valid, the
-  agent published and attached to the chat — and `generate_outputs` failed, so the whole
-  request came back `422 request_failed`. A notification channel that goes down because a
-  language model is unavailable fails at exactly the moment it is needed.
-
-  These tests hold the two properties that make `post` worth having: the text arrives
-  unchanged, and nothing in the path can ask a model. They do not stub the model — the test
-  environment has no provider configured, so a `post` that reached generation would fail
-  here for the same reason it failed in production. That is the point: this passing *is* the
-  proof that generation was skipped.
   """
   use ExUnit.Case, async: false
 
@@ -51,13 +39,9 @@ defmodule Vibe.AgentPostModeTest do
                "vibeChatId" => chat_id
              })
 
-    # One output, and it is the text that went in. Not summarised, not rewritten: an alert
-    # that a model has had an opinion about is no longer the alert.
     assert [output] = result.outputs
     assert output_text(output) == said
 
-    # And it actually landed in the chat, rather than being handed back to the caller the
-    # way `reply` does — an empty list here is the silent failure this mode exists to avoid.
     assert result.vibe_deliveries != []
   end
 
@@ -67,12 +51,9 @@ defmodule Vibe.AgentPostModeTest do
     chat_id: chat_id,
     owner: owner
   } do
-    # No chat named.
     assert {:error, :missing_chat_id} =
              StandaloneAgent.invoke(agent, %{"message" => "hi", "responseMode" => "post"})
 
-    # A chat this agent is not in. Somebody holding a valid agent secret must not be able to
-    # post into arbitrary conversations by choosing a different mode.
     stranger = Ecto.UUID.generate()
     {:ok, _} = Chat.create_chat(stranger, [owner.id])
 
@@ -83,7 +64,6 @@ defmodule Vibe.AgentPostModeTest do
                "vibeChatId" => stranger
              })
 
-    # An unpublished agent, which is the other half of the same boundary.
     draft = agent |> Ecto.Changeset.change(status: "draft") |> Repo.update!()
 
     assert {:error, :agent_unavailable} =
@@ -99,8 +79,6 @@ defmodule Vibe.AgentPostModeTest do
     agent: agent,
     chat_id: chat_id
   } do
-    # `reply` generates, and this environment has no provider, so it fails. What matters is
-    # that it did *not* quietly deliver: a mode nobody recognises must never post.
     before = message_count(chat_id)
 
     StandaloneAgent.invoke(agent, %{

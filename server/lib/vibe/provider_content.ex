@@ -1,20 +1,6 @@
 defmodule Vibe.ProviderContent do
   @moduledoc """
   Validator and degrader for the frozen `vibe.content.v1` provider content contract.
-
-  Providers dual-publish structured `parts` plus envelope `fallbackText`. This
-  module:
-
-  * **validates** the decoded JSON `content` envelope (rule 6 — reject only
-    missing/empty text lanes, unknown `contract` id, or a malformed part frame;
-    unknown `kind` values pass as the extension point)
-  * **normalizes** defaults (`schemaVersion` 1, `required` false, trimmed strings)
-    while preserving unknown extra fields
-  * **degrades** to today's message representation so existing clients render v1
-    content with zero client changes (`to_message_attrs/1`)
-
-  Wire-up into invoke/events and agent-card negotiation is owned by the
-  integrator; this module is pure and has no side effects.
   """
 
   @contract_id "vibe.content.v1"
@@ -26,23 +12,6 @@ defmodule Vibe.ProviderContent do
 
   @doc """
   Validate and normalize a decoded JSON `content` envelope.
-
-  Accepts only contract id `"vibe.content.v1"`. Rejects nil/non-map input,
-  missing or empty `fallbackText`, non-list `parts`, and parts that are not maps,
-  lack `kind`, or lack a non-empty `text` lane. Unknown `kind` values and unknown
-  extra fields are preserved (must-ignore / extension point).
-
-  ## Examples
-
-      iex> Vibe.ProviderContent.parse(%{
-      ...>   "contract" => "vibe.content.v1",
-      ...>   "fallbackText" => "Hello",
-      ...>   "parts" => [%{"kind" => "text", "text" => "Hello"}]
-      ...> })
-      {:ok, %{...}}
-
-      iex> Vibe.ProviderContent.parse(nil)
-      {:error, :invalid_content}
   """
   @spec parse(term()) :: {:ok, map()} | {:error, parse_error()}
   def parse(term) when not is_map(term), do: {:error, :invalid_content}
@@ -65,13 +34,6 @@ defmodule Vibe.ProviderContent do
 
   @doc """
   Degrade a normalized content envelope to today's message attrs.
-
-  * Message body `"text"` is the non-`status` parts' `text` lanes joined with
-    `"\\n\\n"`. If no visible part text remains, envelope `fallbackText` is used.
-  * `media` parts become `"attachments"` entries shaped for the existing agent
-    media path (see module note in handoff): `mediaType`, `mimeType`, `url`,
-    `caption`, `fileName`, `name` (plus `type` when inferable).
-  * All other kinds contribute only their text lane (status skipped for body).
   """
   @spec to_message_attrs(map()) :: map()
   def to_message_attrs(normalized) when is_map(normalized) do
@@ -99,10 +61,6 @@ defmodule Vibe.ProviderContent do
 
   @doc """
   Server-supported content-contract descriptor for agent-card negotiation.
-
-  Shape: `%{"version" => 1, "parts" => core_kinds, "ext" => ["vibe.call"]}`.
-  Registered ext kinds are declared for negotiation; unknown kinds still pass
-  through `parse/1` via the must-ignore extension point.
   """
   @spec capabilities() :: map()
   def capabilities do
@@ -115,14 +73,6 @@ defmodule Vibe.ProviderContent do
 
   @doc """
   Realtime-voice capability descriptor for agent-card negotiation.
-
-  Returns `%{"available" => boolean, "mode" => "callback"}` where `available`
-  is true when the agent's `output_modes` list includes `"voice"`.
-
-  Accepts a `%Vibe.Agent{}` struct or a plain map (`:output_modes` /
-  `"output_modes"`). Nil or non-list `output_modes` are treated as empty
-  (available: false). v1 is always `"callback"` mode — full session
-  negotiation is a documented roadmap item, not implemented here.
   """
   @spec realtime_voice_capability(map() | struct()) :: map()
   def realtime_voice_capability(agent) when is_map(agent) do
@@ -147,7 +97,6 @@ defmodule Vibe.ProviderContent do
     if is_list(modes), do: modes, else: []
   end
 
-  # ── parse helpers ──────────────────────────────────────────────────────────
 
   defp validate_contract(content) do
     case get_str(content, "contract") do
@@ -244,7 +193,6 @@ defmodule Vibe.ProviderContent do
     end
   end
 
-  # ── degrade helpers ────────────────────────────────────────────────────────
 
   defp part_kind(part) when is_map(part), do: get_str(part, "kind")
   defp part_kind(_), do: nil
@@ -271,8 +219,6 @@ defmodule Vibe.ProviderContent do
         get_str(part, "fileName") ||
         get_str(part, "filename")
 
-    # Mirror agent_event_runtime.normalize_attachments keys (url/name/mimeType/caption)
-    # plus content-contract mediaType/fileName so integrators can map either way.
     %{
       "mediaType" => media_type,
       "mimeType" => media_type,
@@ -295,7 +241,6 @@ defmodule Vibe.ProviderContent do
     end
   end
 
-  # Same MIME/URL heuristics as Vibe.AI.AgentEventRuntime.infer_attachment_message_type/1
   defp infer_attachment_type(media_type, url) do
     lowered_mime = media_type |> to_string() |> String.downcase()
     lowered_url = url |> to_string() |> String.downcase()
@@ -325,7 +270,6 @@ defmodule Vibe.ProviderContent do
     end
   end
 
-  # ── key / string access ────────────────────────────────────────────────────
 
   defp get_raw(map, key) when is_map(map) and is_binary(key) do
     case Map.fetch(map, key) do
@@ -347,7 +291,6 @@ defmodule Vibe.ProviderContent do
 
   defp get_str(_, _), do: nil
 
-  # Compile-time atoms only — never String.to_atom on user input.
   defp known_atom("contract"), do: :contract
   defp known_atom("fallbackText"), do: :fallbackText
   defp known_atom("parts"), do: :parts

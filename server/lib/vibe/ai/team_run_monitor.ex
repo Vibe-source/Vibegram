@@ -1,26 +1,6 @@
 defmodule Vibe.AI.TeamRunMonitor do
   @moduledoc """
   Deterministic, zero-token watchdog for one coordinated team run.
-
-  One transient GenServer per `{chat_id, team_run_id}` (Registry-keyed, started
-  on demand under `Vibe.AI.TeamRunMonitorSupervisor`). The durable source of
-  truth stays in the `TeamRun` row + LocalAgentWorker's ets cache — this process
-  holds only ephemeral timers and heartbeat bookkeeping, so a server restart
-  loses nothing: the next bridge event re-starts the monitor and rehydrates it.
-
-  Responsibilities (team-architecture-v2 §4):
-  - liveness: bridge progress frames are heartbeats; a running worker that goes
-    silent past the stall timeout is cancelled and retried once
-  - crash recovery: a worker that settles failed (non usage-limit) is retried
-    once on the same provider
-  - usage-limit failover: a limited worker's slice is restarted FRESH on an
-    idle fallback provider from the same run (no mid-task context handoff)
-  - completion: when every worker state is terminal the run row is finalized
-  - UI: every intervention broadcasts an `agent-team-worker` transition so the
-    team cell's per-worker progress nodes stay live
-
-  Interventions are bounded per row (1 retry) and per run (retry budget) so a
-  bad night can never storm the single Mac bridge with respawns.
   """
 
   use GenServer, restart: :transient
@@ -32,8 +12,7 @@ defmodule Vibe.AI.TeamRunMonitor do
   @registry Vibe.AI.TeamRunRegistry
   @supervisor Vibe.AI.TeamRunMonitorSupervisor
 
-  # Sweep cadence and budgets. Stall timers only run while a worker is in
-  # "running"; a queued/pending worker never accrues stall time.
+  # Sweep cadence and budgets.
   @tick_ms 45_000
   @first_frame_grace_ms 240_000
   @stall_ms 300_000
@@ -73,13 +52,7 @@ defmodule Vibe.AI.TeamRunMonitor do
   end
 
   @doc """
-  Progress frame heartbeat. Called from the bridge progress hot path — cast
-  only. `queued?` marks bridge admission-queue frames: they prove the bridge is
-  alive but the slice hasn't started, so they feed a queue-age cap instead of
-  resetting the stall clock indefinitely. `progress_bytes` is a monotonically
-  increasing per-channel counter; only a change in that counter advances the
-  true-stall clock. A reconnect may reset the counter and is treated as progress
-  once, after which growth is measured from the new baseline.
+  Progress frame heartbeat.
   """
   def note_heartbeat(
         chat_id,
@@ -135,7 +108,6 @@ defmodule Vibe.AI.TeamRunMonitor do
 
   defp cast(_, _, _), do: :ok
 
-  # ── GenServer ──
 
   def start_link({chat_id, team_run_id}) do
     GenServer.start_link(__MODULE__, {chat_id, team_run_id},
@@ -161,8 +133,6 @@ defmodule Vibe.AI.TeamRunMonitor do
           chat_id: chat_id,
           team_run_id: team_run_id,
           lead: Map.get(run, :lead_worker),
-          # handle => %{last_progress_at, last_progress_bytes, last_frame_at,
-          #             spawned_at, retries, terminal}
           rows: rehydrate_rows(chat_id, team_run_id, now),
           run_retries: 0,
           last_activity: now,
@@ -173,16 +143,11 @@ defmodule Vibe.AI.TeamRunMonitor do
         Logger.info("[TeamRunMonitor] armed chat=#{chat_id} run=#{team_run_id}")
         {:ok, state}
 
-      # Sequential/legacy chains advance themselves; unknown runs have nothing
-      # to watch. Refusing here makes every note_* cast a safe no-op for them.
       _ ->
         :ignore
     end
   end
 
-  # Seed heartbeat clocks from whatever the durable run state says right now, so
-  # a rehydrated monitor (server restart / late start) grants a fresh grace
-  # window instead of instantly declaring every worker stalled.
   defp rehydrate_rows(chat_id, team_run_id, now) do
     LocalAgentWorker.team_workers_status(chat_id, team_run_id)
     |> Enum.reduce(%{}, fn entry, acc ->
@@ -247,9 +212,7 @@ defmodule Vibe.AI.TeamRunMonitor do
         fn row ->
           queued_since =
             cond do
-              # First queued frame starts the queue-age clock; later ones keep it.
               queued? -> Map.get(row, :queued_since) || now
-              # A real frame means the slice started — clear the queue clock.
               true -> nil
             end
 
@@ -294,15 +257,12 @@ defmodule Vibe.AI.TeamRunMonitor do
 
     state =
       cond do
-        # Idempotency: a late/duplicate settle for a row we already closed.
         row.terminal ->
           state
 
         ok? ->
           put_row(state, handle, %{row | terminal: true, beat: now})
 
-        # The lead is the user-visible cell — its failure already surfaces
-        # through the v1 fail path; a worker-role respawn would be wrong.
         handle == state.lead ->
           put_row(state, handle, %{row | terminal: true, beat: now})
 
@@ -343,9 +303,6 @@ defmodule Vibe.AI.TeamRunMonitor do
     now = now_ms()
     state = check_contract_barrier(state, now)
 
-    # A wedged bridge queue heartbeats forever without ever running — cap how
-    # long a slice may sit queued, then close it honestly instead of hanging
-    # the run. No retry: a redispatch would just re-enter the same queue.
     state =
       state.rows
       |> Enum.filter(fn {_handle, row} ->
@@ -399,13 +356,7 @@ defmodule Vibe.AI.TeamRunMonitor do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # ── Interventions ──
 
-  # Stall only applies to rows the durable state believes are actively running —
-  # queued/pending rows are waiting on the bridge slot, not stuck. Frame arrival
-  # by itself is not progress: a repeated/empty frame only updates last_frame_at.
-  # Conversely, a laggy large push remains healthy as long as received bytes keep
-  # changing, even if its latest rendered frame is old in transit.
   defp stalled?(handle, row, state, now) do
     last_progress_at = Map.get(row, :last_progress_at) || row.spawned_at
     last_progress_bytes = Map.get(row, :last_progress_bytes) || 0
@@ -422,10 +373,6 @@ defmodule Vibe.AI.TeamRunMonitor do
     end)
   end
 
-  # Board polling is deliberately owned by this zero-token monitor. Explicit
-  # CONTRACT sections release consumers on the next sweep; terminal owners and
-  # the fixed spawn-age deadline tell LocalAgentWorker when best-effort fallback
-  # freezing is allowed.
   defp check_contract_barrier(state, now) do
     contracts = LocalAgentWorker.team_contracts(state.chat_id, state.team_run_id)
 
@@ -470,9 +417,6 @@ defmodule Vibe.AI.TeamRunMonitor do
       state
   end
 
-  # Crash/stall → cancel any live task and retry ONCE on the same provider,
-  # within the per-run budget. Beyond budget the row settles as failed and the
-  # run keeps going — an honest gap beats a respawn storm on one Mac.
   defp retry_row(state, handle, row, now, reason) do
     cond do
       row.retries >= @row_retry_limit or state.run_retries >= @run_retry_budget ->
@@ -528,8 +472,6 @@ defmodule Vibe.AI.TeamRunMonitor do
     end
   end
 
-  # Usage-limit → the slice restarts FRESH on an idle fallback provider from the
-  # same run roster. The limited provider's row is closed as "reassigned".
   defp reassign_row(state, handle, row, now) do
     if state.run_retries >= @run_retry_budget do
       LocalAgentWorker.monitor_mark_worker(
@@ -582,7 +524,6 @@ defmodule Vibe.AI.TeamRunMonitor do
     %{state | rows: Map.put(state.rows, handle, row)}
   end
 
-  # When the durable state shows every worker terminal, close the run row once.
   defp maybe_finalize(%{finalized: true} = state), do: state
 
   defp maybe_finalize(state) do

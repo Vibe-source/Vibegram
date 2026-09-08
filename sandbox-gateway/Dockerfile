@@ -6,7 +6,7 @@ COPY src ./src
 RUN cargo build --release
 
 FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --shell /usr/sbin/nologin gateway
 COPY --from=build /build/target/release/sandbox-gateway /usr/local/bin/sandbox-gateway

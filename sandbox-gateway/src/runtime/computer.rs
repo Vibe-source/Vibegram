@@ -1,5 +1,5 @@
-//! Per-sandbox computer sessions, the shared frame cache, and the control state machine.
-//! Every control transition is decided here; routes only translate the errors.
+//! Per-sandbox computer sessions.
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -116,7 +116,7 @@ pub struct SessionView {
     pub expires_at: i64,
 }
 
-/// What a viewer asks for when it opens a session; every field is clamped on use.
+/// What a viewer asks for when it opens a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionOpts {
     pub viewer_id: String,
@@ -159,7 +159,6 @@ impl Entry {
         self.control_expires_at = None;
     }
 
-    /// TTL expiry and a holder whose session is gone both fall back to the agent.
     fn settle(&mut self, now: i64) {
         let expired = self.control_expires_at.map(|at| now >= at).unwrap_or(false);
         let orphaned = self
@@ -192,7 +191,6 @@ impl Registry {
         Self::default()
     }
 
-    /// Adds a viewer. An existing session keeps its geometry — a second viewer never restarts it.
     pub fn open_session(
         &self,
         cfg: &Config,
@@ -242,7 +240,6 @@ impl Registry {
         })
     }
 
-    /// Idempotent: closing an unknown session still reports closed.
     pub fn close_session(&self, sandbox: &str, session_id: &str, now: i64) {
         let mut entries = self.entries.lock().unwrap();
         let Some(entry) = entries.get_mut(sandbox) else {
@@ -255,7 +252,6 @@ impl Registry {
         }
     }
 
-    /// Refreshes one viewer's idle clock, or every viewer when no session is named.
     pub fn touch(&self, sandbox: &str, session_id: Option<&str>, now: i64) {
         let mut entries = self.entries.lock().unwrap();
         let Some(entry) = entries.get_mut(sandbox) else {
@@ -313,7 +309,6 @@ impl Registry {
         Ok(entry.view())
     }
 
-    /// Only the holder hands control back; anyone else gets the current state unchanged.
     pub fn release(
         &self,
         sandbox: &str,
@@ -354,7 +349,6 @@ impl Registry {
         Ok(())
     }
 
-    /// 204 only while the caller already holds the newest frame and it is younger than 1000/fps.
     pub fn decide_frame(
         &self,
         cfg: &Config,
@@ -415,7 +409,6 @@ impl Registry {
         frame
     }
 
-    /// One in-flight capture per sandbox: concurrent pollers wait here and share the result.
     pub fn capture_lock(&self, sandbox: &str) -> Arc<AsyncMutex<()>> {
         self.locks
             .lock()
@@ -519,7 +512,7 @@ pub fn close_session(state: &AppState, id: &str, session_id: &str) {
     state.computer.close_session(id, session_id, now_unix());
 }
 
-/// `Ok(None)` is the 204: the caller already has the newest frame and it is still fresh.
+/// `Ok(None)` is the 204:
 pub async fn frame(
     state: &AppState,
     id: &str,
@@ -712,7 +705,6 @@ mod tests {
         let reg = Registry::new();
         with_session(&reg, &cfg, "sb-a", 0);
         with_session(&reg, &cfg, "sb-b", 0);
-        // A third viewer on an already-live sandbox is fine; a third sandbox is not.
         assert!(reg.open_session(&cfg, "sb-a", &opts("viewer:2"), 0).is_ok());
         assert_eq!(
             reg.open_session(&cfg, "sb-c", &opts("viewer:3"), 0),
@@ -947,7 +939,6 @@ mod tests {
             Err(ComputerError::ControlNotHeld)
         );
 
-        // Still touched, but past COMPUTER_SESSION_MAX_SECONDS.
         reg.touch("sb-kept", Some(&kept), 950);
         reg.sweep(&cfg, 950);
         assert_eq!(reg.live_sandboxes(), 0);

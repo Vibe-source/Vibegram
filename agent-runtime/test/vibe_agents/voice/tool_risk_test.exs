@@ -15,7 +15,6 @@ defmodule VibeAgents.Voice.ToolRiskTest do
     assert ToolRisk.classify("browser_open") == :write_local
     assert ToolRisk.classify("browser_act") == :write_local
     assert ToolRisk.classify("remember") == :write_local
-    # Matches VibeAgents.Broker.risk_class/2's static default (content heuristics live there, not here).
     assert ToolRisk.classify("handoff_to_agent") == :write_local
   end
 
@@ -40,8 +39,7 @@ defmodule VibeAgents.Voice.ToolRiskTest do
     assert ToolRisk.decision(:write_local, "computer_run", "approval_required", %{}) == :approval
   end
 
-  # No frozen tool name reaches :external_effect through classify/1 (matches Broker: it's
-  # content-derived, not name-derived) — decision/4's table is still exercised directly.
+  # No frozen tool name reaches :external_effect through classify/1 (matches.
   test "external_effect needs approval unless full_auto and allowlisted; manual is plan-only" do
     assert ToolRisk.decision(:external_effect, "some_tool", "safe_auto", %{}) == :approval
     assert ToolRisk.decision(:external_effect, "some_tool", "approval_required", %{}) == :approval

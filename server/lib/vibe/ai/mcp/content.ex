@@ -1,39 +1,21 @@
 defmodule Vibe.AI.MCP.Content do
   @moduledoc """
-  Turns MCP result content blocks into what the agent loop already understands:
-  a short text summary for the model, plus zero or more delivered outputs.
-
-  The whole point of this module is that **base64 never reaches the model**.
-  A 300 KB PDF is ~400 KB of base64; putting that in a tool result would blow
-  the context window, cost real money, and tell the model nothing it can use.
-  So blobs are written to storage here and the model is handed a filename and
-  a size — while the *user* gets the actual file.
-
-  Output shape matches what `StandaloneAgent.tool_outputs_from_result/2`
-  already emits for documents, so delivery, batching, and the clients render
-  MCP files exactly like a spreadsheet export with no client change.
+  Turns MCP result content blocks into what the agent loop already understands: a short text
+  summary for the model, plus zero or more delivered outputs.
   """
 
   require Logger
 
   alias Vibe.Storage
 
-  # Anything larger is refused rather than streamed through the BEAM heap and
-  # up to storage. A cargo manifest is tens of KB; 25 MB means something is
-  # wrong on the far side.
+  # Anything larger is refused rather than streamed through the BEAM heap and.
   @max_blob_bytes 25 * 1024 * 1024
 
-  # One call answers with a handful of documents at most. A server returning
-  # hundreds of blocks would otherwise mean hundreds of storage uploads and an
-  # unusable wall of attachments in the chat.
+  # One call answers with a handful of documents at most.
   @max_files_per_call 8
 
   @doc """
   Normalizes one `tools/call` result.
-
-  Returns `%{text: binary, outputs: [map], files: [map]}` where `outputs` are
-  ready for the agent's output pipeline and `files` is the same list in a form
-  suited to logs and structured tool results.
   """
   def normalize(%{content: content} = result, opts \\ []) do
     owner_id = Keyword.get(opts, :owner_id) || "agent"
@@ -90,7 +72,6 @@ defmodule Vibe.AI.MCP.Content do
     store(data, mime, file_name(raw, mime), owner, server)
   end
 
-  # Embedded resource: either bytes (`blob`) or inline text (`text`).
   defp block(%{"type" => "resource", "resource" => resource}, owner, server)
        when is_map(resource) do
     mime = resource["mimeType"] || "application/octet-stream"
@@ -107,7 +88,6 @@ defmodule Vibe.AI.MCP.Content do
     end
   end
 
-  # Resource links carry a URL we can hand straight to the client.
   defp block(%{"type" => "resource_link", "uri" => uri} = raw, _owner, _server)
        when is_binary(uri) do
     if String.starts_with?(uri, "http://") or String.starts_with?(uri, "https://") do
@@ -120,8 +100,6 @@ defmodule Vibe.AI.MCP.Content do
          metadata: %{"fileName" => file_name(raw, mime), "mimeType" => mime, "source" => "mcp"}
        }}
     else
-      # Custom schemes (cargo://…) are addresses on the far side, not
-      # something a phone can open. Mention it, do not pretend it is a file.
       {:text, raw["name"] || uri}
     end
   end
@@ -146,8 +124,6 @@ defmodule Vibe.AI.MCP.Content do
     else
       {:error, reason} ->
         Logger.warning("[MCP.Content] dropping block name=#{name} reason=#{inspect(reason)}")
-        # Say so in the text rather than silently losing the file — a missing
-        # attachment with a confident "here you go" is the worst outcome.
         {:text, "(فایل #{name} ساخته شد ولی ذخیره نشد: #{describe(reason)})"}
     end
   end
@@ -200,7 +176,6 @@ defmodule Vibe.AI.MCP.Content do
     |> sanitize_name()
   end
 
-  # A far-side name reaches our storage path, so no traversal and no surprises.
   defp sanitize_name(name) do
     name
     |> String.replace(~r/[^\p{L}\p{N}\.\-_]+/u, "-")
@@ -239,8 +214,6 @@ defmodule Vibe.AI.MCP.Content do
   defp output_type("audio/" <> _), do: "audio"
   defp output_type(_), do: "file"
 
-  # The model still needs a sentence when a server answers with a file and no
-  # prose, otherwise the turn ends with an attachment and dead silence.
   defp fallback_text("", [], _result), do: ""
 
   defp fallback_text("", outputs, _result) do

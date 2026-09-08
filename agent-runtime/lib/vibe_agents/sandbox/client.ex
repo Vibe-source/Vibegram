@@ -4,7 +4,7 @@ defmodule VibeAgents.Sandbox.Client do
 
   @timeout 30_000
   @exec_timeout 250_000
-  # Gateway browser calls wait up to SANDBOX_BROWSER_TIMEOUT_MS (default 90 s) for a cold Chromium.
+  # Gateway browser calls wait up to SANDBOX_BROWSER_TIMEOUT_MS (default 90.
   @browser_timeout 120_000
 
   def configured?, do: not is_nil(base_url()) and not is_nil(token())
@@ -26,7 +26,6 @@ defmodule VibeAgents.Sandbox.Client do
   def stop(id), do: post("/v1/sandboxes/#{id}/stop", %{})
   def delete(id), do: delete_request("/v1/sandboxes/#{id}")
 
-  # Computer sessions (docs/agent-computer-v1.md §3.1). `session` refreshes that viewer's idle clock.
   def computer_session(id, body), do: post("/v1/sandboxes/#{id}/computer/session", body)
 
   def close_computer_session(id, session_id),
@@ -74,7 +73,6 @@ defmodule VibeAgents.Sandbox.Client do
       req = Elixir.Finch.build(method, url, json_headers, encoded)
 
       case Elixir.Finch.request(req, VibeAgents.Finch, receive_timeout: timeout) do
-        # 204 = nothing newer than `since` on computer/frame; not an error, not an empty body.
         {:ok, %{status: 204}} ->
           {:ok, :no_change}
 

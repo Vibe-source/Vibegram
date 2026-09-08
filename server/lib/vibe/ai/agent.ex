@@ -895,24 +895,8 @@ defmodule Vibe.AI.Agent do
       |> with_turn_memory(Keyword.get(opts, :turn_memory, []))
 
     enabled_tools = Keyword.get(opts, :enabled_tools, available_tool_names())
-    # Owner-management tools (list_my_agents, get/update_current_agent_config, ...) are
-    # normally "always available" regardless of `enabled_tools` — correct for the built-in
-    # Vibe AI assistant, where the signed-in user IS the requester. A user-created agent's
-    # own runtime (Vibe.AI.StandaloneAgent) reuses this same loop for messages from ANYONE,
-    # so it explicitly passes admin_mode: false unless the requester is verified as the
-    # agent's owner chatting in their private DM (Chat.effective_agent_policy/3) — otherwise
-    # any stranger DMing someone else's agent would see owner-only tools.
     admin_mode = Keyword.get(opts, :admin_mode, true)
     max_tokens = Keyword.get(opts, :max_tokens, 4096)
-    # 3 was too tight for a real agentic loop: resolve → fails → retry → answer is already 4
-    # rounds, and hitting the cap used to surface as a hard error with the streamed text
-    # thrown away. Depth exhaustion now returns the partial answer (see AgentRuntime.do_run).
-    #
-    # 6 was still too tight once research became a real loop. A genuine research turn is
-    # plan+search (1) → read (2) → gap search (3) → read (4) → answer, and a single failed
-    # search plus its retry eats two of those. Depth is a runaway guard, not a budget: the
-    # model stops when it has the answer, and every round costs a provider call it would
-    # not make without a reason.
     max_depth = Keyword.get(opts, :max_depth, 12)
     model_provider = Keyword.get(opts, :model_provider, "anthropic")
     model_id = Keyword.get(opts, :model_id, @claude_model)
@@ -947,10 +931,7 @@ defmodule Vibe.AI.Agent do
     )
   end
 
-  # Turn memory rides in the SYSTEM prompt, not in the assistant history. Putting it in the
-  # message content (as a `[did: …]` line) worked, but the model copied the format straight
-  # into its user-visible reply — internal state must not live where the model is imitating
-  # style.
+  # Turn memory rides in the SYSTEM prompt, not in the assistant history.
   @turn_memory_limit 6
 
   defp with_turn_memory(system_prompt, memory) when is_binary(system_prompt) do
@@ -983,10 +964,6 @@ defmodule Vibe.AI.Agent do
 
   @doc """
   The built-in Vibe AI assistant's system prompt.
-
-  Exposed so tests can assert it still carries `Vibe.AI.AgenticPolicy` rather than a
-  drifted private copy — the three prompt builders diverging is exactly how the research
-  policy came to apply to the built-in assistant only.
   """
   def default_system_prompt, do: @system_prompt
 
@@ -1043,7 +1020,6 @@ defmodule Vibe.AI.Agent do
   end
 
   defp build_messages(history, user_message, image_urls) do
-    # Convert history to Claude format
     history_messages =
       Enum.map(history, fn msg ->
         %{
@@ -1052,12 +1028,10 @@ defmodule Vibe.AI.Agent do
         }
       end)
 
-    # Build current message with optional images
     current_content =
       if Enum.empty?(image_urls) do
         user_message
       else
-        # Multi-modal message with images
         image_blocks =
           Enum.map(image_urls, fn url ->
             %{
@@ -1081,8 +1055,6 @@ defmodule Vibe.AI.Agent do
     requester_user_id = Map.get(state, :requester_user_id)
     chat_id = Map.get(state, :chat_id)
     agent_id = Map.get(state, :agent_id)
-    # A question is a terminal control item, equivalent to Codex yielding for
-    # user input. Do not execute sibling calls speculatively in that batch.
     executable_calls =
       case Enum.find(tool_calls, &(&1["name"] == "ask_user")) do
         nil -> tool_calls
@@ -1110,7 +1082,6 @@ defmodule Vibe.AI.Agent do
   end
 
   defp execute_tools(tool_calls, callback, user_id, requester_user_id, chat_id, agent_id) do
-    # Send all progress labels immediately so the UI shows activity
     Enum.each(tool_calls, fn tool ->
       tool_name = tool["name"]
       tool_input = tool["input"] || %{}
@@ -1122,7 +1093,6 @@ defmodule Vibe.AI.Agent do
         tool: tool_name,
         tool_call_id: tool["id"],
         status: "running",
-        # Codex-like item identity for list note rows
         item: %{
           type: "tool",
           name: tool_name,
@@ -1132,10 +1102,6 @@ defmodule Vibe.AI.Agent do
       })
     end)
 
-    # Run tool calls concurrently. async_nolink + an explicit {:exit, _} clause so ONE
-    # broken tool becomes an error the model can read instead of killing the whole turn:
-    # Task.async links, so a raising tool used to take the runtime process down with it
-    # (no done, no error, no DB finalize — the turn just evaporated).
     tasks =
       Enum.map(tool_calls, fn tool ->
         {tool,
@@ -1144,7 +1110,6 @@ defmodule Vibe.AI.Agent do
          end)}
       end)
 
-    # Await all tasks with a generous timeout (120s per tool)
     Enum.map(tasks, fn {tool, task} ->
       case Task.yield(task, 120_000) || Task.shutdown(task) do
         {:ok, result} ->
@@ -1161,8 +1126,6 @@ defmodule Vibe.AI.Agent do
     end)
   end
 
-  # Re-emits the running node with a new label. Same id + same tool, so the client updates
-  # the row in place rather than appending another step.
   defp tool_step_reporter(tool, callback) do
     fn label ->
       callback.(%{
@@ -1177,9 +1140,6 @@ defmodule Vibe.AI.Agent do
     end
   end
 
-  # A crashed tool still owes the model a tool_result for its tool_use id (a missing or
-  # "unknown" id makes the provider reject the whole follow-up request), and still owes
-  # the UI a failed step.
   defp crash_tool_result(tool, callback, reason) do
     result =
       tool_error_envelope(
@@ -1233,9 +1193,6 @@ defmodule Vibe.AI.Agent do
     }
   end
 
-  # Progress labels are single-line shimmer rows. Keep them SHORT (verb + object, ≤ 24
-  # chars) so nothing is clipped downstream — AgenticEventShape.compact_label is a safety
-  # net, not the intended shortener.
   defp tool_running_label(tool_name, tool_input) do
     case tool_name do
       "search_music" -> music_progress_label(tool_input)
@@ -1273,9 +1230,6 @@ defmodule Vibe.AI.Agent do
     end
   end
 
-  # A research step that says WHAT it is looking at is the difference between a spinner and
-  # a agent you can follow. "Searching · training volume" beats "Searching the web…", and a
-  # read step naming the domain is how the user sees breadth ("it checked four sites").
   defp search_progress_label(input) when is_map(input) do
     case input["query"] do
       query when is_binary(query) and query != "" -> "Searching · " <> clip_words(query, 26)
@@ -1315,9 +1269,6 @@ defmodule Vibe.AI.Agent do
     tool_input = tool["input"] || %{}
     start_time = System.monotonic_time(:millisecond)
 
-    # Long-running tools report their own intermediate beats on the SAME node, so a 3-5s
-    # lookup reads "Opening SoundCloud… → Reading metadata… → Found · X" instead of sitting
-    # on one frozen label.
     on_step = tool_step_reporter(tool, callback)
 
     result =
@@ -1446,9 +1397,6 @@ defmodule Vibe.AI.Agent do
     duration_ms = System.monotonic_time(:millisecond) - start_time
     Logger.info("[Agent] Tool #{tool_name} completed in #{duration_ms}ms")
 
-    # Failures are reported as failures. The old code sent status "done"/"complete" for
-    # error results too, so the UI could never show a failed step and the model had only
-    # a bare error string to reason about.
     failed? = tool_result_error?(result)
     result = if failed?, do: enrich_tool_error(tool_name, tool_input, result), else: result
     complete_label = tool_complete_label(tool_name, tool_input, result)
@@ -1485,10 +1433,6 @@ defmodule Vibe.AI.Agent do
       crash_tool_result(tool, callback, {kind, reason})
   end
 
-  # Turn a bare `%{error: "..."}` into something the model can DECIDE on:
-  # retryable? which code? what should it do next? Without this the prompt's "one
-  # intelligent retry is allowed" made the model keyword-search a dead URL's slug and
-  # ship an unrelated track as "a likely match".
   defp enrich_tool_error(tool_name, tool_input, result) when is_map(result) do
     message = Map.get(result, :error) || Map.get(result, "error") || "Tool failed"
     {code, retryable, hint} = classify_tool_error(tool_name, tool_input, to_string(message))
@@ -1500,8 +1444,6 @@ defmodule Vibe.AI.Agent do
 
   defp enrich_tool_error(_tool_name, _tool_input, result), do: result
 
-  # A dead / private / removed link is TERMINAL — there is nothing to retry, and
-  # re-searching the URL text is how we ended up sending deadmau5 for a 404 slug.
   defp classify_tool_error("search_music", tool_input, message) do
     url = tool_input["url"] || tool_input["link"] || tool_input["query"] || ""
     link_request? = is_binary(url) and String.starts_with?(to_string(url), "http")
@@ -1522,9 +1464,6 @@ defmodule Vibe.AI.Agent do
     end
   end
 
-  # Current-agent tools in a chat with no attached agent: terminal. Retrying the same tool
-  # cannot make an agent appear, and the answer the user actually wants lives in
-  # list_my_agents.
   defp classify_tool_error(tool_name, _tool_input, message)
        when tool_name in [
               "get_current_agent_config",
@@ -1578,9 +1517,6 @@ defmodule Vibe.AI.Agent do
 
   defp music_progress_label(_), do: "Searching music…"
 
-  # Done labels are single-line notes: keep the whole string short enough that the client
-  # never has to clip mid-word ("Found · Anathema - Flying [Live…" was the old output), but
-  # long enough to stay informative ("Found · Flying…" told the user nothing).
   @done_label_limit 30
 
   defp tool_complete_label("search_music", _input, result) when is_map(result) do
@@ -1597,8 +1533,6 @@ defmodule Vibe.AI.Agent do
     end
   end
 
-  # The note itself carries the answer, exactly like "Found · <track>": the user sees the
-  # count in the feed before the summary sentence arrives.
   defp tool_complete_label("list_my_agents", _input, result) when is_map(result) do
     cond do
       tool_result_error?(result) ->
@@ -1615,8 +1549,6 @@ defmodule Vibe.AI.Agent do
     end
   end
 
-  # Same idea for the identity/room steps: the note carries the outcome (the handle, the
-  # room name) so the feed reads as work done rather than as a generic "Step done".
   defp tool_complete_label("check_agent_username", input, result) when is_map(result) do
     handle = to_string(Map.get(result, "username") || input["username"] || "")
 
@@ -1651,8 +1583,6 @@ defmodule Vibe.AI.Agent do
     end
   end
 
-  # Research steps report breadth, because breadth is the thing the user is judging: "6
-  # results · 4 sites" says the agent actually looked around, "Web results in" says nothing.
   defp tool_complete_label("search_google", _input, result) when is_map(result) do
     if tool_result_error?(result) do
       tool_failed_label("search_google")
@@ -1775,7 +1705,6 @@ defmodule Vibe.AI.Agent do
     end
   end
 
-  # Trim on a word boundary so a note never ends mid-word.
   defp clip_words(text, limit) do
     trimmed = text |> to_string() |> String.split(~r/\s+/u, trim: true) |> Enum.join(" ")
 
@@ -1784,8 +1713,6 @@ defmodule Vibe.AI.Agent do
     else
       cut = String.slice(trimmed, 0, limit - 1)
       on_word = String.replace(cut, ~r/\s+\S*$/u, "")
-      # Keep the word boundary only while it preserves most of the label (a single long token
-      # would otherwise be erased entirely).
       base = if String.length(on_word) >= div(limit * 3, 5), do: on_word, else: cut
 
       base
@@ -1803,9 +1730,6 @@ defmodule Vibe.AI.Agent do
 
   defp waiting_for_user_result?(_), do: false
 
-  # Cap of events pulled into memory for payload-based aggregation (group_by /
-  # metric sums). Exact totals and event_type/source breakdowns are computed in
-  # SQL and are NOT bounded by this cap; only payload aggregation samples it.
   @inbox_aggregation_cap 5_000
 
   defp query_event_inbox(input, agent_id, requester_user_id) do
@@ -1846,12 +1770,10 @@ defmodule Vibe.AI.Agent do
           do: from(e in base, where: like(e.event_type, ^(event_type_prefix <> "%"))),
           else: base
 
-      # Exact totals, independent of any row limit.
       total_matching = Repo.aggregate(base, :count, :id)
       source_counts = sql_count_by(base, :source)
       event_type_counts = sql_count_by(base, :event_type)
 
-      # Sample (capped) for payload-based aggregation and human-readable rows.
       sample_cap = if(group_by || metrics != [], do: @inbox_aggregation_cap, else: limit)
 
       sample =
@@ -1971,7 +1893,6 @@ defmodule Vibe.AI.Agent do
     |> Enum.uniq()
   end
 
-  # Exact group counts computed in SQL for a top-level column.
   defp sql_count_by(query, column) do
     from(e in query,
       group_by: field(e, ^column),
@@ -1984,8 +1905,6 @@ defmodule Vibe.AI.Agent do
     end)
   end
 
-  # Group counts over a payload dimension (or event_type/source) from the
-  # in-memory sample. Supports arbitrary dotted payload paths (e.g. "a.b.c").
   defp aggregate_group_counts(events, "event_type"), do: count_by(events, & &1.event_type)
   defp aggregate_group_counts(events, "source"), do: count_by(events, & &1.source)
 
@@ -2017,11 +1936,6 @@ defmodule Vibe.AI.Agent do
     end)
   end
 
-  # Resolve a dotted path against an event payload. Robust to two shapes:
-  #   * flat dotted scalar keys, e.g. %{"traffic.sessions" => 12} (how external
-  #     senders that flatten nested data deliver analytics), and
-  #   * nested maps, e.g. %{"traffic" => %{"sessions" => 12}}, including the case
-  #     where an intermediate value arrived as a JSON-encoded string.
   defp dig_payload(payload, segments) when is_map(payload) do
     path = Enum.join(segments, ".")
 
@@ -2105,9 +2019,6 @@ defmodule Vibe.AI.Agent do
     end
   end
 
-  # With no attached agent, Platform.resolve_grantee falls back to the "claude" bridge grantee —
-  # which would silently hand the built-in assistant the grants the user gave Claude Code. Name
-  # ourselves instead: platform access in this DM must be granted to "vibe" explicitly.
   defp platform_input(input, agent_id) when is_map(input) do
     if is_binary(agent_id) and agent_id != "" do
       input
@@ -2121,9 +2032,6 @@ defmodule Vibe.AI.Agent do
 
   defp platform_input(input, _agent_id), do: input
 
-  # Owner-scoped agent inventory. get_current_agent_config only ever sees the agent attached
-  # to THIS chat, so in the built-in assistant DM (no attached agent) the assistant had no way
-  # to answer "do I have any agents?" at all — it apologised about an internal owner lookup.
   defp list_my_agents(_input, owner_user_id) when is_binary(owner_user_id) do
     agents = Agents.list_agents(owner_user_id)
 
@@ -2141,9 +2049,6 @@ defmodule Vibe.AI.Agent do
     )
   end
 
-  # Deliberately built from the struct (plus the preloaded shadow user) instead of
-  # Agents.agent_payload/2 — the payload runs extra per-agent queries for attached chats and
-  # integrations, which a "how many agents do I have" answer does not need.
   defp my_agent_summary(%AgentSchema{} = agent) do
     username = agent.agent_user && agent.agent_user.username
 
@@ -2151,8 +2056,6 @@ defmodule Vibe.AI.Agent do
       "id" => agent.id,
       "display_name" => agent.display_name,
       "username" => username,
-      # The shareable link is part of the answer, not an extra lookup: "do I have any
-      # agents?" should come back with something the user can actually send someone.
       "public_link" => Vibe.Links.agent_url(username),
       "status" => agent.status,
       "model" => agent.model_id,
@@ -2164,8 +2067,6 @@ defmodule Vibe.AI.Agent do
     }
   end
 
-  # A username is permanent public identity (it IS the link), so availability is a real
-  # lookup the user gets to react to — never something we paper over with a random suffix.
   defp check_agent_username(input, owner_user_id) when is_binary(owner_user_id) do
     candidate = to_string(input["username"] || input["handle"] || "") |> String.trim_leading("@")
     display_name = input["display_name"] || input["displayName"] || candidate
@@ -2736,8 +2637,6 @@ defmodule Vibe.AI.Agent do
       |> maybe_put_trimmed(input, "voice_profile")
       |> maybe_put_status(input)
 
-    # تهی بودن اینجا خطا نیست: ممکن است تنها تغییرِ خواسته‌شده chat مقصد باشد
-    # که یک گام بعد افزوده می‌شود. بررسیِ «هیچ تغییری خواسته نشده» به caller رفت.
     with {:ok, attrs} <- maybe_put_tool_list(base_attrs, input),
          {:ok, attrs} <- maybe_put_output_modes(attrs, input),
          {:ok, attrs} <- maybe_put_system_prompt(attrs, input) do
@@ -2750,9 +2649,6 @@ defmodule Vibe.AI.Agent do
   defp reject_empty_update(attrs) when map_size(attrs) == 0, do: {:error, :no_changes_requested}
   defp reject_empty_update(attrs), do: {:ok, attrs}
 
-  # chat مقصدِ پیش‌فرض: جایی که رویدادهای ورودیِ یکپارچه‌سازی می‌نشینند وقتی
-  # فرستنده chat را نام نبرده. کاربر معمولاً id را نمی‌داند، پس «here» را هم
-  # می‌پذیریم و به chat جاری ترجمه می‌کنیم.
   defp maybe_put_destination_chat(attrs, input, agent, chat_id) do
     case Map.get(input, "default_destination_chat_id") do
       nil ->
@@ -2764,8 +2660,6 @@ defmodule Vibe.AI.Agent do
             {:error, :unknown_destination_chat}
 
           resolved ->
-            # ایجنت باید عضو آن chat باشد، وگرنه رویداد بعداً با
-            # `:chat_not_attached` رد می‌شود و علتش معلوم نیست.
             if Vibe.Chat.is_participant?(resolved, agent.agent_user_id) do
               {:ok, Map.put(attrs, "default_destination_chat_id", resolved)}
             else
@@ -2891,9 +2785,6 @@ defmodule Vibe.AI.Agent do
       "events_url" => build_events_url(agent),
       "default_destination_chat_id" => payload.defaultDestinationChatId,
       "default_destination_chat" => default_destination_chat,
-      # مقصدِ واقعیِ رویدادها. اگر چیزی ذخیره نشده باشد، runtime به DM مالک
-      # برمی‌گردد — پس گزارشِ «مقصدی ندارم» گمراه‌کننده بود. همان مقداری را
-      # نشان بده که رویداد در عمل به آن می‌رسد.
       "effective_destination_chat_id" => effective_destination_chat_id(agent),
       "attached_chats" => attached_chats,
       "incoming_chat_enabled" => Agents.incoming_chat_enabled?(agent),
@@ -2981,9 +2872,6 @@ defmodule Vibe.AI.Agent do
     end
   end
 
-  # Two very different failures. "No agent attached to this chat" is the normal state of the
-  # built-in assistant DM and is terminal (nothing to retry, use list_my_agents instead);
-  # "no owner" means the caller is unauthenticated.
   defp resolve_owned_agent(agent_id, requester_user_id) when is_binary(requester_user_id) do
     if is_binary(agent_id) and agent_id != "" do
       {:error, :agent_not_available}
@@ -3085,9 +2973,6 @@ defmodule Vibe.AI.Agent do
   end
 
   defp condensed_payload(payload) when is_map(payload) do
-    # Senders that flatten nested data deliver grouped analytics sections as
-    # JSON-encoded strings. Decode them back so the model sees structured numbers
-    # (e.g. traffic/commerce/funnel summary blobs) instead of opaque strings.
     payload
     |> Enum.map(fn {key, value} -> {to_string(key), maybe_decode_json(value)} end)
     |> Enum.take(40)
@@ -3224,11 +3109,6 @@ defmodule Vibe.AI.Agent do
 
   defp filter_tools(enabled_tools, admin_mode), do: filter_tools(enabled_tools, admin_mode, [])
 
-  # MCP tools are discovered at runtime, so they cannot be listed in
-  # `enabled_tools` the way built-ins are — a channel allowlist written last
-  # week has never heard of a tool the far side added this morning. One gate
-  # id (`call_mcp_tool`) turns the whole set on, which keeps the existing
-  # intersect-based channel policy meaningful without pinning tool names.
   defp filter_tools(enabled_tools, admin_mode, mcp_tools) do
     allowed =
       List.wrap(enabled_tools)
@@ -3249,10 +3129,6 @@ defmodule Vibe.AI.Agent do
     end
   end
 
-  # If an agent may search the web it may read what it found. Search without reading is the
-  # configuration that produces confident answers from snippets, and every agent already in
-  # the database has an `enabled_tools` list written before `read_url` existed — gating it
-  # behind a separate toggle would leave all of them permanently snippet-bound.
   defp grant_reading_to_searchers(allowed) do
     if MapSet.member?(allowed, "search_google") do
       MapSet.put(allowed, "read_url")

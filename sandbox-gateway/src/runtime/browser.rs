@@ -1,5 +1,3 @@
-//! Browser actions run through `node /opt/vibe/browser.js` inside the container (spec §3.6):
-//! the gateway never speaks CDP itself, it only execs the script and parses its one JSON line.
 use bollard::container::LogOutput;
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use futures_util::StreamExt;
@@ -17,7 +15,7 @@ use super::now_unix;
 const BROWSER_SCRIPT: &str = "/opt/vibe/browser.js";
 const DEFAULT_BROWSER_TIMEOUT_MS: u64 = 90_000;
 
-/// A cold Chromium start on a 1-CPU sandbox can take 30-60 s; SANDBOX_BROWSER_TIMEOUT_MS overrides.
+/// A cold Chromium start on a 1-CPU sandbox can take 30-60 s.
 fn browser_timeout_ms() -> u64 {
     std::env::var("SANDBOX_BROWSER_TIMEOUT_MS")
         .ok()
@@ -97,8 +95,7 @@ async fn run_browser_script(
     })
 }
 
-/// Page text plus actionable elements. Passed through as JSON: the element list is an open
-/// shape owned by browser.js, not a gateway contract.
+/// Page text plus actionable elements.
 pub async fn read_page(state: &AppState, container_id: &str) -> Result<Value, GatewayError> {
     let req = serde_json::json!({"kind": "read"});
     run_browser_script(state, container_id, req).await
@@ -170,7 +167,7 @@ pub async fn screenshot(
     screenshot_quality(state, container_id, max_width, None).await
 }
 
-/// The computer frame path reuses this so there is only ever one screenshot path.
+/// The computer frame path reuses this so there is only ever one screenshot.
 pub async fn screenshot_quality(
     state: &AppState,
     container_id: &str,
@@ -223,7 +220,7 @@ fn parse_state(v: &Value) -> BrowserStateResponse {
     }
 }
 
-/// Raw viewport input for the computer path; `navigate` is re-checked by browser.js's URL guard.
+/// Raw viewport input for the computer path.
 pub async fn input(
     state: &AppState,
     container_id: &str,

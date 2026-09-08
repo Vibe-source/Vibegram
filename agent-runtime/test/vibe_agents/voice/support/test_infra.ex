@@ -1,7 +1,6 @@
 defmodule VibeAgents.Voice.TestInfra do
   @moduledoc false
-  # Idempotently boots the voice supervision primitives, so these tests don't
-  # depend on application.ex already having the integrator's wiring applied.
+  # Idempotently boots the voice supervision primitives.
 
   def ensure_started! do
     ensure(VibeAgents.Voice.Sessions, [])

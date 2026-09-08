@@ -33,19 +33,6 @@ defmodule Vibe.Schemas.NotificationPreference do
   def categories, do: @categories
   def default_preferences, do: @default_preferences
 
-  # ------------------------------------------------------------------
-  #  Wire shape <-> stored shape
-  # ------------------------------------------------------------------
-  #
-  # The clients speak snake_case under a `categories` wrapper and treat `sound`
-  # as a boolean; storage is flat camelCase and keeps `sound` as the name of a
-  # sound (or nil for silent). The two never matched, so every settings write
-  # from a phone was rejected as "contains unsupported keys: categories" and
-  # every read fell back to defaults.
-  #
-  # Translating at the boundary rather than restyling the stored map keeps
-  # `notification_enabled?/2` — which is on the push path — reading the same
-  # keys it always has.
 
   @wire_categories %{
     "private_chats" => "privateChats",
@@ -67,10 +54,6 @@ defmodule Vibe.Schemas.NotificationPreference do
 
   @doc """
   Client payload -> stored shape, for a partial update.
-
-  A payload already in the stored shape passes through untouched: older clients
-  send that, and silently discarding their keys would be worse than the bug this
-  translation fixes.
   """
   def from_wire(updates) when is_map(updates) do
     updates = stringify_keys(updates)
@@ -120,8 +103,6 @@ defmodule Vibe.Schemas.NotificationPreference do
     end)
   end
 
-  # A payload is "wire" if it carries the wrapper or any snake_case top-level
-  # key. Anything else is assumed to already be stored-shape.
   defp wire_shaped?(updates) do
     Map.has_key?(updates, "categories") or
       Enum.any?(Map.keys(@wire_booleans), &Map.has_key?(updates, &1))
@@ -132,8 +113,6 @@ defmodule Vibe.Schemas.NotificationPreference do
     |> Map.take(["enabled", "preview"])
     |> then(fn taken ->
       case Map.fetch(settings, "sound") do
-        # The clients only know "makes a noise / doesn't", so a false has to pick
-        # a representation for silence and a true has to pick a sound back.
         {:ok, true} -> Map.put(taken, "sound", @default_sound)
         {:ok, false} -> Map.put(taken, "sound", nil)
         {:ok, value} when is_binary(value) or is_nil(value) -> Map.put(taken, "sound", value)

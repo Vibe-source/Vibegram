@@ -2,8 +2,6 @@ defmodule Vibe.Repo.Migrations.CreateAuditEvents do
   use Ecto.Migration
 
   def change do
-    # bigserial (not uuid, unlike the rest of this schema): this table is
-    # insert-heavy, append-only, and has no cross-service identity need.
     create table(:audit_events, primary_key: false) do
       add :id, :bigserial, primary_key: true
       add :actor_user_id, references(:users, type: :uuid, on_delete: :nilify_all)

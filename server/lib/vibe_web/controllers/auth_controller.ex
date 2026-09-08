@@ -5,18 +5,15 @@ defmodule VibeWeb.AuthController do
   alias Vibe.Accounts
   alias Vibe.Accounts.User
 
-  # SECURITY: PBKDF2 iteration count - OWASP 2023 recommends 600,000 for SHA512
+  # SECURITY:
   @pbkdf2_iterations 600_000
 
-  # SECURITY: Token validity period (30 days in seconds)
+  # SECURITY:
   @token_validity_seconds 30 * 24 * 60 * 60
 
-  # SECURITY: `VIBE_HMAC_SECRET` is a server-side pepper used for deriving `secure_id`.
-  # It must be set in production. If you need to rotate it, set `VIBE_HMAC_SECRET_LEGACY`
-  # to the previous value to preserve existing secure-id logins.
+  # SECURITY:
 
   def register(conn, %{"username" => username, "password" => password, "deviceId" => device_id} = params) do
-    # Input Validation
     username = username |> to_string() |> String.trim()
     password = to_string(password)
     normalized_phone = Accounts.normalize_phone_number(params["phoneNumber"])
@@ -47,43 +44,28 @@ defmodule VibeWeb.AuthController do
         conn |> put_status(409) |> json(%{error: "Phone number already in use"})
 
       true ->
-        # SECURITY: Password hashing with proper iterations
         salt = :crypto.strong_rand_bytes(16)
         derived_bin = :crypto.pbkdf2_hmac(:sha512, password, salt, @pbkdf2_iterations, 64)
         password_hash = Base.encode16(salt, case: :lower) <> ":" <> Base.encode16(derived_bin, case: :lower)
 
         user_id = UUID.uuid4()
 
-        # SECURITY: Use HMAC instead of plain SHA256 for secure_id
-        # This prevents rainbow table attacks even if the database leaks
-        #
-        # v3 clients send a `credential` that is a one-way HKDF derivation of the
-        # user's recovery secret, and a `password` that is a *different* one-way
-        # derivation of it. The raw recovery secret — which is also the passphrase
-        # wrapping `encrypted_private_key` — never reaches this server at all.
-        # Pre-v3 clients send no `credential`, and for them `password` *is* the
-        # raw secret, so it stays the lookup handle. See `upgrade_identity/2`.
         lookup_value = present_credential(params["credential"]) || password
         secure_id = secure_id_for(hmac_secret!(), lookup_value)
 
-        # SECURITY: Require client-side key generation for v2+ clients
-        # Server should NEVER generate private keys - defeats E2E encryption
         identity_version = params["identityKey"] || "v1"
 
         {public_key, encrypted_private_key} =
           cond do
-            # V2/V3: Client must provide keys (secure E2E)
             identity_version in ["v2", "v3"] && params["publicKey"] &&
                 params["encryptedPrivateKey"] ->
               {params["publicKey"], params["encryptedPrivateKey"]}
 
-            # V1 Legacy: Client provides keys (backward compatible)
             params["publicKey"] && params["encryptedPrivateKey"] ->
               {params["publicKey"], params["encryptedPrivateKey"]}
 
 
 
-            # V2+ without keys: Reject (security requirement)
             true ->
               conn |> put_status(400) |> json(%{error: "Client must provide publicKey and encryptedPrivateKey for E2E encryption"})
               {:error, :missing_keys}
@@ -91,7 +73,6 @@ defmodule VibeWeb.AuthController do
 
         case {public_key, encrypted_private_key} do
           {:error, _} ->
-            # Already sent error response above
             conn
 
           {pub_key, enc_priv_key} ->
@@ -104,8 +85,6 @@ defmodule VibeWeb.AuthController do
               "encrypted_private_key" => enc_priv_key,
               "identity_key" => identity_version,
               "secure_id" => secure_id,
-              # No login_token: whichever branch issue_login_response takes mints its
-              # own, so one written here only reaches the WAL and every backup unused.
               "phone_number" => normalized_phone
             }
 
@@ -168,8 +147,7 @@ defmodule VibeWeb.AuthController do
     end
   end
 
-  # SECURITY: same generic response for unknown user, wrong password, and
-  # locked — a distinct message per case would let a client enumerate accounts.
+  # SECURITY:
   defp login_failed(conn, credential) do
     Vibe.Accounts.LoginThrottle.record_failure(credential)
     Vibe.Audit.record(conn, "login.failure", metadata: %{username: credential})
@@ -187,22 +165,6 @@ defmodule VibeWeb.AuthController do
 
   @doc """
   Re-keys a pre-v3 account onto one-way-derived credentials.
-
-  Before v3 the client sent the user's recovery secret here verbatim, as both the
-  login `credential` and the `password` — while that same secret is the PBKDF2
-  passphrase wrapping `encrypted_private_key`, a copy of which this server
-  stores. Every login therefore handed us both halves: enough to unwrap the
-  user's private key and read their entire history. That made the product's
-  end-to-end encryption nominal. This endpoint rotates such an account so it
-  stops being true, after which the raw secret is never transmitted again.
-
-  It deliberately does **not** touch `encrypted_private_key`. The client's KEK
-  derivation is unchanged, so there is nothing to re-wrap — and that is what
-  makes this migration non-destructive. The worst outcome of a failure here is a
-  login that falls back to the legacy path again, never unreadable key material.
-
-  Authenticated by the bearer token issued moments earlier by `login/2`, so only
-  a caller who already proved possession of the old secret can rotate it.
   """
   def upgrade_identity(conn, params) do
     user = conn.assigns.current_user
@@ -215,10 +177,6 @@ defmodule VibeWeb.AuthController do
       password_hash =
         Base.encode16(salt, case: :lower) <> ":" <> Base.encode16(derived_bin, case: :lower)
 
-      # `secure_id` is the account's lookup handle and is derived from whatever
-      # the client will send as `credential` at the next login, so it has to
-      # rotate in lockstep with `password_hash`. The client is handed the new
-      # value back because it cannot recompute it — the pepper is server-side.
       case Accounts.update_user(user, %{
              "password_hash" => password_hash,
              "secure_id" => secure_id_for(hmac_secret!(), credential),
@@ -291,8 +249,6 @@ defmodule VibeWeb.AuthController do
 
         case Accounts.issue_device_session(user.id, attrs) do
           {:ok, token, session} ->
-            # The account-wide token is never handed to a device client, and `logout`
-            # now revokes the session instead — so leaving it set strands a credential.
             Accounts.revoke_login_token(user)
             render_login_response(conn, user, token, session.expires_at)
 

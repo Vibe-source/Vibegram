@@ -63,9 +63,6 @@ defmodule VibeAgents.Runs.Server do
   def handle_info({ref, _result}, %{task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     state = cancel_timer(%{state | task: nil})
-    # VibeAgents.Runs.Loop already persisted the terminal status. ask_user leaves the run
-    # waiting_ask with no live task — stay alive so a later decision resumes THIS server
-    # instead of relying on a restart to re-arm it, exactly like the cold re-arm path.
     run = Repo.get(AgentRun, state.run_id) || state.run
 
     if AgentRun.waiting?(run) do

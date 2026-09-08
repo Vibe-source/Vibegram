@@ -22,13 +22,11 @@ defmodule Vibe.Accounts.User do
     field :phone_number, :string
     field :name, :string
 
-    # PreKeys
     field :signed_pre_key_id, :integer
     field :signed_pre_key, :string
     field :signed_pre_key_signature, :string
     field :supports_advanced, :boolean, default: false
 
-    # Subscription & Business fields
     field :tier, :string, default: "free"
     field :referral_code, :string
     field :referral_count, :integer, default: 0
@@ -55,10 +53,6 @@ defmodule Vibe.Accounts.User do
     has_many :badges, Vibe.Badges.Badge
     has_one :subscription, Vibe.Subscriptions.UserSubscription
 
-    # We will handle blocks via a separate schema/context helper for now to avoid circular dependency complexity unless needed
-    # but good to have the association if possible.
-    # has_many :blocked_relationships, Vibe.Accounts.UserBlock, foreign_key: :user_id
-    # has_many :blocked_users, through: [:blocked_relationships, :blocked_user]
 
     timestamps()
   end
@@ -117,8 +111,7 @@ defmodule Vibe.Accounts.User do
     :business_hours_end
   ]
 
-  # SECURITY: user-driven profile updates only. Deliberately excludes every
-  # privileged field changeset/2 casts (tokens, password_hash, tier, keys, ...).
+  # SECURITY:
   def profile_changeset(user, attrs) do
     user
     |> cast(attrs, @profile_fields)

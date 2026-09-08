@@ -142,7 +142,7 @@ defmodule Vibe.AI.AgenticEventShape do
     }
   end
 
-  # "error" and "failed" must survive to the client — a failed step is not a done step.
+  # "error" and "failed" must survive to the client.
   defp normalize_status(status) do
     case to_string(status) do
       "complete" -> "done"
@@ -152,19 +152,11 @@ defmodule Vibe.AI.AgenticEventShape do
     end
   end
 
-  # Order matters: search_music is a MUSIC step, not a generic web search (the old
-  # substring check on "search" gave every track lookup a globe icon).
-  #
-  # These kinds must NOT collide with the CLI/bridge vocabulary (read/edit/write/bash), which
-  # means "a file operation whose `target` is a path". The client renders those as verb +
-  # target and throws the label away — a native `get_current_agent_config` step tagged "write"
-  # rendered as a bare "Create" and was even counted as an edited file by the diff summary.
+  # Order matters:
   defp tool_kind(tool) do
     tool = to_string(tool)
 
     cond do
-      # read_url is a WEB step, not a file read. The "read" kind means "a file operation
-      # whose target is a path" to the client, which would render a URL as an edited file.
       tool == "read_url" -> "web"
       String.contains?(tool, "music") -> "music"
       String.contains?(tool, "image") || String.contains?(tool, "vision") -> "image"
@@ -239,9 +231,7 @@ defmodule Vibe.AI.AgenticEventShape do
     if Map.has_key?(map, key), do: Map.update!(map, key, fun), else: map
   end
 
-  # SAFETY NET ONLY. Producers are responsible for short labels (≤ 24 chars, verb + object);
-  # this used to be the primary shortener at 32 graphemes, which clipped almost every real
-  # label mid-word. Cut on a word boundary so what survives is still readable.
+  # SAFETY NET ONLY.
   @label_limit 40
 
   defp compact_label(value) when is_binary(value) do
@@ -253,13 +243,9 @@ defmodule Vibe.AI.AgenticEventShape do
     if String.length(normalized) <= @label_limit do
       normalized
     else
-      # Reserve one grapheme for the ellipsis so the result never exceeds the limit.
       cut = String.slice(normalized, 0, @label_limit - 1)
       on_word = String.replace(cut, ~r/\s+\S*$/u, "")
 
-      # Word-boundary trimming is only an improvement while it keeps most of the label. For a
-      # single long token ("Inspecting ééééé…é") it would throw the whole token away and leave
-      # a useless stub, so fall back to a hard cut there.
       base = if String.length(on_word) >= div(@label_limit * 3, 5), do: on_word, else: cut
 
       base

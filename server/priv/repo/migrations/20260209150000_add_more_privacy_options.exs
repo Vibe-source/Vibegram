@@ -3,7 +3,6 @@ defmodule Vibe.Repo.Migrations.AddMorePrivacyOptions do
 
   def change do
     alter table(:users) do
-      # Privacy visibility: everybody | contacts | nobody
       add :privacy_phone_number, :string, default: "everybody"
       add :privacy_profile_photos, :string, default: "everybody"
       add :privacy_bio, :string, default: "everybody"

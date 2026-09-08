@@ -32,7 +32,6 @@ defmodule VibeAgentsWeb.Plugs.Idempotency do
     end
   end
 
-  # Phoenix hands the body to before_send as iodata, not a binary.
   defp resp_body(%{resp_body: body}) when is_binary(body) or is_list(body), do: IO.iodata_to_binary(body)
   defp resp_body(_conn), do: ""
 

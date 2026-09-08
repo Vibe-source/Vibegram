@@ -70,8 +70,6 @@ defmodule Vibe.AI.TTS do
   end
 
   defp estimated_duration_seconds(audio_bin) when is_binary(audio_bin) do
-    # Coarse fallback until a proper probe is added.
-    # 24kbps speech MP3 is roughly 3KB/s.
     max(Float.round(byte_size(audio_bin) / 3_000, 1), 1.0)
   end
 end

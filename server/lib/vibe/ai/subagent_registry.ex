@@ -4,9 +4,7 @@ defmodule Vibe.AI.SubagentRegistry do
   alias Vibe.AI.Agent, as: ChatAgent
   alias Vibe.AI.AgentBuilder
 
-  # Specialists are OPTIONAL. The primary agent should handle ordinary one-shot
-  # music/search/image/document work with its own tools. These ids exist for
-  # multi-step builder/integration work and rare multi-part research fan-out.
+  # Specialists are OPTIONAL.
   @subagents %{
     "builder_assistant" => %{
       id: "builder_assistant",
@@ -242,7 +240,6 @@ defmodule Vibe.AI.SubagentRegistry do
         callback.(event)
 
       %{type: :text, content: content} ->
-        # Forward subagent text chunks so the frontend shows streaming activity
         callback.(%{
           type: :subagent,
           event: "text",
@@ -309,13 +306,6 @@ defmodule Vibe.AI.SubagentRegistry do
   defp fallback_sentence(""), do: nil
   defp fallback_sentence(text), do: "#{truncate_detail(text)}…"
 
-  # Progress chips must stay short — they render in a single-line shimmer row.
-  # Keep at most a few words of detail and trim any dangling partial word.
-  #
-  # This budget is for the DETAIL only; a verb ("Reviewing ") and an ellipsis are added on
-  # top. It used to be 36, which produced ~48-char labels that AgenticEventShape then clipped
-  # at 32 — every delegated step arrived cut mid-word. Keep verb + detail + "…" under the
-  # downstream safety net.
   @progress_detail_limit 20
 
   defp truncate_detail(detail) do
@@ -333,8 +323,6 @@ defmodule Vibe.AI.SubagentRegistry do
       cut = text |> String.slice(0, limit) |> String.trim()
       on_word = cut |> String.replace(~r/\s+\S*$/u, "") |> String.trim()
 
-      # Word-boundary trim only while it keeps most of the detail; a single long token would
-      # otherwise collapse to a stub ("Creating a new..." for "Creating a new draft agent").
       if String.length(on_word) >= div(limit * 3, 5), do: on_word, else: cut
     end
   end

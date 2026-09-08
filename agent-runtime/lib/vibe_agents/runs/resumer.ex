@@ -10,8 +10,7 @@ defmodule VibeAgents.Runs.Resumer do
   alias VibeAgents.Runs.Events
   alias VibeAgents.Schemas.AgentRun
 
-  # One-shot: runs once at boot, then exits normally. `restart: :temporary` so the
-  # supervisor does not treat that normal exit as a crash to restart.
+  # One-shot:
   def child_spec(_opts) do
     %{id: __MODULE__, start: {__MODULE__, :start_link, []}, restart: :temporary}
   end
@@ -48,8 +47,6 @@ defmodule VibeAgents.Runs.Resumer do
     |> where([r], r.status in ^(AgentRun.waiting_statuses() ++ ["queued"]))
     |> Repo.all()
     |> Enum.each(fn run ->
-      # Waiting runs are idle and must be live to accept a decision, so they always
-      # re-arm; a queued run consumes a loop slot and goes through admission instead.
       result =
         if run.status == "queued",
           do: VibeAgents.Runs.Dispatcher.start_or_queue(run.id),

@@ -12,9 +12,7 @@ defmodule Vibe.SettingsTest do
     refute changeset.valid?
   end
 
-  # `changeset/2` is the *complete* validator — it is what writes the whole row,
-  # so it insists every key is present. Partial updates arrive through
-  # `validate_update/1`, after `from_wire/1` has translated the client's shape.
+  # `changeset/2` is the *complete* validator.
   test "notification preferences accept deep partial category updates" do
     updates =
       NotificationPreference.from_wire(%{
@@ -42,7 +40,6 @@ defmodule Vibe.SettingsTest do
              "sound" => "default"
            }
 
-    # The clients only know "makes a noise or not", so false has to mean silent.
     assert updates["groupChats"] == %{"sound" => nil}
     assert updates["inAppSounds"] == false
     assert updates["namesOnLockScreen"] == true

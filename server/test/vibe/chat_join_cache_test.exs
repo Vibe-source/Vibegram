@@ -40,8 +40,6 @@ defmodule Vibe.Chat.JoinCacheTest do
     refute_received :loaded
   end
 
-  # The agent's own shadow user shares the chat but must not be handed the entry
-  # cached for the human on the other side.
   test "two users of one chat do not share an entry" do
     chat = chat_id()
 

@@ -75,7 +75,6 @@ defmodule VibeAgents.Tools.Executor do
     |> then(fn s -> if waiting?, do: Map.put(s, :terminal_status, "waiting_for_user"), else: s end)
   end
 
-  # ask_user is terminal: the loop must stop and wait for the human, exactly like the core.
   defp waiting_for_user_result?(%{"content" => content}) when is_binary(content) do
     case Jason.decode(content) do
       {:ok, %{"status" => "waiting_for_user"}} -> true
@@ -85,7 +84,6 @@ defmodule VibeAgents.Tools.Executor do
 
   defp waiting_for_user_result?(_result), do: false
 
-  # ── classification ──────────────────────────────────────────────────────────────
 
   defp classify(tool, state) do
     name = tool["name"]
@@ -128,8 +126,6 @@ defmodule VibeAgents.Tools.Executor do
   defp yield_timeout({:decision, _kind, _request, _cap}), do: @max_decision_timeout_ms
   defp yield_timeout(_classification), do: @tool_timeout_ms
 
-  # The GenServer.call inside a decision task waits exactly as long as the decision is
-  # valid for (capped); the outer Task.yield above always waits at least that long.
   defp decision_timeout_ms(%{expires_at: nil}), do: @max_decision_timeout_ms
 
   defp decision_timeout_ms(%{expires_at: expires_at}) do
@@ -137,7 +133,6 @@ defmodule VibeAgents.Tools.Executor do
     ms |> max(@min_decision_timeout_ms) |> min(@max_decision_timeout_ms)
   end
 
-  # ── dispatch ─────────────────────────────────────────────────────────────────────
 
   defp run_classified(tool, :run, state, callback), do: {execute_single_tool(tool, state, callback), nil}
 
@@ -151,8 +146,8 @@ defmodule VibeAgents.Tools.Executor do
     run = state.run
 
     with {:ok, decision} <- Decisions.create(%{run_id: run.id, kind: kind, request: request}) do
-      emit_decision_requested(run, kind, decision, request)
       maybe_request_approval(run, kind, decision, request)
+      emit_decision_requested(run, kind, decision, request)
 
       payload = %{
         decision_id: decision.id,
@@ -174,7 +169,6 @@ defmodule VibeAgents.Tools.Executor do
   defp apply_decision_outcome(tool, "approval", %{outcome: "approve"}, _capability, state, callback),
     do: {execute_single_tool(tool, state, callback), nil}
 
-  # "Always allow" also persists on the agent, in core; this grant only silences the rest of the run.
   defp apply_decision_outcome(tool, "approval", %{outcome: "approve_always"}, _cap, state, callback),
     do: {execute_single_tool(tool, state, callback), "tool:" <> tool["name"]}
 
@@ -203,7 +197,6 @@ defmodule VibeAgents.Tools.Executor do
     encoded_tool_result(tool, result)
   end
 
-  # ── individual tools ────────────────────────────────────────────────────────────
 
   @doc """
   Runs one tool call that the caller already authorized through the broker (voice sessions
@@ -245,8 +238,6 @@ defmodule VibeAgents.Tools.Executor do
         "handoff_to_agent" -> Handoff.handoff_to_agent(state.run, input)
         "remember" -> Memory.remember(state.run, input)
         "recall" -> Memory.recall(state.run, input)
-        # Pure gate: reaching execution means the broker already got approval. Tell the
-        # model it may now do the described action with its real tools.
         "request_approval" -> %{"ok" => true, "approved" => true}
         _ -> %{"ok" => false, "error" => "Unknown tool #{name}"}
       end
@@ -267,7 +258,6 @@ defmodule VibeAgents.Tools.Executor do
       crash_result(tool, callback, {kind, reason})
   end
 
-  # ── callbacks / results ─────────────────────────────────────────────────────────
 
   defp emit_running(tool, classification, _state, callback) do
     input = tool["input"] || %{}
@@ -326,7 +316,6 @@ defmodule VibeAgents.Tools.Executor do
     encoded_tool_result(tool, result)
   end
 
-  # This label is what the transcript shows, so a bare "failed" leaves the user with nothing.
   defp failure_label(name, result) do
     case failure_reason(result) do
       nil -> "#{name} failed"
@@ -356,8 +345,6 @@ defmodule VibeAgents.Tools.Executor do
     %{"type" => "tool_result", "tool_use_id" => tool["id"] || "unknown", "content" => Jason.encode!(result)}
   end
 
-  # Handles both the raw tool result (checked right after a tool runs) and the encoded
-  # wire shape `%{"content" => json_string}` (checked once more over the final batch).
   defp tool_result_error?(%{"content" => content}) when is_binary(content) do
     case Jason.decode(content) do
       {:ok, decoded} -> raw_result_error?(decoded)
@@ -386,7 +373,6 @@ defmodule VibeAgents.Tools.Executor do
 
   defp present?(value), do: not is_nil(value)
 
-  # ── decision plumbing ────────────────────────────────────────────────────────────
 
   defp waiting_status("approval"), do: "waiting_approval"
   defp waiting_status("permission"), do: "waiting_permission"
@@ -424,6 +410,9 @@ defmodule VibeAgents.Tools.Executor do
       "chatId" => run.chat_id,
       "decisionId" => decision.id,
       "kind" => kind,
+      "capability" => request["capability"],
+      "scope" => request["scope"],
+      "reason" => request["reason"],
       "title" => request["title"] || approval_title(kind, request),
       "detail" => request["detail"] || request["reason"] || "",
       "risk" => request["risk"] || "external_effect",

@@ -1,9 +1,6 @@
 defmodule VibeWeb.Plugs.ApiAuth do
   @moduledoc """
   Auth plug for the JSON REST API.
-
-  Expects `Authorization: Bearer <login_token>` where `<login_token>` is the user's
-  `login_token` issued by `AuthController`.
   """
 
   import Plug.Conn

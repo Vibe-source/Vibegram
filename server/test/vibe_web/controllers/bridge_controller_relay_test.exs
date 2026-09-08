@@ -36,7 +36,6 @@ defmodule VibeWeb.BridgeControllerRelayTest do
                capabilities: []
              })
 
-    # Controller path: ensure_relay_writable + update_relay(:as_user) / register_relay.
     assert {:error, :forbidden} =
              RelayRegistry.register_relay(%{
                relay_id: relay_id,

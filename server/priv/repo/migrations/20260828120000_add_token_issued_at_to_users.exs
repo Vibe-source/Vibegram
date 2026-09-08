@@ -6,8 +6,6 @@ defmodule Vibe.Repo.Migrations.AddTokenIssuedAtToUsers do
       add :token_issued_at, :utc_datetime
     end
 
-    # Backfill so the absolute token-lifetime check has something to measure
-    # against for every row that predates this column.
     execute("UPDATE users SET token_issued_at = inserted_at WHERE token_issued_at IS NULL")
   end
 

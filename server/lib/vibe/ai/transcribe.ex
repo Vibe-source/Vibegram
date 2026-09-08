@@ -25,7 +25,8 @@ defmodule Vibe.AI.Transcribe do
   def voice_text(_urls), do: nil
 
   def transcribe_url(url) when is_binary(url) do
-    with {:ok, key} <- api_key(),
+    with {:ok, _uri} <- Vibe.Net.SafeURL.validate(url),
+         {:ok, key} <- api_key(),
          {:ok, audio} <- download(url) do
       transcribe(audio, filename(url), key)
     end
@@ -102,7 +103,6 @@ defmodule Vibe.AI.Transcribe do
       audio <> "\r\n--#{boundary}--\r\n"
   end
 
-  # OpenAI picks the decoder off the extension, so a wrong one fails a valid file.
   defp filename(url) do
     ext = url |> URI.parse() |> Map.get(:path, "") |> to_string() |> Path.extname() |> String.downcase()
     if ext in [".mp3", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".mp4", ".mpga", ".flac"],

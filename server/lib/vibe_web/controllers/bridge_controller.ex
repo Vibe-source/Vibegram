@@ -132,8 +132,6 @@ defmodule VibeWeb.BridgeController do
             end
 
           {:ok, _existing} ->
-            # Owner-only update (ensure_relay_writable already checked).
-            # Do not allow user_id reassignment via update map.
             RelayRegistry.update_relay(
               relay_id,
               %{

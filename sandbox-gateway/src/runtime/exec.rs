@@ -1,4 +1,3 @@
-//! `exec` with a hard timeout: on timeout the exec's pid tree is SIGKILLed inside the container.
 use std::time::{Duration, Instant};
 
 use bollard::container::LogOutput;
@@ -25,7 +24,7 @@ fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], max: usize, truncated: &mut bo
     }
 }
 
-/// Retries briefly: the exit code may lag a beat behind the stdout/stderr stream closing.
+/// Retries briefly:
 async fn wait_exit_code(docker: &Docker, exec_id: &str) -> i32 {
     for _ in 0..5 {
         if let Ok(info) = docker.inspect_exec(exec_id).await {
@@ -41,7 +40,7 @@ async fn wait_exit_code(docker: &Docker, exec_id: &str) -> i32 {
     0
 }
 
-/// Best-effort: SIGKILL both the exec's own pid and its process group inside the container.
+/// Best-effort:
 async fn kill_exec_tree(docker: &Docker, container_id: &str, exec_id: &str) {
     let pid = docker
         .inspect_exec(exec_id)

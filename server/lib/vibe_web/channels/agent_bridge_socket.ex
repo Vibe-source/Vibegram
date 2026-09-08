@@ -1,14 +1,6 @@
 defmodule VibeWeb.AgentBridgeSocket do
   @moduledoc """
-  Socket for the agent bridge daemon running on a user's computer. Authenticated by
-  the long-lived `bridge_token` minted during pairing (NOT a user login token).
-
-  Auth priority:
-  1. `x-vibe-bridge-token: Bearer <bridge_token>` (preferred; raw token accepted)
-  2. Query param `token` (compatibility for existing daemons)
-
-  Phoenix only forwards `x-*` headers via `connect_info: [:x_headers]`, so a plain
-  `Authorization` header is never available on this socket.
+  Socket for the agent bridge daemon running on a user's computer.
   """
   use Phoenix.Socket
 
@@ -33,12 +25,6 @@ defmodule VibeWeb.AgentBridgeSocket do
 
   @doc """
   Resolves the bridge token for a WebSocket connect.
-
-  Priority:
-  1. `x-vibe-bridge-token` from `connect_info.x_headers`
-  2. Query param `token`
-
-  Does not log token material.
   """
   def extract_connect_token(params, connect_info) do
     case header_token(connect_info) do

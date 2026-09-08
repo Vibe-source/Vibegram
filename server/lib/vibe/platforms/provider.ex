@@ -1,8 +1,6 @@
 defmodule Vibe.Platforms.Provider do
   @moduledoc """
   Behaviour for multi-platform OAuth connectors (GitHub, Excel/Graph, Slack, …).
-
-  Providers never put tokens in capability metadata returned to clients or agents.
   """
 
   @type capability :: %{

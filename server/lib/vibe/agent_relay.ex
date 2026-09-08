@@ -1,8 +1,7 @@
 defmodule Vibe.AgentRelay do
   @moduledoc """
-  Maps runtime `RunEvent`s (docs/agent-platform-v1.md §3.4) onto the
-  `agent-stream` / `agent-approval` / `agent-bridge-ask` / `agent-preview` /
-  `agent-run-state` frames iOS already renders for embedded agents.
+  Maps runtime `RunEvent`s (docs/agent-platform-v1.md §3.4) onto the `agent-stream` /
+  `agent-approval` / `agent-bridge-ask` / `agent-preview` / `agent-run-state` frames iOS.
   """
 
   require Logger
@@ -129,6 +128,16 @@ defmodule Vibe.AgentRelay do
     run_id = event["runId"]
     payload = event["payload"] || %{}
 
+    case AgentDecisions.runtime_decision_refs(payload["decisionId"]) do
+      %{taskId: task_id, messageId: message_id} ->
+        broadcast_approval(chat_id, run_id, kind, payload, task_id, message_id)
+
+      nil ->
+        create_and_broadcast_approval(event, kind, chat_id, run_id, payload)
+    end
+  end
+
+  defp create_and_broadcast_approval(event, kind, chat_id, run_id, payload) do
     agent = Agent |> Repo.get(event["agentId"]) |> then(&(&1 && Repo.preload(&1, :agent_user)))
 
     if agent do
@@ -136,19 +145,7 @@ defmodule Vibe.AgentRelay do
 
       case AgentDecisions.create_runtime_decision(agent, chat_id, params) do
         {:ok, %{taskId: task_id, messageId: message_id}} ->
-          VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "agent-approval", %{
-            "chatId" => chat_id,
-            "runId" => run_id,
-            "decisionId" => payload["decisionId"],
-            "taskId" => task_id,
-            "messageId" => message_id,
-            "kind" => kind,
-            "tool" => payload["tool"],
-            "title" => payload["title"],
-            "detail" => payload["detail"],
-            "risk" => payload["risk"],
-            "expiresAt" => payload["expiresAt"]
-          })
+          broadcast_approval(chat_id, run_id, kind, payload, task_id, message_id)
 
         {:error, reason} ->
           Logger.error("[AgentRelay] create_runtime_decision failed run=#{run_id} reason=#{inspect(reason)}")
@@ -156,6 +153,25 @@ defmodule Vibe.AgentRelay do
     else
       Logger.error("[AgentRelay] approval for unknown agent run=#{run_id} agentId=#{event["agentId"]}")
     end
+  end
+
+  defp broadcast_approval(chat_id, run_id, kind, payload, task_id, message_id) do
+    VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "agent-approval", %{
+      "chatId" => chat_id,
+      "runId" => run_id,
+      "decisionId" => payload["decisionId"],
+      "taskId" => task_id,
+      "messageId" => message_id,
+      "kind" => kind,
+      "tool" => payload["tool"],
+      "title" => payload["title"],
+      "detail" => payload["detail"] || payload["reason"],
+      "risk" => payload["risk"],
+      "capability" => payload["capability"],
+      "scope" => payload["scope"],
+      "reason" => payload["reason"],
+      "expiresAt" => payload["expiresAt"]
+    })
   end
 
   defp broadcast_stream(event, status) do
@@ -184,7 +200,12 @@ defmodule Vibe.AgentRelay do
     chat_id = event["chatId"]
     run_id = event["runId"]
     payload = event["payload"] || %{}
-    state = get_state(run_id)
+
+    state =
+      case :ets.lookup(@state_table, run_id) do
+        [{^run_id, existing}] -> existing
+        [] -> nil
+      end
 
     base = %{
       "chatId" => chat_id,
@@ -193,13 +214,21 @@ defmodule Vibe.AgentRelay do
       "agentUserId" => event["agentUserId"],
       "isAgent" => true,
       "isAgentMessage" => true,
-      "text" => state.text,
-      "progressNodes" => state.progress_nodes,
-      "toolEvents" => state.tool_events,
       "status" => "done",
       "runId" => run_id,
       "runtime" => "isolated"
     }
+
+    base =
+      if state do
+        Map.merge(base, %{
+          "text" => state.text,
+          "progressNodes" => state.progress_nodes,
+          "toolEvents" => state.tool_events
+        })
+      else
+        base
+      end
 
     stream_payload =
       case kind do
@@ -219,12 +248,11 @@ defmodule Vibe.AgentRelay do
     VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "agent-run-state", run_state_payload)
     Chat.broadcast_user_chat_event(chat_id, "agent-run-state", run_state_payload)
 
-    if kind == "run.completed", do: send_voice_reply(event, state)
+    if kind == "run.completed" and state, do: send_voice_reply(event, state)
 
     clear_state(run_id)
   end
 
-  # Isolated runs only stream text; a voice answer rides back as its own message.
   defp send_voice_reply(event, state) do
     text = state |> Map.get(:text) |> to_string() |> String.trim()
 
@@ -257,8 +285,6 @@ defmodule Vibe.AgentRelay do
   defp maybe_put_reason(map, nil), do: map
   defp maybe_put_reason(map, reason), do: Map.put(map, "reason", reason)
 
-  # Mirrors Vibe.AI.AgenticEventShape.tool_node/1 / activity_node/1 (both private,
-  # and that file isn't owned by any worker this run) so iOS renders identical cards.
   defp tool_node(payload) do
     tool = payload["tool"] || "tool"
 

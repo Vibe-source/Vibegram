@@ -1,4 +1,3 @@
-//! Sandbox lifecycle routes: create/get/list/exec/stop/delete.
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -60,7 +59,7 @@ pub async fn exec_cmd(
     Ok(Json(result))
 }
 
-/// The owner-visible terminal: what the agent ran here and what came back.
+/// The owner-visible terminal:
 pub async fn exec_log(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

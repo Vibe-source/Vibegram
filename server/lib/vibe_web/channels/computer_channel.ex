@@ -22,8 +22,6 @@ defmodule VibeWeb.ComputerChannel do
     user_id = socket.assigns[:user_id]
     session_id = params["sessionId"] || params["session_id"]
 
-    # A socket is not proof of authorization for this topic: it holds the owner's
-    # logged-in accounts, so re-check ownership here as well as on the HTTP route.
     if is_binary(user_id) and is_binary(session_id) and session_id != "" and
          Agents.get_agent(agent_id, user_id) do
       fps = clamp_fps(params["fps"])
@@ -150,8 +148,6 @@ defmodule VibeWeb.ComputerChannel do
     socket
   end
 
-  # The gateway lost the session (404/410) — nothing to retry, and repeated
-  # failures give up rather than poll a dead runtime forever.
   defp poll_error(socket, {:http_error, status, body}) when status in [404, 410] do
     end_session(socket, body_reason(body) || "stopped")
   end

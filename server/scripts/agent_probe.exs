@@ -1,16 +1,4 @@
 # Agent behaviour probe.
-#
-# Runs the REAL server agent loop (Vibe.AI.Agent.stream_response/3) against a prompt and
-# prints a trace of everything it did: model turns, tool calls, thinking, text beats.
-# Boots only Finch + the task supervisor, so it never touches the production database.
-#
-#   railway run mix run --no-start scripts/agent_probe.exs "your prompt here"
-#
-# Env knobs:
-#   PROBE_PROVIDER  anthropic | openai      (default anthropic)
-#   PROBE_MODEL     model id                (default claude-sonnet-5)
-#   PROBE_THINKING  low|medium|high|xhigh|max (default medium)
-#   PROBE_FOLLOWUP  a second turn to send with the first turn in history
 
 {:ok, _} = Application.ensure_all_started(:finch)
 {:ok, _} = Finch.start_link(name: Vibe.Finch)
@@ -29,7 +17,6 @@ defmodule Probe do
             %{s | text: s.text <> content, text_events: s.text_events + 1}
           end)
 
-          # First text delta of a beat is the interesting timing signal.
           Agent.update(agent, fn s ->
             if s.beat_open? do
               s

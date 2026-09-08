@@ -7,10 +7,6 @@ defmodule VibeWeb.MlsController do
 
   @doc """
   Publish a batch of MLS KeyPackages for the calling device.
-
-  Always scoped to `conn.assigns.current_user` — the `ApiAuth` plug is the
-  only source of truth for whose packages these are. Any `userId` in the
-  body is ignored (see `Vibe.Mls.publish_key_packages/2`).
   """
   def publish(conn, params) do
     user_id = conn.assigns.current_user.id
@@ -39,10 +35,8 @@ defmodule VibeWeb.MlsController do
   end
 
   @doc """
-  Claim one available KeyPackage published by `:user_id` — i.e. the device
-  claiming this is about to add that user to an MLS group. A 404 here means
-  that user currently has no spare KeyPackage, which is an expected state the
-  client must handle (prompt a re-publish / retry later), not an error.
+  Claim one available KeyPackage published by `:user_id` — i.e. the device claiming this is
+  about to add that user to an MLS group.
   """
   def claim(conn, %{"user_id" => user_id}) do
     claimer_id = conn.assigns.current_user.id
@@ -60,8 +54,6 @@ defmodule VibeWeb.MlsController do
         |> json(%{error: "Too many KeyPackage claims"})
 
       {:error, _reason} ->
-        # :not_allowed and :not_found both 404 so a stranger cannot probe
-        # whether a user has packages or whether the two share a chat.
         conn |> put_status(:not_found) |> json(%{error: "No available KeyPackage"})
     end
   end
@@ -76,9 +68,6 @@ defmodule VibeWeb.MlsController do
 
   @doc """
   Hand a Welcome to the server for delivery to one recipient.
-
-  The sender is always `conn.assigns.current_user` — a `senderUserId` in the
-  body is ignored, the same discipline as `publish/2`.
   """
   def post_welcome(conn, params) do
     sender_id = conn.assigns.current_user.id
@@ -150,11 +139,6 @@ defmodule VibeWeb.MlsController do
 
   @doc """
   The user ids that must be added to this chat's MLS group.
-
-  Exists because establishing a group session needs the whole membership in
-  one commit, and the client has no other way to learn it. Only a participant
-  may ask: a non-member gets 404 rather than 403, so this cannot be used to
-  probe which chat ids exist.
   """
   def chat_members(conn, %{"chat_id" => chat_id}) do
     user_id = conn.assigns.current_user.id
@@ -183,17 +167,9 @@ defmodule VibeWeb.MlsController do
   end
 
   # ── group epoch keys ───────────────────────────────────────────────────────
-  #
-  # The epoch-key layer covers channels and groups past the MLS member cap. See
-  # `Vibe.GroupKeys` for why authority is checked on every post rather than
-  # assumed — an epoch key blob, unlike a Welcome, is useful to whoever can get
-  # a recipient to install it.
 
   @doc """
   Post epoch keys, each already sealed to its recipient by the caller's device.
-
-  Refused unless the caller is the chat's key authority: owner/admin for a
-  channel, any member for a group. A DM has no epochs and is refused outright.
   """
   def post_epoch_keys(conn, params) do
     sender_id = conn.assigns.current_user.id
@@ -203,9 +179,6 @@ defmodule VibeWeb.MlsController do
         json(conn, %{success: true, stored: count})
 
       {:error, :not_allowed} ->
-        # 403 rather than 404: unlike claiming a key package, the caller already
-        # knows this chat exists — they are in it — so there is nothing to hide
-        # and "you are not an admin" is the actionable answer.
         conn |> put_status(:forbidden) |> json(%{error: "Not allowed to issue keys here"})
 
       {:error, :too_large} ->

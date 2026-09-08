@@ -10,7 +10,6 @@ defmodule VibeAgents.RunsTest do
   alias VibeAgents.Test.FakeCoreHTTP
 
   setup do
-    # Run servers from an earlier test must not outlive that test's DB ownership.
     for {_, pid, _, _} <- DynamicSupervisor.which_children(VibeAgents.Runs.Supervisor), is_pid(pid) do
       DynamicSupervisor.terminate_child(VibeAgents.Runs.Supervisor, pid)
     end
@@ -103,14 +102,12 @@ defmodule VibeAgents.RunsTest do
     Application.put_env(:vibe_agents, :fake_llm_script, [{:tool_use, [%{"id" => "c", "name" => "slow_tool", "input" => %{}}]}, {:text, "done"}])
     {:ok, run} = Runs.start(run_request())
 
-    # Whatever state the loop is in, cancel must land as a terminal cancelled status.
     case Runs.cancel(run.id, %{reason: "user"}) do
       :ok ->
         eventually(fn -> Repo.get(AgentRun, run.id).status == "cancelled" end)
         assert Enum.any?(Repo.all(AgentRunEvent), &(&1.run_id == run.id and &1.kind == "run.cancelled"))
 
       {:error, :not_found} ->
-        # The run already finished before cancel arrived — still a terminal state.
         assert Repo.get(AgentRun, run.id).status in ["completed", "failed"]
     end
   end

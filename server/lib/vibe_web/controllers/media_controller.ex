@@ -30,15 +30,10 @@ defmodule VibeWeb.MediaController do
                     end)
 
   @sniff_bytes 512
+  @object_key_pattern ~r/\A[A-Za-z0-9_-]{32}(?:\.(?:m4a|mp3|mp4|webm|jpg|jpeg|png|gif|webp|heic|wav|mov|pdf|csv|txt|json|xlsx))?\z/
 
   @doc """
   Upload a media file.
-  POST /api/media/upload
-  Expects multipart form with:
-    - file: the file to upload
-    - user_id: the uploader's user ID
-    - type: "image" | "audio" | "video" | "file"
-  Returns: { url: "https://..." }
   """
   def upload(conn, %{"file" => %Plug.Upload{} = upload} = params) do
     user_id = conn.assigns.current_user.id
@@ -59,6 +54,19 @@ defmodule VibeWeb.MediaController do
     |> json(%{error: "Missing file parameter. Use multipart form with 'file' field."})
   end
 
+  def object(conn, %{"key" => key}) do
+    if Regex.match?(@object_key_pattern, key) do
+      case Vibe.R2Storage.get_presigned_url(key, bucket: :media) do
+        {:ok, url} -> redirect(conn, external: url)
+        {:error, reason} ->
+          Logger.error("[MediaController] Object URL failed: #{reason}")
+          conn |> put_status(:service_unavailable) |> json(%{error: "Media unavailable"})
+      end
+    else
+      conn |> put_status(:bad_request) |> json(%{error: "Invalid media key"})
+    end
+  end
+
   defp do_upload(conn, upload, user_id, media_type, ext) do
     max_bytes = max_bytes_for(media_type)
 
@@ -73,14 +81,13 @@ defmodule VibeWeb.MediaController do
 
         timestamp = System.system_time(:millisecond)
         random = :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
-        # No extension (ext == nil) for an unrecognized upload: SupabaseStorage's
-        # extension table then falls through to application/octet-stream.
         remote_path = "#{user_id}/#{timestamp}_#{random}#{ext || ""}"
 
         case Storage.upload(upload.path, remote_path, bucket: :media) do
           {:ok, public_url} ->
             Logger.info("[MediaController] Uploaded to: #{public_url}")
-            json(conn, %{url: download_url(public_url, ext), size: size, type: media_type})
+            durable_url = Storage.rewrite_public_url(public_url)
+            json(conn, %{url: download_url(durable_url, ext), size: size, type: media_type})
 
           {:error, reason} ->
             Logger.error("[MediaController] Upload failed: #{reason}")
@@ -102,18 +109,12 @@ defmodule VibeWeb.MediaController do
   defp max_bytes_for("audio"), do: @max_audio_bytes
   defp max_bytes_for(_), do: @max_file_bytes
 
-  # Unrecognized content (ext == nil) is stored as a downloadable blob, never
-  # rendered inline — Supabase Storage's `?download` forces Content-Disposition:
-  # attachment. R2Storage doesn't front any live caller today (see its moduledoc).
   defp download_url(url, nil) do
     if String.contains?(url, "?"), do: url <> "&download", else: url <> "?download"
   end
 
   defp download_url(url, _ext), do: url
 
-  # Cross-checks the client-declared bucket against the file's actual magic
-  # bytes. A mismatch (or an unrecognized body) downgrades to a generic,
-  # randomly-named "file" rather than trusting the client's claim.
   def classify("image", :svg), do: {:error, :svg_not_allowed}
   def classify("image", :jpeg), do: {:ok, "image", ".jpg"}
   def classify("image", :png), do: {:ok, "image", ".png"}
@@ -140,8 +141,6 @@ defmodule VibeWeb.MediaController do
 
   defp detect_type(_), do: "file"
 
-  # Reads only the first @sniff_bytes of the upload — cheap regardless of the
-  # total file size (up to 120MB for video).
   @doc false
   def sniff_type(path) do
     case File.open(path, [:read, :binary]) do
@@ -180,7 +179,6 @@ defmodule VibeWeb.MediaController do
     end
   end
 
-  # mp4/mov/m4a/heic all share the ISO-BMFF `ftyp` box; only the brand differs.
   defp iso_bmff_kind(brand) when brand in ["heic", "heix", "heim", "heis", "hevc", "hevx", "mif1", "msf1"],
     do: :heic
 

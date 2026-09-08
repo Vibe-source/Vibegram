@@ -1,8 +1,3 @@
-# Local proof that an isolated agent actually uses its computer. Drives one real run
-# (real model, real sandbox container) and prints every RunEvent it produced.
-#
-#   cd agent-runtime && mix run ../scripts/agent-e2e/runtime-local.exs
-
 import Ecto.Query
 
 alias VibeAgents.Repo
@@ -15,7 +10,7 @@ task =
 
 tools = String.split(System.get_env("E2E_TOOLS") || "computer,research", ",", trim: true)
 
-# E2E_TEAM="coderbot:Coder,publishbot:Publish manager" — teammates the roster should name.
+# E2E_TEAM="coderbot:Coder,publishbot:Publish manager".
 participants =
   (System.get_env("E2E_TEAM") || "")
   |> String.split(",", trim: true)

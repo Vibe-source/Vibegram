@@ -100,6 +100,14 @@ Rollback restores code, not schema — migrations must be additive.
 
 Contract for what an agent may do alone: [docs/deploy-pipeline.md](docs/deploy-pipeline.md).
 
+## Reading production logs
+
+Do not SSH to read logs. `deploy/scripts/vibe-logs.sh core -f` reads the VPS journal
+over HTTPS; `VIBE_LOGS_URL` and `VIBE_LOGS_TOKEN` are already in the secret broker.
+Host systemd units (cloudflared, sshd) are deliberately not shipped and still need SSH.
+
+Flags, labels, retention and the security model: [docs/vps-logs.md](docs/vps-logs.md).
+
 ## Shared agent memory
 
 `.vibe/memory.md` is the append-only journal every agent shares. Read it before

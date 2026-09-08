@@ -20,6 +20,7 @@ RUN useradd --create-home --home-dir /home/agent --uid 1000 --shell /bin/bash ag
 
 COPY package.json /opt/vibe/package.json
 COPY browser.js /opt/vibe/browser.js
+COPY safe-url.js /opt/vibe/safe-url.js
 RUN cd /opt/vibe && npm install --omit=dev --no-audit --no-fund \
     && chown -R agent:agent /opt/vibe
 

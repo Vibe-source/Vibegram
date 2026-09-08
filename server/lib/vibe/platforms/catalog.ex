@@ -1,9 +1,6 @@
 defmodule Vibe.Platforms.Catalog do
   @moduledoc """
   Multi-platform connector catalog.
-
-  GitHub is production-ready (OAuth + actions). Other providers are registered as
-  catalog stubs so the UI and grants scheme can expand without schema rewrites.
   """
 
   alias Vibe.Platforms.Providers.GitHub

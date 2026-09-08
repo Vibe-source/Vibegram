@@ -73,7 +73,6 @@ defmodule VibeAgents.Voice.Session do
 
   defp via(session_id), do: {:via, Registry, {VibeAgents.Voice.Registry, session_id}}
 
-  # --- GenServer ---
 
   @impl true
   def init(attrs) do
@@ -93,7 +92,6 @@ defmodule VibeAgents.Voice.Session do
       audio_window_started_at: now_ms
     }
 
-    # No RunRequest.capabilities for voice; trust agentProfile.enabledTools (see OpenAIRealtime.init/1).
     provider_opts = [owner: self(), agent_profile: state.agent_profile]
 
     case state.provider_mod.start_link(provider_opts) do
@@ -176,7 +174,6 @@ defmodule VibeAgents.Voice.Session do
     :ok
   end
 
-  # --- provider events -> channel frames (docs/agent-voice-v1.md §4/§6) ---
 
   defp handle_provider_event({:ready}, state) do
     push_to_channel(state, "session.ready", %{
@@ -223,7 +220,6 @@ defmodule VibeAgents.Voice.Session do
   defp handle_provider_event({:done}, state), do: {:stop, :normal, end_session(state, "provider_error")}
   defp handle_provider_event(_event, state), do: {:noreply, state}
 
-  # --- tool dispatch / approvals (docs/agent-voice-v1.md §7) ---
 
   defp dispatch_tool_call(state, call_id, name, input) do
     case authorize_tool_call(state, name, input) do
@@ -251,8 +247,6 @@ defmodule VibeAgents.Voice.Session do
     end
   end
 
-  # Prefers the real broker (a plain %{"agent_profile" => ...} map is all it needs — no
-  # agent_runs row required); falls back to the local ToolRisk table if it's unavailable.
   defp authorize_tool_call(state, name, input) do
     run = %{"agent_profile" => state.agent_profile}
     SafeApply.call(VibeAgents.Broker, :authorize, [run, name, input], fallback_authorize(state, name, input))
@@ -272,8 +266,6 @@ defmodule VibeAgents.Voice.Session do
     autonomy_mode = state.agent_profile["autonomyMode"] || "approval_required"
     approval_rules = state.agent_profile["approvalRules"] || %{}
 
-    # classify/1 only ever yields :read/:write_local (content-derived risk stays with the
-    # real broker), so :credential/:ask_user can't reach decision/4 through this path.
     case ToolRisk.decision(risk, name, autonomy_mode, approval_rules) do
       :run -> :run
       :approval -> {:approval, %{"title" => "Run #{name}?", "detail" => inspect_input(input)}}
@@ -317,8 +309,6 @@ defmodule VibeAgents.Voice.Session do
     ]
   end
 
-  # The session authorized the call already, so this goes through the executor's
-  # post-broker entry point with a pseudo-run (voice has no agent_runs row).
   defp execute_tool(state, call_id, name, input) do
     push_to_channel(state, "tool.progress", %{label: name, tool: name, status: "running"})
 
@@ -399,7 +389,6 @@ defmodule VibeAgents.Voice.Session do
     state
   end
 
-  # --- audio / image ingress limits (docs/agent-voice-v1.md §10) ---
 
   defp handle_audio_chunk(%{"dataBase64" => b64} = payload, state) do
     sample_rate = payload["sampleRate"] || 24_000
@@ -467,7 +456,6 @@ defmodule VibeAgents.Voice.Session do
     end
   end
 
-  # --- lifecycle helpers ---
 
   defp schedule_idle(state) do
     if state.idle_timer, do: Process.cancel_timer(state.idle_timer)

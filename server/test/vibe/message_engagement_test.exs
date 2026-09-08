@@ -38,7 +38,6 @@ defmodule Vibe.MessageEngagementTest do
 
       assert Repo.aggregate(MessageReaction, :count) == 1
 
-      # A multi-codepoint ZWJ sequence is a legal reaction.
       family = "👩🏽‍❤️‍💋‍👨🏽"
 
       assert {:ok, %{action: :replaced, reactions: [%{emoji: ^family, count: 1}]}} =
@@ -62,7 +61,6 @@ defmodule Vibe.MessageEngagementTest do
                %{emoji: "🔥", count: 1, isSelected: false}
              ] = Chat.message_reactions(message.id, bob.id)
 
-      # Same aggregate, no selection, for a caller who reacted with neither.
       assert [%{isSelected: false}, %{isSelected: false}] =
                Chat.message_reactions(message.id, nil)
     end
@@ -85,7 +83,6 @@ defmodule Vibe.MessageEngagementTest do
       assert {:error, :invalid_id} = Chat.toggle_reaction(chat_id, "not-a-uuid", bob.id, "👍")
       assert Repo.aggregate(MessageReaction, :count) == 0
 
-      # The foreign chat is untouched by the rejected attempt.
       assert Chat.message_reactions(other_message.id, alice.id) == []
       assert other_chat_id != chat_id
     end
@@ -136,7 +133,6 @@ defmodule Vibe.MessageEngagementTest do
       assert {:ok, [%{viewCount: 2}]} =
                Chat.mark_messages_viewed(room.id, carol.id, [message.id])
 
-      # The author viewing their own message is not a view.
       assert {:ok, []} = Chat.mark_messages_viewed(room.id, alice.id, [message.id])
       assert Repo.aggregate(MessageView, :count) == 2
     end
@@ -182,7 +178,6 @@ defmodule Vibe.MessageEngagementTest do
       assert payload.viewCount == 1
       assert payload.editedAt == nil
 
-      # The author sees the same counts, with their own selection unset.
       author_page = Chat.get_messages_for_user_page(room.id, alice.id, limit: 30)
       assert [%{reactions: [%{isSelected: false}]}] = author_page.messages
     end
@@ -213,7 +208,6 @@ defmodule Vibe.MessageEngagementTest do
       page = Chat.get_messages_for_user_page(room.id, bob.id, limit: 30)
       assert [%{reactions: ^reactions}] = page.messages
 
-      # The author sees the same counts with their own bucket unset.
       assert [%{reactions: [%{emoji: "👍", count: 1, isSelected: false}]}] =
                seeded_messages(alice.id, room.id)
     end
@@ -251,7 +245,6 @@ defmodule Vibe.MessageEngagementTest do
       assert carol_actor.avatarUrl == carol.profile_image
       assert is_integer(carol_actor.reactedAt)
 
-      # A member who reacted with neither sees the same groups, unselected.
       dave = insert_user("engage_dave")
       Repo.insert!(%Participant{chat_id: room.id, user_id: dave.id, role: "member"})
 
@@ -290,7 +283,6 @@ defmodule Vibe.MessageEngagementTest do
 
       assert {:error, :forbidden} = Chat.message_reaction_detail(chat_id, message.id, carol.id)
 
-      # A member asking about another chat's message gets no existence oracle.
       assert {:error, :not_found} =
                Chat.message_reaction_detail(chat_id, other_message.id, bob.id)
 

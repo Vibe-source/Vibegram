@@ -25,6 +25,7 @@ volumes:
   caddy_data:
   caddy_config:
   postgres_data:
+  wal_archive:
   loki_data:
   promtail_data:
   grafana_data:
@@ -179,8 +180,19 @@ services:
     networks:
       - internal
       - sandbox-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     deploy:
       resources:
         limits:
@@ -215,6 +227,7 @@ services:
       - /run/vibe/env/postgres.env
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - wal_archive:/wal_archive
       - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
@@ -345,6 +358,8 @@ services:
     restart: unless-stopped
     env_file:
       - /run/vibe/env/backup.env
+    volumes:
+      - wal_archive:/wal_archive
     networks:
       - internal
     security_opt:
@@ -354,6 +369,29 @@ services:
         limits:
           cpus: "1.0"
           memory: 256M
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    mem_limit: 64m
+    cpus: 0.25
+    restart: unless-stopped
+    env_file:
+      - /run/vibe/env/postgres-exporter.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
 
   # Server-side hit/miss/eviction counters, so cache pressure is visible before
   # it becomes a latency problem. Reads REDIS_PASSWORD from env/valkey.env.

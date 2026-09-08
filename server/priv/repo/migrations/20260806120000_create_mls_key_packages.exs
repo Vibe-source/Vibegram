@@ -12,8 +12,6 @@ defmodule Vibe.Repo.Migrations.CreateMlsKeyPackages do
       timestamps()
     end
 
-    # The claim path looks up "the oldest unclaimed row for this user" — this is
-    # that exact lookup, and also backs the publish-time count check.
     create index(:mls_key_packages, [:user_id, :claimed_at])
   end
 end

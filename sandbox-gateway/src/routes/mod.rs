@@ -1,5 +1,3 @@
-//! Router assembly: `/healthz` is public, every `/v1/*` route requires `x-sandbox-token`.
-//! A request-id span wraps everything (outermost layer) so even a 401 gets logged with an id.
 mod browser;
 mod computer;
 mod files;
@@ -21,7 +19,6 @@ use crate::models::HealthzResponse;
 use crate::state::AppState;
 
 pub fn build(state: Arc<AppState>) -> Router {
-    // Base64 JSON bodies run ~33% larger than the decoded file; leave headroom for that + envelope.
     let body_limit = state.cfg.max_file_bytes.saturating_mul(2).max(1_000_000);
 
     let authed = Router::new()
@@ -84,8 +81,7 @@ async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     })
 }
 
-/// Per-process-unique, not globally unique: cheap and enough to grep-correlate one request's
-/// log lines without pulling in a uuid dependency.
+/// Per-process-unique, not globally unique:
 fn next_request_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);

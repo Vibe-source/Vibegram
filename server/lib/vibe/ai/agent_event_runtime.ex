@@ -1,21 +1,7 @@
 defmodule Vibe.AI.AgentEventRuntime do
   @moduledoc """
-  Event-inbox runtime for provider agent events, including progressive
-  `message.stream` delivery.
-
-  ## `message.stream` (provider streaming)
-
-  Providers POST full-accumulated text frames to the existing events ingress
-  with `eventType: "message.stream"`. Frames are applied as progressive edits
-  on a single chat message (`metadata["streaming"] = true` until `done`).
-
-  Stream state (`streamId → %{message_id, last_seq, done}`) is held in an
-  **ETS table owned by this module** (`:vibe_agent_event_streams`). State is
-  **node-local** — acceptable for single-instance deploy; multi-node would need
-  shared storage.
-
-  Throttle expectation: providers SHOULD send **≤ 4 frames/sec**. Frames with
-  `seq` ≤ last-seen are ignored (idempotent full-text frames).
+  Event-inbox runtime for provider agent events, including progressive `message.stream`
+  delivery.
   """
 
   import Ecto.Query, warn: false
@@ -87,18 +73,12 @@ defmodule Vibe.AI.AgentEventRuntime do
 
   @doc """
   Normalize a `message.stream` params map into a frame struct.
-
-  Returns `{:ok, frame}` or `{:error, reason}` where reason is one of
-  `:missing_stream_id` or `:missing_seq`. Destination may be nil here and
-  filled from agent/integration defaults by the runtime.
   """
   def normalize_stream_params(params) when is_map(params) do
     stream_id = normalize_string(params["streamId"] || params["stream_id"])
     seq = normalize_integer(params["seq"])
-    # Full accumulated text (never a delta). Empty string allowed mid-stream.
     text = normalize_rich_text(params["text"] || params["message"]) || ""
 
-    # Prefer raw content envelope; controller may also attach validated providerContent.
     content =
       cond do
         is_map(params["content"]) -> params["content"]
@@ -138,16 +118,6 @@ defmodule Vibe.AI.AgentEventRuntime do
 
   @doc """
   Pure stream-frame state machine.
-
-  `state` is `nil` (unknown stream) or `%{message_id, last_seq, done}`.
-  `frame` is a normalized stream frame from `normalize_stream_params/1`.
-
-  Returns one of:
-  - `{:ignore, reason}` — stale seq or stream already done
-  - `{:create, next_state, frame}` — first non-done frame
-  - `{:update, next_state, frame}` — later non-done frame
-  - `{:finalize, next_state, frame}` — done frame for existing stream
-  - `{:create_finalize, next_state, frame}` — done-only (unknown streamId)
   """
   def stream_frame_decision(nil, %{seq: seq, done: false} = frame) when is_integer(seq) do
     {:create, %{message_id: nil, last_seq: seq, done: false}, frame}
@@ -180,18 +150,10 @@ defmodule Vibe.AI.AgentEventRuntime do
 
   @doc """
   Pure final-frame content handling.
-
-  On valid `content` envelope: degrade via `ProviderContent.to_message_attrs/1`
-  (envelope text wins) and return normalized content for `metadata["content"]`.
-
-  On invalid content: keep plain `text` and return
-  `{:error, {:invalid_content, reason}, text}` so the caller can finalize then
-  surface the invoke-consistent error shape.
   """
   def finalize_stream_content(text, nil) when is_binary(text), do: {:ok, text, nil}
 
   def finalize_stream_content(text, content) when is_binary(text) and is_map(content) do
-    # Already-normalized envelope from controller may still re-parse cleanly.
     case ProviderContent.parse(content) do
       {:ok, normalized} ->
         attrs = ProviderContent.to_message_attrs(normalized)
@@ -223,7 +185,6 @@ defmodule Vibe.AI.AgentEventRuntime do
 
   def normalize_event_attachments(_), do: %{"items" => []}
 
-  # ── message.stream runtime ─────────────────────────────────────────────────
 
   defp handle_message_stream(%Agent{} = agent, integration, params) do
     ensure_stream_table!()
@@ -231,9 +192,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     with {:ok, frame0} <- normalize_stream_params(params),
          {:ok, frame} <- resolve_stream_destination(frame0, agent, integration),
          :ok <- ensure_destination_chat(agent, frame.destination_chat_id),
-         # استریم هم باید از همان دروازهٔ رویدادِ کانال رد شود. بدون این، دارندهٔ
-         # secret می‌توانست در کانالی که سیاستش تریگرِ event ندارد پیام بگذارد و
-         # فریم‌به‌فریم بازنویسی‌اش کند — چیزی که مسیر عادیِ ingest جلویش را می‌گیرد.
          :ok <- ensure_event_trigger(agent, frame.destination_chat_id) do
       key = stream_state_key(agent.id, frame.stream_id)
       state = stream_lookup(key)
@@ -314,7 +272,6 @@ defmodule Vibe.AI.AgentEventRuntime do
           timestamp: posted.timestamp
         }
 
-        # Finalize-with-text then surface invoke-consistent content error.
         if content_error, do: {:error, content_error}, else: {:ok, result}
 
       error ->
@@ -457,8 +414,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     end)
   end
 
-  # Mirror chat_channel.ex ~555 message-edited payload, plus agent plain-text
-  # fields so clients that hydrate agent rows from plainContent keep working.
   defp broadcast_stream_edited(agent, chat_id, message_id, plain_text, edited_at, message) do
     payload = %{
       chatId: chat_id,
@@ -608,10 +563,6 @@ defmodule Vibe.AI.AgentEventRuntime do
           {thread, event, message_payload} =
             case policy.post_event_message? or attachment_items?(normalized.attachments) do
               true ->
-                # In batched_summary mode, still post each event but SILENTLY so
-                # it populates the dedicated Inbox view (clients route eventThread
-                # messages out of the transcript) without a push per event. The
-                # periodic batched summary still posts normally with a push.
                 silent? = not post_individual_event_message?(policy, inbox_config)
 
                 {:ok, message_payload} =
@@ -722,9 +673,6 @@ defmodule Vibe.AI.AgentEventRuntime do
               }
 
             {:error, reason} ->
-              # Keep the accepted event and its already-posted attachment rows even
-              # when the later runbook/action fails. The caller still receives the
-              # original error after the transaction commits.
               {:runtime_error, reason}
           end
         end)
@@ -797,8 +745,6 @@ defmodule Vibe.AI.AgentEventRuntime do
         agent.default_destination_chat_id ||
         owner_dm_chat_id(agent)
 
-    # Callback URLs on the event payload are ignored entirely (SSRF). Destination
-    # for decisions is always agents.callback_url configured by the owner.
     _ignored_callback = params["callbackUrl"] || params["callback_url"]
 
     with :ok <- validate_event_params_size(params),
@@ -829,11 +775,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     end
   end
 
-  # آخرین حلقهٔ زنجیرهٔ مقصد. هر ایجنت در هر حال یک DM با مالکش دارد، پس نبودِ
-  # chat مقصد دلیلی برای رد کردنِ رویداد با `:missing_destination_chat` نیست —
-  # فرستندهٔ بیرونی (مثلاً cargo-tracker) نباید مجبور باشد chat id را بداند.
-  # چون در زمانِ رویداد حل می‌شود، ایجنت‌های ساخته‌شدهٔ قبلی هم بدون migration
-  # درست کار می‌کنند.
   defp owner_dm_chat_id(%Agent{owner_user_id: owner, agent_user_id: agent_user})
        when is_binary(owner) and is_binary(agent_user) do
     case Chat.ensure_dm_chat(owner, agent_user) do
@@ -937,8 +878,6 @@ defmodule Vibe.AI.AgentEventRuntime do
           estimated_cost_cents: 0
         }
 
-      # Sender-declared decision set wins over runbook auto-act: the event author
-      # is asking a human to choose, regardless of owner automation settings.
       match?(%{actions: [_ | _]}, declaration) ->
         %{
           mode: "approval_required",
@@ -1133,9 +1072,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     build_event_inbox_config(merged)
   end
 
-  # Normalized inbox config. Supports two summary schedules:
-  #   * "interval" — post a summary every `summary_window_hours` (rolling window)
-  #   * "daily"    — post a summary at fixed clock times (`summary_times`, UTC minutes)
   defp build_event_inbox_config(merged) when is_map(merged) do
     %{
       mode: normalize_event_inbox_mode(merged["mode"] || merged[:mode]),
@@ -1200,9 +1136,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     end
   end
 
-  # Accepts a list of clock times ("HH:MM" strings or integer hours/minutes) and
-  # returns a sorted, de-duped list of minutes-from-midnight (UTC). Invalid or
-  # empty input yields []; callers fall back to the interval schedule when empty.
   defp normalize_summary_times(value) do
     value
     |> List.wrap()
@@ -1244,8 +1177,6 @@ defmodule Vibe.AI.AgentEventRuntime do
 
   defp parse_summary_time(_), do: nil
 
-  # True when a fixed-time summary is due: some configured clock time has elapsed
-  # since the pending batch started and on/before the current event time.
   defp daily_summary_due?(_pending_started_at, _occurred_at, []), do: false
 
   defp daily_summary_due?(pending_started_at, occurred_at, minutes_list) do
@@ -1255,7 +1186,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     end
   end
 
-  # Most recent scheduled datetime at or before `now` across the configured times.
   defp last_scheduled_at(now, minutes_list) do
     today = DateTime.to_date(now)
 
@@ -1717,15 +1647,9 @@ defmodule Vibe.AI.AgentEventRuntime do
     )
   end
 
-  # نسخهٔ بدونِ سرتیترِ متن، برای وقتی که به‌جای حبابِ مستقل، caption یک سلولِ
-  # سند می‌شود. `# ` داخل یک حبابِ فایل، تیتری غول‌پیکر بالای نامِ فایل می‌سازد.
   defp caption_body(title, nil), do: title
   defp caption_body(title, detail), do: "#{title}\n\n#{detail}"
 
-  # خلاصهٔ رویداد روی نخستین پیوست می‌نشیند و بقیه بی‌عنوان پشت سرش می‌آیند —
-  # همان قاعدهٔ آلبومِ تلگرام. جدا فرستادنِ خلاصه یک حبابِ متنیِ یتیم بالای
-  # فایل‌ها می‌سازد و سلولِ سند بی‌عنوان می‌ماند؛ کلاینت caption را داخل همان
-  # حبابِ سند می‌چیند، پس اینجا باید یک ردیف باشد نه دو.
   defp post_event_body_and_attachments(
          agent,
          chat_id,
@@ -1750,8 +1674,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     end
   end
 
-  # بدون پیوست، یا حالت silent. در silent خلاصه از رونوشت پنهان است ولی پیوست‌ها
-  # نیستند، پس ادغام‌شان یعنی تحمیلِ یک visibility به هر دو — نگه‌شان می‌داریم جدا.
   defp post_event_body_and_attachments(
          agent,
          chat_id,
@@ -1769,8 +1691,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     end
   end
 
-  # هر دو متن را نگه می‌داریم مگر آنکه یکی داخل دیگری تکرار شده باشد؛ گم کردنِ
-  # عنوانِ رویداد به‌خاطر داشتنِ caption روی فایل، اطلاعات را دور می‌ریزد.
   @doc false
   def merged_attachment_caption(body, attachment) do
     case {normalize_string(body), attachment_own_caption(attachment)} do
@@ -1807,10 +1727,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     timestamp = System.system_time(:millisecond)
     message_type = Keyword.get(opts, :type, "text")
     media_url = Keyword.get(opts, :media_url)
-    # Silent posts still broadcast over the open chat channel (so the Inbox view
-    # can update in real time) but skip Home/new-message fanout and push
-    # notifications. Used for individual inbox items in batched_summary mode so
-    # the inbox is populated without behaving like normal chat traffic.
     silent = Keyword.get(opts, :silent, false)
 
     metadata =
@@ -1889,7 +1805,6 @@ defmodule Vibe.AI.AgentEventRuntime do
 
         VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "message", payload)
 
-        # Built once and reused for every recipient's user-topic mirror.
         mirrored_message = Chat.mirrored_message_payload(payload)
 
         Chat.get_all_participant_settings(chat_id)
@@ -2304,9 +2219,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     end
   end
 
-  # سلولِ سند باید پیش از دانلود، نام و نوع را نشان بدهد. فرستنده‌های بیرونی
-  # معمولاً فقط url می‌دهند، پس نام را از خودِ مسیر برمی‌داریم — بدون هیچ درخواستِ
-  # شبکه‌ای به url ای که فرستنده انتخاب کرده است.
   @doc false
   def attachment_file_name(attachment) do
     normalize_string(attachment["name"] || attachment[:name]) ||
@@ -2329,9 +2241,6 @@ defmodule Vibe.AI.AgentEventRuntime do
     end
   end
 
-  # فقط وقتی basename را نام فایل حساب می‌کنیم که واقعاً شبیه نام فایل باشد.
-  # مسیرهایی مثل `/print/container/2` وگرنه سلولی می‌سازند که اسمش «2» است؛
-  # nil بهتر است، چون آن‌وقت کلاینت عنوان/caption را نشان می‌دهد.
   defp named_file?(name) do
     case Path.extname(name) do
       "" -> false
@@ -2619,10 +2528,6 @@ defmodule Vibe.AI.AgentEventRuntime do
 
   defp summarize_payload_line(payload) when map_size(payload) == 0, do: nil
 
-  # Fallback bubble text when a connected app sends an event without its own
-  # `text`. Stays project-agnostic: it just renders whatever keys arrived in a
-  # readable way. Values are formatted defensively so lists/maps never get
-  # interpolated into a mangled blob (e.g. ["a","b"] becoming "ab").
   defp summarize_payload_line(payload) do
     payload
     |> Enum.take(4)

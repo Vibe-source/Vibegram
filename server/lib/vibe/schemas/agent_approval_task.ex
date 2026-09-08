@@ -64,8 +64,6 @@ defmodule Vibe.AgentApprovalTask do
     |> validate_inclusion(:source, @sources)
   end
 
-  # Runtime-sourced decisions (isolated agent runs) have no AgentEventThread/AgentEvent
-  # to attach to; every other source still requires both (unchanged behaviour).
   defp maybe_require_thread_and_event(changeset, attrs) do
     source = attrs[:source] || attrs["source"] || get_field(changeset, :source)
 

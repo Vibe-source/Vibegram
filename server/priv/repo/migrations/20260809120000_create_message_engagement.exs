@@ -12,8 +12,6 @@ defmodule Vibe.Repo.Migrations.CreateMessageEngagement do
       timestamps()
     end
 
-    # One reaction per user per message: replacing an emoji is an update of this
-    # row, never a second row, so the aggregate can never double-count a user.
     create(unique_index(:message_reactions, [:message_id, :user_id]))
     create(index(:message_reactions, [:message_id, :emoji]))
     create(index(:message_reactions, [:chat_id, :inserted_at]))
@@ -32,8 +30,6 @@ defmodule Vibe.Repo.Migrations.CreateMessageEngagement do
 
     create table(:message_reports, primary_key: false) do
       add(:id, :uuid, primary_key: true)
-      # Nullable + nilify: a report is a moderation record and must outlive the
-      # message it names, including when the reported author deletes it.
       add(:message_id, references(:messages, type: :uuid, on_delete: :nilify_all))
       add(:chat_id, :string)
       add(:reporter_id, references(:users, type: :uuid, on_delete: :delete_all), null: false)

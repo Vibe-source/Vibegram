@@ -1,9 +1,6 @@
 defmodule Vibe.ChannelAgentScheduler do
   @moduledoc """
   Claims and runs durable interval-based channel-agent assignments.
-
-  Claiming advances `next_trigger_at` under `FOR UPDATE SKIP LOCKED` before model
-  execution, preventing duplicate interval runs when multiple app nodes poll at once.
   """
 
   use GenServer

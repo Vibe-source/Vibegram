@@ -9,7 +9,7 @@ defmodule VibeAgents.Broker do
   @external_effect_action ~r/pay|buy|purchase|checkout|send|submit|delete|publish|confirm\s*order/i
   @credential_hint ~r/password|passwd|2fa|otp|one[\s-]?time\s*code|captcha|verification\s*code|security\s*code/i
 
-  # No approval round-trip is worth offering for these: they destroy the sandbox itself.
+  # No approval round-trip is worth offering for these:
   @never_run ~r{rm\s+(-[a-zA-Z]+\s+)*(/|/\*|~|~/\*)(\s|$)|mkfs[. ]|dd\s+[^|]*of=/dev/|>\s*/dev/(sd|nvme|hd)|(shutdown|reboot|poweroff)\s|:\(\)\s*\{\s*:}i
 
   @doc """
@@ -60,8 +60,6 @@ defmodule VibeAgents.Broker do
     %{"capability" => capability, "scope" => "run", "reason" => reason}
   end
 
-  # A model that pre-asks to work on its own machine stalls a run the broker would have let
-  # through. Honour the ask only when the claimed risk actually needs a human.
   defp approval_for_claimed_risk(run, input) do
     claimed = to_string(input["risk"] || input[:risk] || "external_effect")
 
@@ -152,8 +150,6 @@ defmodule VibeAgents.Broker do
     (rules[key] || rules[String.to_atom(key)] || []) |> List.wrap() |> Enum.map(&to_string/1)
   end
 
-  # A rule matches by exact tool name, or as a case-insensitive substring of the call input --
-  # so "git push" stops a computer_run that contains it, whatever the autonomy mode says.
   defp rule_matches?(run, key, tool_name, input) do
     haystack = String.downcase(tool_name <> " " <> input_preview(input))
 
@@ -192,7 +188,6 @@ defmodule VibeAgents.Broker do
     }
   end
 
-  # The card has to show the exact thing, not the tool name: a command, a URL, a file path.
   defp request_title("computer_run", _input), do: "Run a command on the computer?"
   defp request_title("browser_open", input), do: "Open #{host_of(input["url"] || input[:url])}?"
   defp request_title("browser_act", input), do: "#{input["action"] || input[:action] || "Act"} in the browser?"

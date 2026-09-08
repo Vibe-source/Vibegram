@@ -68,4 +68,18 @@ defmodule Vibe.AgentComputerRelayTest do
     assert_receive %Phoenix.Socket.Broadcast{event: "agent-computer"}
     refute_receive %Phoenix.Socket.Broadcast{event: "agent-stream"}, 100
   end
+
+  test "a terminal event without relay state does not erase rendered content", %{chat_id: chat_id} do
+    terminal = event(chat_id, "run.completed", %{})
+    run_id = terminal["runId"]
+
+    assert :ok = AgentRelay.handle(terminal)
+    assert_receive %Phoenix.Socket.Broadcast{event: "agent-stream", payload: stream}
+    assert stream["runId"] == run_id
+    assert stream["status"] == "done"
+    refute Map.has_key?(stream, "text")
+    refute Map.has_key?(stream, "progressNodes")
+    refute Map.has_key?(stream, "toolEvents")
+    assert_receive %Phoenix.Socket.Broadcast{event: "agent-run-state", payload: %{"runId" => ^run_id}}
+  end
 end

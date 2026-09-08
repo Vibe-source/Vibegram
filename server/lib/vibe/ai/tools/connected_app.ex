@@ -19,6 +19,7 @@ defmodule Vibe.AI.Tools.ConnectedApp do
          {:ok, selection} <- resolve_connected_app(agent, input, action),
          :ok <- ensure_action_allowed(selection, action),
          {:ok, secret} <- Agents.integration_secret(selection.integration),
+         {:ok, _uri} <- Vibe.Net.SafeURL.validate(selection.endpoint_url),
          {:ok, result} <-
            dispatch_action(selection, agent, requester_user_id, action, params, secret) do
       result
@@ -541,6 +542,11 @@ defmodule Vibe.AI.Tools.ConnectedApp do
       "error" => "Connected app request failed.",
       "details" => inspect(reason)
     }
+  end
+
+  defp error_payload(reason)
+       when reason in [:invalid_scheme, :missing_host, :host_not_found, :blocked_address, :invalid_url] do
+    %{"ok" => false, "error" => "The connected app endpoint is not a publicly routable URL."}
   end
 
   defp error_payload(reason) do

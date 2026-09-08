@@ -51,6 +51,21 @@ defmodule VibeAgents.Test.FakeCoreHTTP do
      }}
   end
 
+  defp respond("/internal/v1/provider-auth", %{"secret" => "other-secret"}) do
+    {:ok,
+     %{
+       status: 200,
+       body:
+         Jason.encode!(%{
+           "agentProfile" => %{"displayName" => "Other", "username" => "other", "modelProvider" => "anthropic", "modelId" => "claude-sonnet-5", "enabledTools" => [], "autonomyMode" => "safe_auto"},
+           "agentId" => "44444444-4444-4444-4444-444444444444",
+           "agentUserId" => "55555555-5555-5555-5555-555555555555",
+           "ownerUserId" => "66666666-6666-6666-6666-666666666666",
+           "defaultChatId" => "chat-other"
+         })
+     }}
+  end
+
   defp respond("/internal/v1/provider-auth", _body), do: {:ok, %{status: 401, body: Jason.encode!(%{"error" => "unauthorized"})}}
   defp respond("/internal/v1/agent-events", %{"events" => events}), do: {:ok, %{status: 200, body: Jason.encode!(%{"accepted" => length(events)})}}
   defp respond("/internal/v1/deliveries", _body), do: {:ok, %{status: 200, body: Jason.encode!(%{"deliveries" => [%{"messageId" => "m1"}]})}}

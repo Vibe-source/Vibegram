@@ -41,8 +41,6 @@ defmodule VibeWeb.UserSocketTest do
     end
 
     test "ignores Authorization header (not forwarded as usable x- header)" do
-      # Documenting the Phoenix constraint: only x-* headers appear in x_headers.
-      # A bare authorization pair must not be treated as mobile auth.
       connect_info = %{
         x_headers: [{"authorization", "Bearer should-not-be-used"}]
       }

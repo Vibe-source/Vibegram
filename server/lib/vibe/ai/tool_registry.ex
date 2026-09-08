@@ -1,15 +1,7 @@
 defmodule Vibe.AI.ToolRegistry do
   @moduledoc """
-  Catalog of agent tools surfaced in agent config and used to validate the
-  per-agent `enabled_tools` selection.
-
-  Tools flagged `always_on: true` are part of the runtime regardless of the
-  per-agent selection (see `Vibe.AI.Agent` @always_available_tool_names). They
-  are listed here so the config UI can show them for transparency, but they are
-  excluded from `default_tool_ids/0` and rendered as locked-on by clients.
-
-  `category` lets clients group tools and lets operators assemble different tool
-  sets per use case without hardcoding ids on the client.
+  Catalog of agent tools surfaced in agent config and used to validate the per-agent
+  `enabled_tools` selection.
   """
 
   @tools [
@@ -243,8 +235,7 @@ defmodule Vibe.AI.ToolRegistry do
       always_on: true,
       testability: "dry_run"
     },
-    # Isolated-runtime only: gates capabilities.computer/.browser in AgentGateway. A no-op for
-    # embedded agents (the runtime honors them; the embedded loop has no sandbox tools).
+    # Isolated-runtime only:
     %{
       id: "computer_run",
       name: "Computer",

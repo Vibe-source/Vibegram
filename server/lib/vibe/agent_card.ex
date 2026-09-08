@@ -1,10 +1,6 @@
 defmodule Vibe.AgentCard do
   @moduledoc """
   Builds the public A2A-compatible agent card for a Vibe standalone agent.
-
-  The card is discovery metadata only: identity, endpoints, capabilities, and
-  how to authenticate against the existing invoke/events ingress. It never
-  includes secrets, hashes, system prompts, budgets, approval rules, or owner ids.
   """
 
   alias Vibe.Agent
@@ -12,10 +8,6 @@ defmodule Vibe.AgentCard do
 
   @doc """
   Build the frozen A2A-compatible agent card map for `agent`.
-
-  `agent` should already be preloaded with `:agent_user` and `:owner`; missing
-  associations are preloaded defensively. `base_url` is the public origin
-  (e.g. from `VibeWeb.Endpoint.url/0`) used to form invoke/events URLs.
   """
   @spec build(struct(), String.t()) :: map()
   def build(%Agent{} = agent, base_url) when is_binary(base_url) do
@@ -71,10 +63,6 @@ defmodule Vibe.AgentCard do
 
   defp owner_organization(_), do: ""
 
-  # Truthful description of AgentsController.invoke/2 and ingest_event/2:
-  # both read the agent secret from request headers only (never body).
-  # invoke:  X-Vibe-Agent-Secret
-  # events:  X-Vibe-Agent-Secret or X-Vibe-Integration-Secret
   defp security_schemes(_agent) do
     %{
       "agentSecret" => %{

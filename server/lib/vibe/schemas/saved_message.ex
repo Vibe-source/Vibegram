@@ -14,7 +14,6 @@ defmodule Vibe.Chat.SavedMessage do
     field :media_url, :string
     field :timestamp, :integer
     field :extra, :string
-    # Written only by Chat.toggle_saved_message_reaction/3, never cast from client params.
     field :reaction_emoji, :string
 
     belongs_to :user, Vibe.Accounts.User, type: :binary_id

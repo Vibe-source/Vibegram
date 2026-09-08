@@ -1,24 +1,6 @@
 defmodule Vibe.AI.AgenticPolicy do
   @moduledoc """
   The behaviour contract every Vibe agent runs under, in one place.
-
-  ## Why this is a module and not prose in a prompt
-
-  There are three prompt builders in this app and they do not share a line of text:
-
-  * `Vibe.AI.Agent` — the built-in Vibe AI assistant (`@system_prompt`).
-  * `Vibe.AI.StandaloneAgent` — every agent a *user* creates. It passes its own
-    `system_prompt:` to the same runtime, which **replaces** the built-in one entirely.
-  * `Vibe.AI.GroupAgent` — agents attached to groups and channels, with their own loop.
-
-  Before this module, the research and turn-shape rules lived only in the first one. A
-  user-created agent shipped with `search_google` enabled and no instruction anywhere on
-  how to use it, so it did exactly what an unguided model does: one search, then an answer
-  from snippets. "The agent is agentic" was true only for the built-in assistant, which is
-  the one surface that is not the product.
-
-  Behaviour must not depend on which prompt builder happened to construct the turn, and it
-  must not depend on which model is serving it. Both are enforced here.
   """
 
   @search_tool "search_google"
@@ -35,10 +17,6 @@ defmodule Vibe.AI.AgenticPolicy do
 
   @doc """
   How a turn is shaped: speak between tool rounds instead of going silent and dumping.
-
-  This is the difference the user actually feels. A turn that runs three rounds of tools
-  and speaks only at the end reads as a frozen app for however long the tools take —
-  measured at 25 s of dead air on a real research turn before this rule existed.
   """
   def turn_shape do
     """
@@ -72,11 +50,6 @@ defmodule Vibe.AI.AgenticPolicy do
 
   @doc """
   The research loop: plan → search (parallel) → read → check yourself → another round.
-
-  The instruction that matters most is "check yourself", because that is the step models
-  skip by default. Every research tool result also carries its own `next_step` line
-  describing what actually came back — a tool result is evidence the model just asked for
-  and always reads, which makes it far more reliable than prompt text on weak models.
   """
   def research do
     """
@@ -119,8 +92,6 @@ defmodule Vibe.AI.AgenticPolicy do
 
   @doc """
   Policy block for a prompt builder that composes its own system prompt.
-
-  Returns `nil` when there is nothing to say, so callers can drop it from a list.
   """
   def prompt_guidance(enabled_tools) do
     sections =

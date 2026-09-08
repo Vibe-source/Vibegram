@@ -17,37 +17,13 @@ defmodule VibeWeb.InternalAgentController do
   alias Vibe.Chat
   alias Vibe.Repo
 
-  @seen_table :agent_run_seen
-  @seen_ttl_seconds 3600
-
   def agent_events(conn, %{"events" => events}) when is_list(events) do
-    ensure_seen_table()
-
     accepted =
-      Enum.reduce(events, 0, fn event, acc ->
-        with {:ok, validated} <- VibeContracts.RunEvent.validate(event),
-             true <- agent_in_chat?(validated["agentUserId"], validated["chatId"]),
-             false <- seen?(validated) do
-          mark_seen(validated)
-          maybe_record_usage(validated)
-          AgentRelay.handle(validated)
-          acc + 1
-        else
-          true ->
-            acc
-
-          false ->
-            Logger.warning("[InternalAgentController] RunEvent for a chat the agent is not in — dropped")
-            acc
-
-          {:error, reason} ->
-            Logger.warning("[InternalAgentController] invalid RunEvent reason=#{inspect(reason)}")
-            acc
-
-          _other ->
-            acc
-        end
-      end)
+      events
+      |> Enum.flat_map(&authorised_event/1)
+      |> Enum.group_by(& &1["runId"])
+      |> Enum.map(fn {run_id, group} -> accept_run_events(run_id, group) end)
+      |> Enum.sum()
 
     json(conn, %{accepted: accepted})
   end
@@ -56,15 +32,13 @@ defmodule VibeWeb.InternalAgentController do
     conn |> put_status(:bad_request) |> json(%{error: "invalid_events"})
   end
 
-  # The runtime is trusted for identity, not for authority: an agent may only post
-  # into chats it is a participant of, exactly like the embedded path.
+  # The runtime is trusted for identity, not for authority:
   defp agent_in_chat?(agent_user_id, chat_id) when is_binary(agent_user_id) and is_binary(chat_id) do
     Chat.is_participant?(chat_id, agent_user_id)
   end
 
   defp agent_in_chat?(_agent_user_id, _chat_id), do: false
 
-  # Meters a completed isolated run. Never raises — usage capture must not drop the event.
   defp maybe_record_usage(%{"kind" => "run.completed"} = event) do
     case Agents.get_agent(event["agentId"]) do
       nil -> :ok
@@ -132,7 +106,6 @@ defmodule VibeWeb.InternalAgentController do
     end
   end
 
-  # Never reveal whether the identifier or the secret was wrong.
   def provider_auth(conn, %{"identifier" => identifier, "secret" => secret})
       when is_binary(identifier) and is_binary(secret) do
     with %Agent{status: "published"} = agent <- Agents.get_invoke_target(identifier),
@@ -204,28 +177,77 @@ defmodule VibeWeb.InternalAgentController do
 
   defp unauthorized(conn), do: conn |> put_status(:unauthorized) |> json(%{error: "unauthorized"})
 
-  defp ensure_seen_table do
-    case :ets.whereis(@seen_table) do
-      :undefined -> :ets.new(@seen_table, [:set, :public, :named_table, {:read_concurrency, true}])
-      _tid -> :ok
+  defp authorised_event(event) do
+    case VibeContracts.RunEvent.validate(event) do
+      {:ok, validated} ->
+        if agent_in_chat?(validated["agentUserId"], validated["chatId"]) do
+          [validated]
+        else
+          Logger.warning("[InternalAgentController] RunEvent for a chat the agent is not in — dropped")
+          []
+        end
+
+      {:error, reason} ->
+        Logger.warning("[InternalAgentController] invalid RunEvent reason=#{inspect(reason)}")
+        []
     end
   end
 
-  defp seen?(%{"runId" => run_id, "seq" => seq}) do
-    key = {run_id, seq}
+  # Durable per-run high-water mark: a redelivered batch counts as accepted but replays
+  # no side effects. Relay broadcasts run after the transaction commits.
+  defp accept_run_events(run_id, group) do
+    sorted = Enum.sort_by(group, & &1["seq"])
 
-    case :ets.lookup(@seen_table, key) do
-      [{^key, expires_at}] -> expires_at > System.system_time(:second)
-      [] -> false
+    result =
+      Repo.transaction(fn ->
+        last_seq = lock_receipt(run_id)
+        fresh = sorted |> Enum.filter(&(&1["seq"] > last_seq)) |> Enum.uniq_by(& &1["seq"])
+        Enum.each(fresh, &maybe_record_usage/1)
+
+        case fresh do
+          [] -> :ok
+          _ -> advance_receipt(run_id, fresh |> Enum.map(& &1["seq"]) |> Enum.max())
+        end
+
+        fresh
+      end)
+
+    case result do
+      {:ok, fresh} ->
+        Enum.each(fresh, &AgentRelay.handle/1)
+        length(sorted)
+
+      {:error, reason} ->
+        Logger.warning("[InternalAgentController] run receipt failed run=#{run_id} reason=#{inspect(reason)}")
+        0
     end
   end
 
-  defp seen?(_event), do: false
+  # Upsert-and-return takes the row lock even when the receipt does not exist yet,
+  # which a bare SELECT ... FOR UPDATE cannot do.
+  defp lock_receipt(run_id) do
+    %{rows: [[last_seq]]} =
+      Repo.query!(
+        """
+        INSERT INTO agent_run_receipts (run_id, last_seq, updated_at)
+        VALUES ($1, 0, now())
+        ON CONFLICT (run_id) DO UPDATE SET updated_at = EXCLUDED.updated_at
+        RETURNING last_seq
+        """,
+        [run_id]
+      )
 
-  defp mark_seen(%{"runId" => run_id, "seq" => seq}) do
-    key = {run_id, seq}
-    :ets.insert(@seen_table, {key, System.system_time(:second) + @seen_ttl_seconds})
+    last_seq
   end
 
-  defp mark_seen(_event), do: :ok
+  defp advance_receipt(run_id, max_seq) do
+    Repo.query!(
+      """
+      UPDATE agent_run_receipts
+      SET last_seq = GREATEST(last_seq, $2), updated_at = now()
+      WHERE run_id = $1
+      """,
+      [run_id, max_seq]
+    )
+  end
 end

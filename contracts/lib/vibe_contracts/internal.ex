@@ -1,6 +1,6 @@
 defmodule VibeContracts.Internal do
   @moduledoc false
-  # Shared helpers for other VibeContracts modules. Not part of the frozen contract surface.
+  # Shared helpers for other VibeContracts modules.
 
   @doc "RFC4122 v4 UUID, dependency-free (no Ecto in this app)."
   @spec uuid4() :: binary()

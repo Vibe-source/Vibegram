@@ -1,8 +1,7 @@
 defmodule VibeWeb.Plugs.InternalServiceAuth do
   @moduledoc """
   Verifies `vibe-internal-auth/v1` signed requests from the agent-runtime
-  (docs/agent-platform-v1.md §3.1). Internal routes are never exposed via Caddy,
-  but this is the last line of defense on the core itself.
+  (docs/agent-platform-v1.md §3.1).
   """
 
   import Plug.Conn

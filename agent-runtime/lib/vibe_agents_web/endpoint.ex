@@ -3,7 +3,7 @@ defmodule VibeAgentsWeb.Endpoint do
 
   @parser_length 2_000_000
 
-  # Voice calls (docs/agent-voice-v1.md): channel "voice:<sessionId>", token-gated in the socket.
+  # Voice calls (docs/agent-voice-v1.md):
   socket("/v1/voice/socket", VibeAgentsWeb.VoiceSocket, websocket: true, longpoll: false)
 
   plug(Plug.RequestId)

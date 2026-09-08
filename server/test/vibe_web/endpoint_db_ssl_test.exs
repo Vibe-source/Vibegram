@@ -1,14 +1,6 @@
 defmodule VibeWeb.EndpointDbSslTest do
   @moduledoc """
   Mirrors the DB SSL decision table in `config/runtime.exs`.
-
-  The second argument is a list of DER-encoded CA certificates rather than a
-  file path, because the production trust list is a *combination*: Supabase's
-  pooler chains to its own private root ("Supabase Root 2021 CA"), which is in
-  no public bundle, so verifying against `/etc/ssl/certs/ca-certificates.crt`
-  alone fails with a TLS `unknown_ca` alert — the Repo never connects and the
-  release dies during migration before it can answer a healthcheck.
-  `cacertfile:` can only name one file; `cacerts:` can carry both.
   """
 
   use ExUnit.Case, async: true

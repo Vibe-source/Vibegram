@@ -28,9 +28,7 @@ defmodule Vibe.AgentConversation do
     |> validate_required([:user_id])
   end
 
-  # ============================================
   # CRUD Operations
-  # ============================================
 
   @doc "Create a new conversation for a user"
   def create(user_id, title \\ "New Chat") do
@@ -78,7 +76,6 @@ defmodule Vibe.AgentConversation do
         {:error, :not_found}
 
       conv ->
-        # Ensure message has required fields
         msg = Map.merge(%{
           "id" => Ecto.UUID.generate(),
           "timestamp" => DateTime.utc_now() |> DateTime.to_unix(:millisecond)
@@ -86,7 +83,6 @@ defmodule Vibe.AgentConversation do
 
         new_messages = conv.messages ++ [msg]
 
-        # Auto-title from first user message
         title = if conv.title == "New Chat" and msg["role"] == "user" do
           String.slice(msg["content"] || "", 0..40)
         else
@@ -143,11 +139,9 @@ defmodule Vibe.AgentConversation do
     case get_for_user(id, user_id) do
       nil -> {:error, :not_found}
       conv ->
-        # Find index of the message to truncate at
         index = Enum.find_index(conv.messages, fn m -> m["id"] == message_id end)
 
         if index do
-          # Keep messages up to the index (exclusive)
           new_messages = Enum.slice(conv.messages, 0, index)
 
           conv

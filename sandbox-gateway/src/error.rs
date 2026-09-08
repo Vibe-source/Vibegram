@@ -1,4 +1,3 @@
-//! Central error type mapped to the gateway's `{"error": "..."}` HTTP responses.
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 
@@ -18,6 +17,8 @@ pub enum GatewayError {
     #[error("{0}")]
     TooManyRequests(String),
     #[error("{0}")]
+    PayloadTooLarge(String),
+    #[error("{0}")]
     Internal(#[from] anyhow::Error),
 }
 
@@ -29,6 +30,7 @@ impl GatewayError {
             GatewayError::NotFound => (StatusCode::NOT_FOUND, "not_found".to_string()),
             GatewayError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             GatewayError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
+            GatewayError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
             GatewayError::Internal(err) => {
                 tracing::error!(error = %err, "internal error");
                 (
@@ -56,7 +58,7 @@ impl From<PolicyError> for GatewayError {
     }
 }
 
-/// Maps a bollard Docker-API error onto the gateway's error surface by HTTP status.
+/// Maps a bollard Docker-API error onto the gateway's error surface by HTTP.
 pub fn from_docker_error(err: bollard::errors::Error) -> GatewayError {
     if let bollard::errors::Error::DockerResponseServerError {
         status_code,

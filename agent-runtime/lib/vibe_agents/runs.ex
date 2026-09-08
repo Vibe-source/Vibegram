@@ -38,7 +38,6 @@ defmodule VibeAgents.Runs do
       source: run_request["source"],
       parent_run_id: run_request["parentRunId"],
       idempotency_key: run_request["idempotencyKey"],
-      # No dedicated column for replyToId (frozen agent_runs shape) — carried in input.
       input: Map.put(run_request["input"] || %{}, "replyToId", run_request["replyToId"]),
       agent_profile: run_request["agentProfile"] || %{},
       context: run_request["context"] || %{},
@@ -46,7 +45,6 @@ defmodule VibeAgents.Runs do
     }
 
     with {:ok, run} <- %AgentRun{} |> AgentRun.create_changeset(attrs) |> Repo.insert() do
-      # Over the concurrency cap the run stays `queued`; the Dispatcher starts it.
       _ = VibeAgents.Runs.Dispatcher.start_or_queue(run.id)
       {:ok, run}
     end

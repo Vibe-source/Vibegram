@@ -1,9 +1,6 @@
 defmodule Vibe.RepoRLS do
   @moduledoc """
   Helpers for running DB operations with an RLS user context.
-
-  This sets `app.current_user_id` transaction-locally so Postgres policies can
-  enforce per-user row access.
   """
 
   require Logger

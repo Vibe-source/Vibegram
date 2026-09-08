@@ -213,7 +213,6 @@ defmodule Vibe.AgentRoutines do
     DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.add(minutes * 60, :second)
   end
 
-  # Accepts either snake_case (tests, internal callers) or camelCase (client JSON).
   defp normalize_attrs(attrs) do
     attrs = Map.new(attrs, fn {k, v} -> {to_string(k), v} end)
 

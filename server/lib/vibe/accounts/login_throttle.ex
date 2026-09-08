@@ -1,14 +1,7 @@
 defmodule Vibe.Accounts.LoginThrottle do
   @moduledoc """
-  Per-identifier login-failure throttle: 10 failures inside a 15-minute
-  window locks that identifier for 15 minutes; a success clears it.
-
-  Keyed by the raw submitted credential string (lowercased), not by whether
-  an account actually exists, so probing unknown usernames is throttled too.
-
-  ETS-backed (`:login_throttle`, created by `Vibe.Application`). If the table
-  does not exist yet this fails open (never locked) — see `ensure_ets_table`
-  in `application.ex`, matching `Vibe.Accounts.TokenCache`'s own contract.
+  Per-identifier login-failure throttle: 10 failures inside a 15-minute window locks that
+  identifier for 15 minutes; a success clears it.
   """
 
   @table :login_throttle
@@ -56,8 +49,6 @@ defmodule Vibe.Accounts.LoginThrottle do
     :ok
   end
 
-  # Starts a fresh window once the previous one has aged out, keeping any
-  # still-live lock_until (a past one is harmless — locked?/1 just says false).
   defp current_window(key, now) do
     case lookup(key) do
       nil -> {0, now, 0}

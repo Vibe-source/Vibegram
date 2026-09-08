@@ -7,7 +7,6 @@ defmodule Vibe.Chat.Room do
   schema "chats" do
     field(:is_group, :boolean, default: false)
     field(:name, :string)
-    # "dm", "group", "channel"
     field(:type, :string, default: "dm")
     field(:description, :string)
     field(:avatar_url, :string)

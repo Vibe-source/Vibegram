@@ -1,8 +1,7 @@
 defmodule VibeAgents.Voice.SafeApply do
   @moduledoc false
 
-  # Calls mod.fun(args) only if it's loaded and exported; returns fallback
-  # otherwise, or if the call itself raises (wrong arg shape, runtime error).
+  # Calls mod.fun(args) only if it's loaded and exported.
   @spec call(module(), atom(), list(), term()) :: term()
   def call(mod, fun, args, fallback) do
     if Code.ensure_loaded?(mod) and function_exported?(mod, fun, length(args)) do

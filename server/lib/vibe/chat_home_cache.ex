@@ -18,8 +18,7 @@ defmodule Vibe.ChatHomeCache do
     end
   end
 
-  # Deletes locally, then broadcasts so a second node drops its own copy too
-  # (Vibe.Cache's GenServer relays "vibe:cache" messages; single node = no-op cost).
+  # Deletes locally, then broadcasts so a second node drops its own copy too.
   def invalidate_user(user_id) when is_binary(user_id) do
     invalidate_user_local(user_id)
     Phoenix.PubSub.broadcast(Vibe.PubSub, "vibe:cache", {:chat_home_cache_invalidate, user_id})

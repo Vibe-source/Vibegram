@@ -163,9 +163,13 @@ step_sysctl() {
     printf 'fs.inotify.max_user_instances=1024\n'
     printf 'vm.swappiness=10\n'
     printf 'vm.overcommit_memory=1\n'
+    # cloudflared's QUIC tunnel asks for a 7.5MB UDP buffer; the 208KB default
+    # starves it and the edge connection dies with "no recent network activity".
+    printf 'net.core.rmem_max=7500000\n'
+    printf 'net.core.wmem_max=7500000\n'
   } >/etc/sysctl.d/99-vibe.conf
   sysctl --system >/dev/null
-  log "sysctl applied (net hardening + swappiness 10)"
+  log "sysctl applied (net hardening + swappiness 10 + QUIC buffers)"
 }
 
 # Rootless podman needs a subordinate uid/gid range for vibe and an unprivileged

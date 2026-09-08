@@ -1,15 +1,7 @@
 defmodule Vibe.R2StorageTest do
   @moduledoc """
-  Covers what actually makes R2Storage safe to add alongside Supabase:
-  object keys carry no identifiers, presigned URLs really are signed with a
-  real expiry, and missing config fails closed rather than falling back to
-  an unsigned/public request. Also covers Vibe.Storage.backend/0's default.
-
-  Nothing here makes a real network call or needs real credentials.
-  Presigning is pure local computation (AWS SigV4 is HMAC-SHA256 over
-  :crypto, no HTTP involved), so a placeholder access key id / secret is
-  enough to exercise it end to end. The "fake_config" values below are not
-  real credentials — they never touch a real R2 account.
+  Covers what actually makes R2Storage safe to add alongside Supabase: object keys carry no
+  identifiers.
   """
 
   use ExUnit.Case, async: false
@@ -26,9 +18,7 @@ defmodule Vibe.R2StorageTest do
     bucket: "test-bucket"
   ]
 
-  # Every test starts from a clean slate: no :vibe, :r2 app env and no R2_*
-  # env vars, regardless of what the ambient shell/CI happens to have set.
-  # Individual tests opt into @fake_config via with_fake_config/1.
+  # Every test starts from a clean slate:
   setup do
     prev_app_env = Application.get_env(:vibe, :r2)
     prev_os_env = for key <- @r2_env_vars, into: %{}, do: {key, System.get_env(key)}
@@ -62,9 +52,6 @@ defmodule Vibe.R2StorageTest do
       chat_id = "chat_#{System.unique_integer([:positive])}"
       message_id = "message_#{System.unique_integer([:positive])}"
 
-      # Shaped like how a caller builds remote_path today (see
-      # media_controller / chat_bridge) — exactly the kind of path this key
-      # must NOT be derived from.
       remote_path = "chat-media/#{user_id}/#{chat_id}/#{message_id}/vacation_photo.jpg"
 
       key = R2Storage.generate_object_key(remote_path)
@@ -96,9 +83,6 @@ defmodule Vibe.R2StorageTest do
 
     test "carries real entropy, not a short or predictable token" do
       key = R2Storage.generate_object_key()
-      # 24 random bytes, url-safe base64: real output is 32 chars. Assert a
-      # floor rather than the exact constant so this doesn't over-couple to
-      # the current byte count.
       assert String.length(key) >= 20
     end
 
@@ -119,7 +103,6 @@ defmodule Vibe.R2StorageTest do
         assert uri.scheme == "https"
         assert uri.host == "test-account-id.r2.cloudflarestorage.com"
         assert query["X-Amz-Algorithm"] == "AWS4-HMAC-SHA256"
-        # Default TTL is 15 minutes.
         assert query["X-Amz-Expires"] == "900"
         assert is_binary(query["X-Amz-Signature"]) and query["X-Amz-Signature"] != ""
         assert is_binary(query["X-Amz-Credential"]) and query["X-Amz-Credential"] != ""
@@ -133,6 +116,32 @@ defmodule Vibe.R2StorageTest do
         query = url |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
         assert query["X-Amz-Expires"] == "42"
       end)
+    end
+
+    test "public media route redirects without authentication to a signed object URL" do
+      with_fake_config(fn ->
+        key = R2Storage.generate_object_key("photo.jpg")
+        conn = Plug.Test.conn(:get, "/api/media/o/" <> key)
+        response = VibeWeb.Endpoint.call(conn, VibeWeb.Endpoint.init([]))
+
+        assert response.status == 302
+        [location] = Plug.Conn.get_resp_header(response, "location")
+        uri = URI.parse(location)
+        query = URI.decode_query(uri.query)
+        assert uri.path == "/test-bucket/" <> key
+        assert query["X-Amz-Expires"] == "900"
+        assert is_binary(query["X-Amz-Signature"])
+        assert Plug.Conn.get_resp_header(response, "cache-control") ==
+                 ["max-age=0, private, must-revalidate"]
+      end)
+    end
+
+    test "public media route rejects malformed keys before signing" do
+      conn = Plug.Test.conn(:get, "/api/media/o/not-a-capability.jpg")
+      response = VibeWeb.Endpoint.call(conn, VibeWeb.Endpoint.init([]))
+
+      assert response.status == 400
+      assert Jason.decode!(response.resp_body) == %{"error" => "Invalid media key"}
     end
   end
 

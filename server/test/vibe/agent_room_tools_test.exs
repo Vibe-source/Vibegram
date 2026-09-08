@@ -1,8 +1,7 @@
 defmodule Vibe.AgentRoomToolsTest do
   @moduledoc """
-  The built-in assistant DM has no attached agent, so every room/agent tool used to fail
-  there by construction. These cover the owner-only path: create a room, attach a *named*
-  agent, and always come back with a link.
+  The built-in assistant DM has no attached agent, so every room/agent tool used to fail there
+  by construction.
   """
 
   use ExUnit.Case, async: false
@@ -115,7 +114,6 @@ defmodule Vibe.AgentRoomToolsTest do
       assert result["attached_agent"]["public_link"] ==
                "https://vibegram.io/#{agent.agent_user.username}"
 
-      # The agent is in the room as an admin, with the media policy written down.
       chat_id = result["room"]["chat_id"]
       assert Chat.get_user_role(chat_id, agent.agent_user_id) == "agent_admin"
 
@@ -186,7 +184,6 @@ defmodule Vibe.AgentRoomToolsTest do
     end
 
     test "a taken handle is refused instead of suffixed with random characters", %{owner: owner} do
-      # Handles are global, so the clash that matters is across owners.
       other = insert_user("twin_owner")
       assert {:ok, _agent, _secret} = Agents.create_agent(owner.id, %{"display_name" => "Twin"})
 

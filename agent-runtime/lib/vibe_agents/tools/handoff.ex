@@ -78,8 +78,6 @@ defmodule VibeAgents.Tools.Handoff do
     end
   end
 
-  # The roster writes teammates as @name and the model copies the @ through; core looks the
-  # username up without it, so an unstripped handle silently hands off to nobody.
   defp username(value) do
     case trimmed(value) do
       nil -> nil

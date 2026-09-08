@@ -48,8 +48,6 @@ defmodule VibeAgents.Voice.Audio do
   defp clamp(sample) when sample < -32_768, do: -32_768
   defp clamp(sample), do: sample
 
-  # A stray trailing byte can't form a full sample; drop it rather than buffer
-  # across chunks (the client is expected to chunk on sample boundaries).
   defp even(bin) when rem(byte_size(bin), 2) == 0, do: bin
   defp even(bin), do: binary_part(bin, 0, byte_size(bin) - 1)
 end

@@ -76,8 +76,7 @@ defmodule VibeWeb.AccountDeviceController do
     end
   end
 
-  # POST /api/account/devices/pairing
-  # Unauthenticated: the requester device starts a code-scoped pairing request.
+  # POST /api/account/devices/pairing Unauthenticated:
   def start_pairing(conn, params) do
     attrs = %{
       "requester_device_identifier" => params["requesterDeviceId"],
@@ -99,8 +98,7 @@ defmodule VibeWeb.AccountDeviceController do
     end
   end
 
-  # POST /api/account/devices/pairing/:code/approve
-  # Authenticated: already-linked account approves pending request with wrapped envelope.
+  # POST /api/account/devices/pairing/:code/approve Authenticated:
   def approve_pairing(conn, %{"code" => code} = params) do
     user_id = conn.assigns.current_user.id
     wrapped_key_envelope = params["wrappedKeyEnvelope"]
@@ -119,8 +117,7 @@ defmodule VibeWeb.AccountDeviceController do
     end
   end
 
-  # POST /api/account/devices/pairing/:code/claim
-  # Unauthenticated: requester redeems approved code.
+  # POST /api/account/devices/pairing/:code/claim Unauthenticated:
   def claim_pairing(conn, %{"code" => code}) do
     case Accounts.claim_link_request(code) do
       {:ok,

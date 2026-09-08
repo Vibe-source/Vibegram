@@ -97,15 +97,12 @@ defmodule Vibe.AgentTurnContractTest do
   test "the agent can read and set its own destination chat", %{owner: owner, agent: agent} do
     {:ok, dm_id, _status} = Vibe.Chat.ensure_dm_chat(owner.id, agent.agent_user_id)
 
-    # خواندن: حتی وقتی چیزی ذخیره نشده، مقصدِ مؤثر باید گزارش شود — پیش از این
-    # ایجنت می‌گفت «نمی‌توانم chat مقصد را پیدا کنم».
     assert Repo.get!(Agent, agent.id).default_destination_chat_id == nil
 
     read = ChatAgent.get_current_agent_config(%{}, agent.id, owner.id)
     assert read["ok"]
     assert read["agent"]["effective_destination_chat_id"] == dm_id
 
-    # نوشتن با «here» — کاربر id را نمی‌داند.
     set =
       ChatAgent.update_current_agent_config(
         %{"default_destination_chat_id" => "here"},
@@ -117,7 +114,6 @@ defmodule Vibe.AgentTurnContractTest do
     assert set["ok"], inspect(set)
     assert Repo.get!(Agent, agent.id).default_destination_chat_id == dm_id
 
-    # chat‌ای که ایجنت عضوش نیست باید رد شود، وگرنه رویداد بعداً بی‌دلیل می‌افتد.
     stranger_chat = Ecto.UUID.generate()
 
     rejected =
@@ -245,7 +241,6 @@ defmodule Vibe.AgentTurnContractTest do
 
     outputs = StandaloneAgent.tool_outputs_from_result("search_music", result)
     assert Enum.map(outputs, & &1.metadata["videoId"]) == ["first", "second"]
-    # Playback always goes through /api/music/stream (cache + re-resolve), not the raw CDN.
     assert String.ends_with?(hd(outputs).mediaUrl, "/api/music/stream/first")
     assert String.ends_with?(Enum.at(outputs, 1).mediaUrl, "/api/music/stream/second")
     assert hd(outputs).metadata["durationSeconds"] == 185
@@ -336,10 +331,7 @@ defmodule Vibe.AgentTurnContractTest do
     end
   end
 
-  # The 32-grapheme cap was the PRIMARY shortener and clipped almost every real label
-  # mid-word ("Found · Anathema - Flying [Live…"). Producers now emit short labels (≤30) and
-  # this is a 40-grapheme safety net that cuts on a word boundary when that keeps most of the
-  # label. See docs/agent-loop-payload-audit.md §3.
+  # The 32-grapheme cap was the PRIMARY shortener and clipped almost every.
   test "agentic progress labels are single-line and capped at 40 graphemes" do
     long_label = "  Inspecting\n" <> String.duplicate("é", 40) <> "\twith details  "
     detailed_result = %{"content" => String.duplicate("full result ", 20)}

@@ -7,7 +7,7 @@ sizing, migration and operations runbooks: [`docs/vps-deployment.md`](../docs/vp
 
 - `compose.yml` — the stack. `caddy core agent-runtime sandbox-gateway
   egress-proxy postgres pgbouncer valkey doc-renderer backup`, plus an opt-in
-  `monitoring` profile (prometheus/grafana/node-exporter).
+  `monitoring` profile (prometheus/grafana/node-exporter/loki/promtail).
 - `core/` — Dockerfile + start.sh for the chat core (VPS variant of the root
   `Dockerfile`, minus the doc-renderer).
 - `caddy/`, `postgres/`, `pgbouncer/`, `valkey/`, `doc-renderer/`, `backup/` —
@@ -15,7 +15,8 @@ sizing, migration and operations runbooks: [`docs/vps-deployment.md`](../docs/vp
 - `env/*.env.example` — one template per service. Copy to `<name>.env`
   (gitignored) and fill in real values; never commit the real files.
 - `scripts/` — `gen-secrets.sh`, `vps-bootstrap.sh`, `deploy.sh`, `backup.sh`,
-  `restore.sh`, `status.sh`.
+  `restore.sh`, `status.sh`, plus `vibe-logs.sh` / `mint-logs-token.sh` for reading
+  logs over HTTPS instead of SSH ([`docs/vps-logs.md`](../docs/vps-logs.md)).
 - `systemd/` — user units that bring the stack up on boot (podman and docker
   variants).
 - `sandbox/`, `egress-proxy/` — owned by the sandbox-gateway work; referenced
@@ -29,6 +30,27 @@ with `deploy/scripts/gen-secrets.sh`; it prints, it doesn't write, so it can't
 clobber a live deployment. The one exception: the backup encryption private
 key (`BACKUP_AGE_PRIVATE_KEY`) never touches the VPS at all — keep it offline
 and pass it to `restore.sh` only when actually restoring.
+
+## Point-in-time restore
+
+PITR is an offline recovery procedure because the age private key never resides on the VPS.
+Stop the application, provision an empty PostgreSQL 16 data directory, and download the newest
+`base/base-*.tar.gz.age` plus every later object under `wal/` from the backup bucket. Decrypt
+the base archive and WAL segments with the offline private key, extract the base archive into
+the empty data directory, and place the decrypted WAL files in `/wal_restore`.
+
+Set these recovery parameters before starting PostgreSQL:
+
+```conf
+restore_command = 'cp /wal_restore/%f %p'
+recovery_target_time = '<ISO-8601 UTC time>'
+recovery_target_action = 'promote'
+```
+
+Start PostgreSQL in isolation, confirm it reaches the requested timestamp and promotes, then
+run application smoke tests before reconnecting traffic. Keep the source backups until the
+recovered cluster has passed verification. `restore.sh` remains the logical-dump drill and
+is not used for PITR.
 
 ## First deploy, in 10 commands
 

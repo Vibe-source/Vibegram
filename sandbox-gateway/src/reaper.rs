@@ -1,5 +1,3 @@
-//! Stops idle sandboxes every 60s (spec §3.6): per-sandbox `ttlSeconds` override, else the
-//! configured `SANDBOX_IDLE_TTL_SECONDS`. Never removes containers or volumes, only stops.
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +25,6 @@ pub async fn run(state: Arc<AppState>, shutdown: CancellationToken) {
 }
 
 async fn sweep(state: &AppState) {
-    // Same tick, not a second timer: expires computer viewers and any stale control grant.
     state.computer.sweep(&state.cfg, now_unix());
 
     let containers = match list_labelled(&state.docker).await {

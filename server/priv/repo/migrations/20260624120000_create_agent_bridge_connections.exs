@@ -4,8 +4,6 @@ defmodule Vibe.Repo.Migrations.CreateAgentBridgeConnections do
   def change do
     create table(:agent_bridge_connections, primary_key: false) do
       add :id, :binary_id, primary_key: true
-      # The Vibe user who paired this computer. A long-lived bridge token is minted
-      # per pairing and stored hashed; revoking sets revoked_at.
       add :user_id, :binary_id, null: false
       add :token_hash, :string, null: false
       add :device_label, :string

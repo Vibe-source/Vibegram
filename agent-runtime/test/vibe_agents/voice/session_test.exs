@@ -41,8 +41,6 @@ defmodule VibeAgents.Voice.SessionTest do
     )
   end
 
-  # Joins as the channel; returns {session_pid, provider_pid}. The test process
-  # is the channel_pid, so pushed frames arrive in its own mailbox.
   defp join!(record) do
     {:ok, pid} = Session.join(record.session_id, record, self())
     provider_pid = :sys.get_state(pid).provider_pid

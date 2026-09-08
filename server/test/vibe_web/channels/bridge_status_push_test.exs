@@ -1,14 +1,6 @@
 defmodule VibeWeb.BridgeStatusPushTest do
   @moduledoc """
-  The phone stopped polling `/api/agent-bridge/status`; it now learns about its
-  computer from a `bridge-status` push that `UserChannel` emits whenever Presence
-  changes on the `bridge:<user_id>` topic.
-
-  These tests pin the mechanism that makes that possible: that subscribing to the
-  bridge topic really does deliver a `presence_diff` for a computer joining AND
-  for one that merely updates its metadata (repos / running tasks). If Presence
-  ever stopped emitting the metadata-update diff, the phone would silently go back
-  to never seeing a task start.
+  The phone stopped polling `/api/agent-bridge/status`.
   """
   use ExUnit.Case, async: true
 
@@ -18,7 +10,6 @@ defmodule VibeWeb.BridgeStatusPushTest do
   defp unique_user_id, do: "push-test-#{System.unique_integer([:positive])}"
 
   defp track(topic, key, meta) do
-    # Track from a throwaway process so each test's presence dies with it.
     owner = self()
 
     pid =
@@ -70,7 +61,6 @@ defmodule VibeWeb.BridgeStatusPushTest do
 
     assert_receive :tracked, 2_000
 
-    # Subscribe only now, so the diff we assert on is the *update*, not the join.
     :ok = Phoenix.PubSub.subscribe(Vibe.PubSub, topic)
     send(pid, :update)
     assert_receive :updated, 2_000
@@ -95,8 +85,6 @@ defmodule VibeWeb.BridgeStatusPushTest do
     status = AgentBridge.status_for_push(user_id)
 
     assert status.connected
-    # A live bridge channel only exists behind an accepted pairing, so the
-    # connected path asserts paired without spending a DB round trip.
     assert status.paired
     assert [%{"taskId" => "t-1"}] = status.runningTasks
     assert length(status.repositories) == 1
@@ -113,9 +101,6 @@ defmodule VibeWeb.BridgeStatusPushTest do
     assert status.repositories == []
   end
 
-  # `status_for_push` runs inside UserChannel on every bridge Presence change, so it
-  # must never raise: an exception there kills the phone's channel and disconnects it.
-  # A non-UUID id cannot be cast to :binary_id and used to blow up the `paired?` query.
   test "a malformed user id degrades to disconnected instead of crashing the channel" do
     status = AgentBridge.status_for_push("not-a-uuid")
 

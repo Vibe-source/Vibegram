@@ -47,17 +47,6 @@ defmodule Vibe.Notifications do
 
   @doc """
   Collapse identity for one alert push.
-
-  APNs reads `apns-collapse-id` as "this notification REPLACES any pending or already
-  displayed notification carrying the same id". Keying it on the chat meant every new
-  message erased the previous one, so a chat that emits several events/summaries could
-  only ever show its newest item. Keying it on the message keeps distinct items on the
-  lock screen while a re-delivery of the SAME logical item still replaces itself rather
-  than duplicating. Grouping is the notification extension's `threadIdentifier`
-  (`chat-<chatId>`), which stacks them per chat without discarding any.
-
-  Returns `""` when the sender supplied no message id; the caller drops empty headers,
-  which means "never collapse" — still safer than collapsing unrelated messages.
   """
   @apns_collapse_id_max_bytes 64
   def push_collapse_id(data) when is_map(data) do
@@ -546,9 +535,6 @@ defmodule Vibe.Notifications do
     end
   end
 
-  # A device token is only valid at the environment that issued it, and one
-  # server serves both Xcode builds (sandbox) and TestFlight/App Store
-  # (production). Try the configured one, then the other on BadDeviceToken.
   defp post_apns_message(_token, to_user_id, config, _headers, _body, []) do
     Logger.warning(
       "[Notifications] APNs message push failed in every environment to_user=#{to_user_id} topic=#{config.topic}"
@@ -695,8 +681,6 @@ defmodule Vibe.Notifications do
             }
 
           _ ->
-            # Legacy bare token rows are not a supported native target. A fresh
-            # APNs/FCM registration will replace them with the JSON token bundle.
             %{fcm: nil, apns: nil, apns_voip: nil}
         end
     end
@@ -770,14 +754,6 @@ defmodule Vibe.Notifications do
 
   defp normalize_token_value(_), do: nil
 
-  # Heals tokens the iOS client stored as the literal text `Optional("…")`.
-  #
-  # VibeCallStore boxed a String? into Any, so String(describing:) rendered the
-  # Optional rather than its contents, and every device registered a 76-character
-  # string APNs rejected as BadDeviceToken. The client is fixed, but installed
-  # builds keep sending the wrapped form until users update — and a push system
-  # that only works after an App Store release is not fixed. Unwrapping here
-  # means existing devices start receiving notifications immediately.
   defp unwrap_swift_optional(value) do
     case Regex.run(~r/^Optional\("(.*)"\)$/s, value) do
       [_, inner] -> String.trim(inner)
@@ -882,7 +858,6 @@ defmodule Vibe.Notifications do
       System.get_env("APPLE_VOIP_PRIVATE_KEY")
       |> normalize_apns_private_key()
 
-    # Alert pushes use the application bundle id, never the .voip topic.
     topic = System.get_env("APPLE_BUNDLE_ID") |> normalize_token_value()
 
     if is_binary(team_id) and is_binary(key_id) and is_binary(private_key) and is_binary(topic) do
@@ -913,7 +888,6 @@ defmodule Vibe.Notifications do
     end
   end
 
-  # Configured environment first, the other as the fallback.
   defp apns_base_urls do
     case apns_base_url() do
       @apns_voip_sandbox_base -> [@apns_voip_sandbox_base, @apns_voip_prod_base]
@@ -1060,12 +1034,6 @@ defmodule Vibe.Notifications do
     if body != "" do
       truncate_text(body, 160)
     else
-      # `push_kind` is the new content-free label ("image", "voice", "sticker", ...)
-      # sent on every message. It takes priority over `message_type` (derived from
-      # the persisted `type` field) so that a 1:1 E2E DM — which never sends a body
-      # preview — still resolves to a real label here instead of the generic
-      # default. `message_type` remains the fallback for callers/clients that
-      # haven't started sending `push_kind` yet.
       kind = payload["pushKind"] || payload["push_kind"] || message_type
 
       case to_string(kind || "text") do
@@ -1152,9 +1120,6 @@ defmodule Vibe.Notifications do
     end
   end
 
-  # APNs payload must stay compact.
-  # For inline/base64 avatars we switch to a compact API URL and let the iOS
-  # notification service extension fetch/attach the image.
   defp normalize_push_image(value, from_user_id) when is_binary(value) do
     trimmed = String.trim(value)
 

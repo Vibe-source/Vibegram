@@ -23,6 +23,39 @@ defmodule VibeWeb.Plugs.RateLimiterTest do
     end)
   end
 
+  test "unverified credentials cannot select a fresh authentication quota" do
+    for header <- ["authorization", "x-vibe-agent-secret", "x-vibe-integration-secret"] do
+      :ets.delete_all_objects(:rate_limiter)
+
+      for attempt <- 1..11 do
+        result =
+          :post
+          |> conn("/api/login", "")
+          |> put_req_header(header, "Bearer forged-#{attempt}")
+          |> RateLimiter.call(type: :auth)
+
+        if attempt <= 10 do
+          refute result.halted
+        else
+          assert result.halted
+          assert result.status == 429
+        end
+      end
+    end
+  end
+
+  test "verified user identities retain separate quotas" do
+    for attempt <- 1..11 do
+      result =
+        :post
+        |> conn("/api/login", "")
+        |> assign(:current_user, %Vibe.Accounts.User{id: "user-#{attempt}"})
+        |> RateLimiter.call(type: :auth)
+
+      refute result.halted
+    end
+  end
+
   test "uses trusted right-side X-Forwarded-For entry so spoofed prefixes do not bypass auth limit" do
     allowed =
       for i <- 1..10 do

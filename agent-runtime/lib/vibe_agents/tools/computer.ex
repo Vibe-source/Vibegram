@@ -43,7 +43,6 @@ defmodule VibeAgents.Tools.Computer do
 
   def computer_run(_run, _input), do: %{"ok" => false, "error" => "command is required"}
 
-  # Same event the browser uses, with an empty url: the preview shows a terminal, not a page.
   defp emit_shell_state(run, command) do
     label = command |> String.split("\n") |> List.first() |> String.slice(0, 80)
     Events.emit(run, "run.computer.state", %{"url" => "", "title" => "$ " <> label, "live" => true})

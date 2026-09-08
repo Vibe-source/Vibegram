@@ -1,4 +1,3 @@
-//! Sandbox (container) lifecycle: ensure/get/list/stop/delete + boot-time adoption.
 use std::collections::HashMap;
 
 use bollard::models::{ContainerInspectResponse, ContainerSummary};
@@ -34,7 +33,7 @@ fn label_created_at(labels: &HashMap<String, String>, fallback: Option<i64>) -> 
         .unwrap_or(0)
 }
 
-/// List every container this gateway created, running or not (used on boot and by the reaper).
+/// List every container this gateway created.
 pub async fn list_labelled(docker: &Docker) -> Result<Vec<ContainerSummary>, GatewayError> {
     let mut filters = HashMap::new();
     filters.insert("label".to_string(), vec![format!("{LABEL_SANDBOX}=1")]);
@@ -48,7 +47,7 @@ pub async fn list_labelled(docker: &Docker) -> Result<Vec<ContainerSummary>, Gat
         .map_err(from_docker_error)
 }
 
-/// Seeds the in-memory map from whatever the daemon already knows about (gateway restart).
+/// Seeds the in-memory map from whatever the daemon already knows about.
 pub async fn adopt_on_boot(state: &AppState) -> Result<usize, GatewayError> {
     let containers = list_labelled(&state.docker).await?;
     let mut adopted = 0;
@@ -120,7 +119,6 @@ async fn start_if_stopped(
             .await
         {
             Ok(()) => {}
-            // 304 = already running (raced another starter); anything else is real.
             Err(bollard::errors::Error::DockerResponseServerError {
                 status_code: 304, ..
             }) => {}
@@ -217,7 +215,6 @@ pub async fn ensure_sandbox(
 
     match state.docker.create_container(Some(options), body).await {
         Ok(_) => {}
-        // Lost a create race against another request for the same ownerKey; fall through to start.
         Err(bollard::errors::Error::DockerResponseServerError {
             status_code: 409, ..
         }) => {}
@@ -339,7 +336,7 @@ pub async fn stop_sandbox(
     })
 }
 
-/// Removes the container only; the owner's named volume (their persistent home dir) survives.
+/// Removes the container only.
 pub async fn delete_sandbox(
     state: &AppState,
     id: &str,

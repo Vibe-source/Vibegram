@@ -36,18 +36,11 @@ defmodule Vibe.Agent do
     field :webhook_secret_hash, :string
     field :webhook_secret_encrypted, :string
     field :secret_hint, :string
-    # Outgoing secret during a planned rotation's grace window. Never set when
-    # the rotation was an immediate revoke.
     field :previous_secret_hash, :string
     field :previous_secret_expires_at, :utc_datetime
     field :published_at, :utc_datetime
     field :last_invoked_at, :utc_datetime
-    # "embedded" runs in this app's own model path; "isolated" routes dispatch to
-    # the agent-runtime service (docs/agent-platform-v1.md). Default unchanged.
     field :execution_mode, :string, default: "embedded"
-    # Runtime-only: whether the CURRENT request is the owner talking to this agent in
-    # their private 1:1 DM (Chat.effective_agent_policy/3). Never persisted, never cast —
-    # StandaloneAgent stamps it per-invocation to gate owner-only tools/prompt data.
     field :admin_mode, :boolean, default: false, virtual: true
 
     belongs_to :owner, Vibe.Accounts.User, foreign_key: :owner_user_id
@@ -115,8 +108,6 @@ defmodule Vibe.Agent do
     |> check_constraint(:model_provider, name: :agents_model_provider_check)
   end
 
-  # Owner-facing update path: casts everything the owner may edit, never the
-  # privileged/internal fields (secret material, status, ids, timestamps).
   def owner_changeset(agent, attrs) do
     agent
     |> cast(attrs, [

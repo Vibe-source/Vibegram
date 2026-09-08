@@ -1,10 +1,6 @@
 defmodule Vibe.Cache do
   @moduledoc """
   Node-local ETS cache with cross-node invalidation over Phoenix.PubSub.
-  Keys are tuples; `delete_prefix/1` drops every key sharing a leading prefix
-  (so `{:participant, chat_id}` clears every `{:participant, chat_id, user_id}`).
-  `invalidate/1` deletes locally and broadcasts, so a second node drops it too;
-  on a single node the broadcast just echoes back to this same GenServer.
   """
   use GenServer
 
@@ -97,15 +93,14 @@ defmodule Vibe.Cache do
     {:ok, %{}}
   end
 
-  # Remote (or looped-back local) invalidation broadcast — apply, don't re-broadcast.
+  # Remote (or looped-back local) invalidation broadcast.
   @impl true
   def handle_info({:cache_invalidate, key}, state) do
     delete_prefix(key)
     {:noreply, state}
   end
 
-  # Relays Vibe.ChatHomeCache's cross-node invalidation (separate ETS table, kept
-  # as-is; this just applies the matching local delete on every node).
+  # Relays Vibe.ChatHomeCache's cross-node invalidation (separate ETS table.
   def handle_info({:chat_home_cache_invalidate, user_id}, state) do
     Vibe.ChatHomeCache.invalidate_user_local(user_id)
     {:noreply, state}
@@ -124,8 +119,6 @@ defmodule Vibe.Cache do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # Owned by this GenServer so a crash-restart recreates it; safe to call from
-  # any process too (idempotent) since callers hit the table directly.
   defp ensure_table do
     case :ets.whereis(@table) do
       :undefined ->
@@ -146,8 +139,6 @@ defmodule Vibe.Cache do
     end
   end
 
-  # Guard against unbounded growth from a churn of distinct keys: past the soft
-  # cap, drop everything already expired instead of waiting for its own read.
   defp maybe_sweep do
     if :ets.info(@table, :size) > @sweep_above do
       now = System.monotonic_time(:millisecond)

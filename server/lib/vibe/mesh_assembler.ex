@@ -1,15 +1,6 @@
 defmodule Vibe.MeshAssembler do
   @moduledoc """
   Server-side fragment reassembly for the mesh relay network.
-
-  Receives k-of-n Shamir Secret Sharing fragments from multiple relay paths.
-  When enough fragments (≥ threshold) arrive for a given set_id,
-  triggers reassembly and delivers the original payload.
-
-  Fragments are stored in ETS for fast access and auto-expire after a TTL.
-
-  All fragment parameters are bounds-checked before insertion or reconstruction
-  to prevent DoS via unbounded threshold/payload sizes.
   """
 
   use GenServer
@@ -57,18 +48,14 @@ defmodule Vibe.MeshAssembler do
         received_at: System.system_time(:millisecond)
       }
 
-      # Store in ETS
       :ets.insert(@table, {{set_id, share_index}, entry})
 
-      # Check if we have enough fragments to reconstruct
       all_fragments = get_set_fragments(set_id)
 
       if length(all_fragments) >= threshold do
         case reconstruct(all_fragments, threshold, payload_len, payload_hash) do
           {:ok, payload} ->
-            # Clean up fragments for this set
             cleanup_set(set_id)
-            # Log size only — never raw payload bytes or share material.
             Logger.info(
               "[MeshAssembler] Reconstructed set #{set_id} (#{byte_size(payload)} bytes)"
             )
@@ -103,7 +90,6 @@ defmodule Vibe.MeshAssembler do
     }
   end
 
-  # ── GenServer Callbacks ─────────────────────────────────────
 
   @impl true
   def init(_opts) do
@@ -134,7 +120,6 @@ defmodule Vibe.MeshAssembler do
     {:noreply, state}
   end
 
-  # ── Private ─────────────────────────────────────────────────
 
   defp require_fields(set_id, threshold, share_index, share_data) do
     if set_id && threshold && share_index && share_data do
@@ -212,10 +197,8 @@ defmodule Vibe.MeshAssembler do
   end
 
   defp reconstruct(fragments, threshold, expected_len, expected_hash) do
-    # Sort by share_index and take the first `threshold` fragments
     sorted = Enum.sort_by(fragments, & &1.share_index) |> Enum.take(threshold)
 
-    # Reconstruct using Lagrange interpolation over GF(257)
     field_prime = 257
     payload_len = expected_len || hd(sorted).payload_len
 
@@ -263,7 +246,6 @@ defmodule Vibe.MeshAssembler do
 
     case result do
       {:ok, payload} ->
-        # Verify hash when provided — never log payload contents.
         actual_hash = Base.encode16(:crypto.hash(:sha256, payload), case: :lower)
 
         if expected_hash && actual_hash != expected_hash do

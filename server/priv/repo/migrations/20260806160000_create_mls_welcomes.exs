@@ -19,10 +19,8 @@ defmodule Vibe.Repo.Migrations.CreateMlsWelcomes do
       timestamps()
     end
 
-    # The only query shape that matters: "what is still waiting for me?".
     create index(:mls_welcomes, [:recipient_user_id, :delivered_at])
 
-    # Backs the per-sender flood cap in `Vibe.Mls.post_welcome/2`.
     create index(:mls_welcomes, [:recipient_user_id, :sender_user_id, :delivered_at])
   end
 end

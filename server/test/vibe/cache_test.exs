@@ -92,8 +92,6 @@ defmodule Vibe.CacheTest do
 
     Phoenix.PubSub.broadcast(Vibe.PubSub, "vibe:cache", {:cache_invalidate, key})
 
-    # Async relay through the running Vibe.Cache GenServer; poll briefly rather
-    # than assume same-tick delivery.
     assert wait_until(fn -> Vibe.Cache.get(key) == :miss end)
   end
 

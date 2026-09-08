@@ -7,13 +7,11 @@ end
 if config_env() == :prod do
   media_cdn_base_url = System.get_env("MEDIA_CDN_BASE_URL")
 
-  # Support DATABASE_URL directly, or construct from SUPABASE_URL + SUPABASE_DB_PASSWORD
-  # Support DATABASE_URL directly, or construct from SUPABASE_URL + SUPABASE_DB_PASSWORD
+  # Support DATABASE_URL directly.
   database_url = System.get_env("DATABASE_URL")
 
   database_url =
     if is_nil(database_url) do
-      # Try to construct from Supabase vars
       supabase_url = System.get_env("SUPABASE_URL")
       supabase_db_password = System.get_env("SUPABASE_DB_PASSWORD")
 
@@ -52,19 +50,12 @@ if config_env() == :prod do
     key: System.get_env("SUPABASE_KEY"),
     service_key: System.get_env("SUPABASE_SERVICE_KEY"),
     media_cdn_base_url: media_cdn_base_url,
-    # Optional: allow different buckets per use-case.
-    # If unset, code falls back to its default bucket.
+    # Optional:
     bucket: System.get_env("SUPABASE_BUCKET"),
     media_bucket: System.get_env("SUPABASE_MEDIA_BUCKET"),
     music_bucket: System.get_env("SUPABASE_MUSIC_BUCKET")
 
-  # Cloudflare R2 credentials (additive path alongside Supabase — see
-  # Vibe.R2Storage and Vibe.Storage). Vibe.Storage.backend/0 defaults to
-  # :supabase, so setting these alone does not change any existing
-  # behaviour; the backend only switches when :vibe, :storage_backend is
-  # explicitly set to :r2 elsewhere. R2_PUBLIC_BASE_URL is read here for
-  # forward-compat but is not currently used to build any URL — R2 objects
-  # are private and are only ever read via short-TTL presigned GETs.
+  # Cloudflare R2 credentials (additive path alongside Supabase.
   config :vibe, :r2,
     account_id: System.get_env("R2_ACCOUNT_ID"),
     access_key_id: System.get_env("R2_ACCESS_KEY_ID"),
@@ -80,9 +71,6 @@ if config_env() == :prod do
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ["true", "1"], do: [:inet6], else: []
 
-  # DB SSL: default is peer verification when a CA bundle is available.
-  # Explicit DB_SSL_VERIFY=none still opts out. Unset is no longer treated as "none".
-  # Decision table is mirrored by VibeWeb.Endpoint.db_ssl_opts/2 (unit-tested).
   db_ssl_verify = System.get_env("DB_SSL_VERIFY")
   db_cacertfile_env = System.get_env("DB_CACERTFILE")
 
@@ -104,18 +92,6 @@ if config_env() == :prod do
       _ -> nil
     end
 
-  # Supabase's pooler presents a chain rooted in *its own* private CA
-  # ("Supabase Root 2021 CA"), which is in no public bundle. Verifying it
-  # against /etc/ssl/certs/ca-certificates.crt therefore cannot ever succeed —
-  # it fails with a TLS `unknown_ca` alert, the Repo never connects, and the
-  # release dies during `Vibe.Release.migrate()` before it can serve a
-  # healthcheck. That is exactly what happened on the first deploy after the
-  # default flipped from verify_none to verify_peer.
-  #
-  # So trust list = Supabase's root *plus* whatever public bundle is
-  # configured, passed as `cacerts` (DER) rather than `cacertfile` because
-  # only one file can be named and we need both. Reading both at boot costs a
-  # few milliseconds, once.
   load_pem_ders = fn
     path when is_binary(path) ->
       case File.read(path) do
@@ -127,9 +103,6 @@ if config_env() == :prod do
       []
   end
 
-  # Two candidate locations, because each can fail on its own: the release's
-  # priv dir is version-stamped (a bump moves it), and the fixed /app path only
-  # exists in the Docker image (not when running from source).
   supabase_root_candidates =
     [
       try do
@@ -173,12 +146,8 @@ if config_env() == :prod do
         end
     end
 
-  # statement_timeout bounds every query server-side (PgBouncer strips it from startup
-  # params, so it is also listed in ignore_startup_parameters there — see deploy/pgbouncer).
   db_statement_timeout_ms = System.get_env("DB_STATEMENT_TIMEOUT_MS") || "30000"
 
-  # `DB_SSL=false` turns TLS off outright; only correct when postgres is unreachable
-  # off-host. DB_SSL_VERIFY=none still means TLS on but unverified — not the same thing.
   db_ssl? =
     case System.get_env("DB_SSL") do
       value when is_binary(value) ->
@@ -202,14 +171,12 @@ if config_env() == :prod do
     parameters: [statement_timeout: db_statement_timeout_ms, application_name: "vibe-core"],
     socket_options: maybe_ipv6
 
-  # Isolated agent runtime (docs/agent-platform-v1.md). Unset = embedded runtime only.
   config :vibe, :agent_gateway,
     url: System.get_env("VIBE_AGENT_RUNTIME_URL"),
     hmac_key: System.get_env("VIBE_INTERNAL_HMAC_KEY"),
     execution_mode: System.get_env("VIBE_AGENT_EXECUTION_MODE"),
     kill_switch: System.get_env("VIBE_AI_KILL_SWITCH") in ["1", "true", "TRUE"]
 
-  # Optional multi-node pieces; each is a no-op when its variable is unset.
   config :vibe, :valkey_url, System.get_env("VALKEY_URL")
   config :vibe, :rate_limit_backend, System.get_env("RATE_LIMIT_BACKEND") || "ets"
   config :vibe, :cluster_strategy, System.get_env("CLUSTER_STRATEGY") || "none"
@@ -230,11 +197,6 @@ if config_env() == :prod do
          :agent_routine_min_minutes,
          String.to_integer(System.get_env("AGENT_ROUTINE_MIN_MINUTES") || "15")
 
-  # The secret key base is used to sign/encrypt cookies and other secrets.
-  # A default value is used in config/dev.exs and config/test.exs but you
-  # want to use a different value for prod and you most likely don't want
-  # to check this value into version control, so we use an environment
-  # variable instead.
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||
       raise """
@@ -245,8 +207,6 @@ if config_env() == :prod do
   host = System.get_env("PHX_HOST") || "example.com"
   port = String.to_integer(System.get_env("PORT") || "4000")
 
-  # Unset = the app's own https origin plus the web client. Phoenix checks this header only
-  # when a browser sends one, so native apps (no Origin) are unaffected; "false" disables.
   check_origin =
     case System.get_env("PHX_CHECK_ORIGIN") do
       nil ->
@@ -262,8 +222,6 @@ if config_env() == :prod do
         |> Enum.reject(&(&1 == ""))
     end
 
-  # Ranch defaults to 1024 connections per listener and then QUEUES accepts rather
-  # than rejecting, so the ceiling reads as connect latency, not errors. Must be raised.
   ranch_max_connections =
     case System.get_env("RANCH_MAX_CONNECTIONS") do
       nil -> 65_536
@@ -274,10 +232,6 @@ if config_env() == :prod do
   config :vibe, VibeWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
-      # See the documentation on https://hexdocs.pm/plug_cowboy/Plug.Cowboy.html
-      # for details about using IPv6 vs IPv4 and loopback vs public addresses.
       ip: {0, 0, 0, 0, 0, 0, 0, 0},
       port: port,
       transport_options: [max_connections: ranch_max_connections, num_acceptors: 100]

@@ -64,9 +64,14 @@ defmodule VibeAgentsWeb.ProviderController do
   end
 
   def task(conn, %{"task_id" => task_id}) do
-    case Runs.get(task_id) do
+    with {:ok, secret} <- fetch_secret(conn),
+         run when not is_nil(run) <- Runs.get(task_id),
+         {:ok, %{"agentId" => agent_id}} <- CoreClient.provider_auth(run.agent_id, secret),
+         true <- agent_id == run.agent_id do
+      json(conn, %{"taskId" => run.id, "status" => run.status, "outputs" => outputs(run)})
+    else
       nil -> conn |> put_status(404) |> json(%{"error" => "not_found"})
-      run -> json(conn, %{"taskId" => run.id, "status" => run.status, "outputs" => outputs(run)})
+      _ -> conn |> put_status(401) |> json(%{"error" => "unauthorized"})
     end
   end
 

@@ -1,8 +1,6 @@
 defmodule Vibe.MusicCache do
   @moduledoc """
   Schema for caching music search results.
-  Caches by video_id (unique song identifier) and title+artist for lookups.
-  This ensures we use actual song names, not user typos.
   """
   use Ecto.Schema
   import Ecto.Changeset
@@ -31,7 +29,6 @@ defmodule Vibe.MusicCache do
     field :external_links, :map, default: %{}
     field :metadata, :map, default: %{}
 
-    # Audio file caching
     field :cached_file_path, :string  # Local/volume path to cached audio
     field :file_size_bytes, :integer  # File size for Content-Length
     field :cached_at, :utc_datetime   # When file was cached
@@ -47,7 +44,6 @@ defmodule Vibe.MusicCache do
     now = DateTime.utc_now()
     normalized_query = normalize_for_search(query)
 
-    # Try to find by similar title/artist match
     from(m in __MODULE__,
       where: is_nil(m.stream_expires_at) or m.stream_expires_at > ^now,
       where: fragment("LOWER(?) LIKE ? OR LOWER(?) LIKE ?",
@@ -61,17 +57,6 @@ defmodule Vibe.MusicCache do
 
   @doc """
   Get a specific track by video_id (identity lookup).
-
-  IMPORTANT: do NOT filter on `stream_expires_at` here. That timestamp only means
-  the *ephemeral extractor stream_url* is stale — the row still holds durable
-  fields we need forever:
-    - `cached_file_path` (Supabase public URL after first successful cache fill)
-    - `external_links["webpage_url"]` (SoundCloud/YouTube page to re-extract)
-    - title / artist / cover
-
-  Filtering on expiry hid SoundCloud `sc_*` rows after ~6h, so
-  `/api/music/stream/:id` lost the webpage URL and 500'd with
-  "Missing SoundCloud source URL in cache".
   """
   def get_by_video_id(video_id) when is_binary(video_id) do
     from(m in __MODULE__,
@@ -98,12 +83,9 @@ defmodule Vibe.MusicCache do
 
   @doc """
   Cache music search results.
-  Uses video_id as the unique key (not the user's query).
-  This way, typos in search don't affect cache accuracy.
   """
   def cache_results(query, tracks, source \\ "youtube") do
     query_hash = hash_query(query)
-    # Stream URLs typically expire in 6 hours
     expires_at = DateTime.utc_now() |> DateTime.add(6 * 60 * 60, :second)
 
     Enum.each(tracks, fn track ->
@@ -111,9 +93,7 @@ defmodule Vibe.MusicCache do
       title = track[:title] || track["title"]
       artist = track[:artist] || track["artist"]
 
-      # Skip if no video_id
       if video_id do
-        # Use video_id as unique key, update if exists
         existing = get_by_video_id(video_id)
 
         attrs = %{
@@ -135,12 +115,10 @@ defmodule Vibe.MusicCache do
         }
 
         result = if existing do
-          # Update existing entry with new stream URL
           existing
           |> changeset(attrs)
           |> Repo.update()
         else
-          # Insert new entry
           %__MODULE__{}
           |> changeset(attrs)
           |> Repo.insert()
@@ -156,9 +134,6 @@ defmodule Vibe.MusicCache do
     end)
   end
 
-  # yt-dlp reports durations as floats (e.g. SoundCloud "269.485"), but the column
-  # is :integer — an un-coerced float fails the Ecto cast and silently aborts the
-  # whole cache write (the SoundCloud-stream-500 root cause). Round to whole seconds.
   @doc false
   def coerce_seconds(nil), do: nil
   def coerce_seconds(v) when is_integer(v), do: v

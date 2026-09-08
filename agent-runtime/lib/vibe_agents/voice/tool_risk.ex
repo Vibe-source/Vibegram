@@ -12,8 +12,7 @@ defmodule VibeAgents.Voice.ToolRisk do
   @read ~w(search_google read_url computer_read_file computer_list_files browser_screenshot browser_read_page recall)
   @write_local ~w(computer_run computer_write_file computer_edit_file browser_open browser_act handoff_to_agent remember)
 
-  # No frozen tool name is external_effect/credential by name alone (Broker derives those
-  # from content); ask_user and request_approval are handled by the caller before this.
+  # No frozen tool name is external_effect/credential by name alone (Broker.
   @spec classify(String.t()) :: risk()
   def classify(tool_name) when tool_name in @read, do: :read
   def classify(tool_name) when tool_name in @write_local, do: :write_local

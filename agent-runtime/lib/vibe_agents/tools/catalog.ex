@@ -3,7 +3,7 @@ defmodule VibeAgents.Tools.Catalog do
 
   @always_on ["ask_user", "request_approval", "remember", "recall"]
 
-  # Families and expansion live in contracts so the server gates on the same table.
+  # Families and expansion live in contracts so the server gates on the same.
   defdelegate expand(enabled_tools), to: VibeContracts.ToolBundles
   defdelegate computer_tools(), to: VibeContracts.ToolBundles
   defdelegate browser_tools(), to: VibeContracts.ToolBundles

@@ -19,6 +19,9 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
 	\$\$;
 EOSQL
 
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+  -c "GRANT pg_monitor TO vibe_readonly"
+
 for pair in "vibe_core:vibe_core_app" "vibe_agents:vibe_agents_app"; do
   db="${pair%%:*}"
   role="${pair##*:}"

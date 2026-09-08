@@ -5,10 +5,7 @@ defmodule Vibe.PacketBootstrap do
   """
 
   @doc """
-  `VIBE_PACKET_PROXY_PROFILES` holds a JSON list in the client's own profile shape
-  (name, stack, transport, serverURL, secret, cdnEdge, hostOverride, sniOverride,
-  obfsKey, carrierURI). Absent or unparsable env means "no entries" — never an error,
-  because the app works fine with an empty list.
+  `VIBE_PACKET_PROXY_PROFILES` holds a JSON list in the client's own profile shape (name.
   """
   def issue_for_user(_user) do
     {:ok, %{packetProxyProfiles: proxy_profiles()}}

@@ -28,7 +28,6 @@ async fn main() {
 
     init_tracing(&cfg.log_format);
 
-    // The gateway is useless without the container socket, so a bad connect is a hard exit.
     let docker = match Docker::connect_with_host(&cfg.container_socket) {
         Ok(docker) => docker,
         Err(e) => {

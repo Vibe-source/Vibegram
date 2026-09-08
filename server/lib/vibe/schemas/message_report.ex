@@ -15,7 +15,6 @@ defmodule Vibe.Chat.MessageReport do
     field(:action, :string)
     field(:reviewed_at, :utc_datetime)
     field(:resolved_at, :utc_datetime)
-    # Denormalized so the record survives the message being deleted.
     field(:chat_id, :string)
     field(:source_message_id, Ecto.UUID)
 

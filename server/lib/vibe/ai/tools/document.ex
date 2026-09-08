@@ -1,14 +1,6 @@
 defmodule Vibe.AI.Tools.Document do
   @moduledoc """
   Document analysis tool for PDFs, text files, etc.
-
-  Uses Claude's large context window to process documents.
-
-  Supported formats:
-  - PDF (extracted text)
-  - Plain text
-  - Markdown
-  - HTML
   """
 
   require Logger
@@ -24,7 +16,6 @@ defmodule Vibe.AI.Tools.Document do
   def analyze(%{"document_url" => url, "task" => task} = params) do
     question = params["question"]
 
-    # Fetch and extract document content
     case fetch_document(url) do
       {:ok, content, doc_type} ->
         prompt = build_prompt(task, question, doc_type)
@@ -49,11 +40,9 @@ defmodule Vibe.AI.Tools.Document do
               extract_html_text(body)
 
             _ ->
-              # Plain text, markdown, etc
               body
           end
 
-          # Truncate if too long
           truncated = if String.length(content) > @max_chars do
             String.slice(content, 0, @max_chars) <> "\n\n[Document truncated due to length...]"
           else
@@ -81,19 +70,13 @@ defmodule Vibe.AI.Tools.Document do
   end
 
   defp extract_pdf_text(pdf_binary) do
-    # Simple PDF text extraction
-    # For production, consider using a dedicated library like :pdf_extract
-    # or an external service
 
-    # Basic approach: extract text between stream/endstream
-    # This is a simplified version - works for many PDFs
     text = pdf_binary
       |> :binary.bin_to_list()
       |> to_string()
       |> extract_pdf_strings()
 
     if String.length(text) < 100 do
-      # PDF might be image-based or complex
       "[PDF content could not be extracted. The document may be image-based or encrypted.]"
     else
       text
@@ -101,8 +84,6 @@ defmodule Vibe.AI.Tools.Document do
   end
 
   defp extract_pdf_strings(content) do
-    # Extract text from PDF objects
-    # This is a basic implementation
     Regex.scan(~r/\(([^)]+)\)/, content)
     |> Enum.map(fn [_, text] -> text end)
     |> Enum.join(" ")
@@ -112,7 +93,6 @@ defmodule Vibe.AI.Tools.Document do
   end
 
   defp extract_html_text(html) do
-    # Simple HTML to text conversion
     html
     |> String.replace(~r/<script[^>]*>.*?<\/script>/is, "")
     |> String.replace(~r/<style[^>]*>.*?<\/style>/is, "")

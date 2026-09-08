@@ -64,7 +64,6 @@ defmodule Vibe.MeshAssemblerTest do
   end
 
   test "rejects oversized share_data quickly" do
-    # payload_len stays within the hard cap so share_data size is the failing bound.
     huge = List.duplicate(1, 70_000)
 
     assert {:error, :invalid_share_data} =

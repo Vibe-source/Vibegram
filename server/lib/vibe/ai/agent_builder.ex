@@ -606,8 +606,6 @@ defmodule Vibe.AI.AgentBuilder do
         {result, %{state | active_agent_id: agent.id, latest_secret: secret}}
 
       {:error, reason} when reason in [:username_taken, :reserved_username, :invalid_username] ->
-        # Usernames are never auto-suffixed (the handle IS the agent's public link), so a
-        # clash comes back here for the owner to resolve — with real alternatives.
         {%{
            "ok" => false,
            "error" => format_reason(reason),
@@ -1275,8 +1273,6 @@ defmodule Vibe.AI.AgentBuilder do
       "prompt_status" => prompt_status_line(agent),
       "open_link" => default_chat && default_chat["open_link"],
       "agent_dm_link" => build_agent_dm_link(payload.userId),
-      # The public https link an owner can hand to anyone (agent_dm_link only opens the
-      # app for someone who already has it).
       "public_link" => payload.publicLink,
       "builder_link" => @builder_deep_link,
       "integration" => integration_payload(agent, latest_secret)

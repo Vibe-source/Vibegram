@@ -1,8 +1,6 @@
 import Config
 
-# Note: We configure the endpoint for production here, but
-# most configuration is done in runtime.exs (which is loaded
-# by `mix release`).
+# We configure the endpoint for production here.
 
 config :vibe, VibeWeb.Endpoint,
   url: [host: "example.com", port: 80]

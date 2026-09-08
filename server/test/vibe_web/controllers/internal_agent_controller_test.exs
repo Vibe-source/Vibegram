@@ -74,23 +74,35 @@ defmodule VibeWeb.InternalAgentControllerTest do
     assert json_response(conn, 200)["accepted"] == 0
   end
 
-  test "signed events are relayed once, deduped by (runId, seq), and gated on membership", %{agent: agent, chat_id: chat_id} do
+  test "signed events are durable, overlap-safe, and gated on membership", %{agent: agent, chat_id: chat_id} do
     VibeWeb.Endpoint.subscribe("chat:#{chat_id}")
     run_id = Ecto.UUID.generate()
 
-    events = [
+    first = [
       event(agent, chat_id, run_id, 1, "run.started", %{"source" => "chat", "model" => "m"}),
       event(agent, chat_id, run_id, 2, "run.text.delta", %{"text" => "Hello"}),
-      event(agent, chat_id, run_id, 2, "run.text.delta", %{"text" => "dup"}),
-      event(agent, "chat-the-agent-is-not-in", run_id, 3, "run.text.delta", %{"text" => "leak"})
+      event(agent, chat_id, run_id, 3, "run.completed", %{"summary" => "done", "usage" => %{"inputTokens" => 2}, "costCents" => 1}),
+      event(agent, "chat-the-agent-is-not-in", run_id, 4, "run.text.delta", %{"text" => "leak"})
     ]
 
-    conn = signed_post("/internal/v1/agent-events", %{"events" => events})
-    assert json_response(conn, 200)["accepted"] == 2
-
-    assert_receive %Phoenix.Socket.Broadcast{event: "agent-stream", payload: %{"runtime" => "isolated", "runId" => ^run_id}}
+    assert signed_post("/internal/v1/agent-events", %{"events" => first}) |> json_response(200) |> Map.fetch!("accepted") == 3
+    assert_receive %Phoenix.Socket.Broadcast{event: "agent-stream", payload: %{"runId" => ^run_id}}
     assert_receive %Phoenix.Socket.Broadcast{event: "agent-stream", payload: %{"text" => "Hello"}}
-    refute_receive %Phoenix.Socket.Broadcast{payload: %{"text" => "Hellodup"}}, 100
+    assert_receive %Phoenix.Socket.Broadcast{event: "agent-stream", payload: %{"status" => "done"}}
+
+    assert signed_post("/internal/v1/agent-events", %{"events" => first}) |> json_response(200) |> Map.fetch!("accepted") == 3
+    refute_receive %Phoenix.Socket.Broadcast{event: "agent-stream"}, 100
+    assert Repo.get_by(Vibe.AgentUsageEvent, run_id: run_id)
+
+    overlap = [
+      event(agent, chat_id, run_id, 2, "run.text.delta", %{"text" => "duplicate"}),
+      event(agent, chat_id, run_id, 3, "run.completed", %{"summary" => "done", "usage" => %{}, "costCents" => 0}),
+      event(agent, chat_id, run_id, 4, "run.text.delta", %{"text" => "!"})
+    ]
+
+    assert signed_post("/internal/v1/agent-events", %{"events" => overlap}) |> json_response(200) |> Map.fetch!("accepted") == 3
+    assert_receive %Phoenix.Socket.Broadcast{event: "agent-stream", payload: %{"text" => "!"}}
+    refute_receive %Phoenix.Socket.Broadcast{payload: %{"text" => "duplicate"}}, 100
   end
 
   test "deliveries post messages as the agent, only into its own chats", %{agent: agent, chat_id: chat_id} do

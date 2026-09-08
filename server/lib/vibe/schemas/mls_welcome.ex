@@ -1,17 +1,7 @@
 defmodule Vibe.Schemas.MlsWelcome do
   @moduledoc """
-  One MLS Welcome message in transit from the device that created a group to
-  the device being added to it.
-
-  The server is an **untrusted relay** for this row. `welcome` and
-  `ratchet_tree` are opaque bytes it cannot read and must never try to parse —
-  there is nothing here to validate beyond size, and inspecting the contents
-  would be both useless and a smell.
-
-  `delivered_at` is set only once the recipient confirms it applied the
-  Welcome, not when it is handed out. A Welcome that is fetched but never
-  applied (crash, failed join) must stay pending and be retried: losing one
-  means losing the ability to read that conversation at all.
+  One MLS Welcome message in transit from the device that created a group to the device being
+  added to it.
   """
 
   use Ecto.Schema

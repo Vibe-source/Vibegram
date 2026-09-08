@@ -1,8 +1,6 @@
 defmodule Vibe.AgentUsage do
   @moduledoc """
-  Per-owner agent usage metering (embedded + isolated) and monthly credit
-  entitlement. Usage rows are idempotent on `run_id`; entitlement compares
-  month-to-date `cost_cents` against a tier-based monthly credit.
+  Per-owner agent usage metering (embedded + isolated) and monthly credit entitlement.
   """
 
   require Logger

@@ -33,5 +33,10 @@
 ^metadata\.google\.internal$
 ^metadata$
 ^instance-data$
+# Legacy IPv4 spellings inet_aton still accepts, which the 4-octet rules above all miss.
+^[0-9]+\.[0-9]+$
+^[0-9]+\.[0-9]+\.[0-9]+$
+(^|\.)0x[0-9a-f]
+(^|\.)0[0-9]{1,2}(\.|$)
 
 # --- Add project-specific blocked hosts below this line. One POSIX extended regex per line. ---

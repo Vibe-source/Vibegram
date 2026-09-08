@@ -90,7 +90,7 @@ setup_linger_and_unit() {
 
 main() {
   apt-get update -qq
-  apt-get install -y -qq git curl ca-certificates
+  apt-get install -y -qq git curl ca-certificates jq
 
   # Accounts first: /opt/vibe is chowned to vibe, and sshd hardening refuses to
   # run until ops holds a key, so this ordering is what prevents a lockout.

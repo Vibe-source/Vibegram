@@ -1,9 +1,6 @@
 defmodule Vibe.Platforms.TokenVault do
   @moduledoc """
   AES-256-GCM vault for OAuth access/refresh tokens.
-
-  Ciphertext format matches agent webhook secrets: `ags1.<iv>.<ct>.<tag>` (url-safe base64).
-  Tokens never appear in list payloads or tool schemas — only this module decrypts them.
   """
 
   @aad "vibe.platform.token.v1"

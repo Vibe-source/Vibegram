@@ -6,7 +6,7 @@ defmodule Vibe.Chat.JoinCache do
 
   @table :chat_join_cache
   @ttl_ms 60_000
-  # Above this size a `put` sweeps expired rows, bounding the table without a timer.
+  # Above this size a `put` sweeps expired rows.
   @sweep_threshold 10_000
 
   @topic "vibe:cache"

@@ -419,7 +419,6 @@ defmodule Vibe.ChatBridge do
 
     VibeWeb.Endpoint.broadcast("chat:#{message.chat_id}", "message", payload)
 
-    # Built once and reused for every recipient's user-topic mirror.
     mirrored_message = Chat.mirrored_message_payload(payload)
 
     participant_ids = Chat.get_participant_ids(message.chat_id) || []

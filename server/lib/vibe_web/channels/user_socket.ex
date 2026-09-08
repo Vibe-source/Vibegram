@@ -2,12 +2,8 @@ defmodule VibeWeb.UserSocket do
   use Phoenix.Socket
 
   # A Socket handler
-  #
-  # It's possible to control the websocket connection and
-  # assign values that can be accessed by your channel topics.
 
-  ## Channels
-  # Personal channel for calls/notifications
+  # # Channels Personal channel for calls/notifications
   channel("user:*", VibeWeb.UserChannel)
   # Chat rooms
   channel("chat:*", VibeWeb.ChatChannel)
@@ -18,19 +14,9 @@ defmodule VibeWeb.UserSocket do
   # VibeNet peer relay network
   channel("relay:*", VibeWeb.RelayChannel)
 
-  # Socket params are passed from the client and can
-  # be used to verify and authenticate a user. After
-  # verification, you can put default assigns into
-  # the socket that will be set for all channels, ie
-  #
-  #     {:ok, assign(socket, :user_id, verified_user_id)}
-  #
-  # To deny connection, return `:error` or `{:error, term}`.
+  # Socket params are passed from the client and can be used to verify and.
   @impl true
   def connect(params, socket, connect_info) do
-    # Priority: x-vibe-auth header (mobile / new clients) > query param token
-    # (legacy). Phoenix connect_info: [:x_headers] only forwards headers whose
-    # names start with "x-", so Authorization is never available here.
     case extract_connect_token(params, connect_info) do
       nil ->
         :error
@@ -51,14 +37,6 @@ defmodule VibeWeb.UserSocket do
 
   @doc """
   Resolves the login token for a WebSocket connect.
-
-  Priority:
-  1. `x-vibe-auth` from `connect_info.x_headers` (`Bearer <token>` preferred;
-     a raw token is accepted as a defensive fallback)
-  2. Query param `token` (compatibility for existing clients)
-
-  Returns `nil` when no usable token is present (including the client sentinel
-  `"undefined"`). Does not log token material.
   """
   def extract_connect_token(params, connect_info) do
     case header_token(connect_info) do
@@ -99,7 +77,6 @@ defmodule VibeWeb.UserSocket do
         end
 
       nil ->
-        # Defensive fallback: some clients may send the raw token without Bearer.
         if trimmed == "" or trimmed == "undefined" or String.downcase(trimmed) == "bearer",
           do: nil,
           else: trimmed
@@ -108,16 +85,6 @@ defmodule VibeWeb.UserSocket do
 
   def parse_auth_header_value(_), do: nil
 
-  # Socket id's are topics that allow you to identify all sockets for a given user:
-  #
-  #     def id(socket), do: "user_socket:#{socket.assigns.user_id}"
-  #
-  # Would allow you to broadcast a "disconnect" event and terminate
-  # all active sockets and channels for a given user:
-  #
-  #     Elixir.VibeWeb.Endpoint.broadcast("user_socket:#{user.id}", "disconnect", %{})
-  #
-  # Returning `nil` makes this socket anonymous.
   @impl true
   def id(socket), do: "user_socket:#{socket.assigns.user_id}"
 end

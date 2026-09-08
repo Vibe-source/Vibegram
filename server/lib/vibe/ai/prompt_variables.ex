@@ -1,38 +1,13 @@
 defmodule Vibe.AI.PromptVariables do
   @moduledoc """
   Prompt arguments for agents.
-
-  An agent's `system_prompt` can reference named variables with `{{name}}`
-  placeholders. Each variable is defined on the agent with a name, description,
-  and a stored value. The effective value used at render time is resolved as:
-
-      code override (application config)  >  stored value  >  default  >  ""
-
-  This keeps two concerns separate so they don't fight each other:
-
-    * The agent may freely rewrite its `system_prompt` template (e.g. via the
-      `update_current_agent_config` tool). Because variables live in a separate
-      field, a rewrite never drops them — the placeholders keep resolving.
-    * Operators can pin a variable's value in code per agent/use case via
-      `config :vibe, :prompt_variable_overrides`. A pinned variable is reported
-      as `locked` so the app shows it read-only and neither the user nor the
-      agent can change the effective value.
-
-  Overrides are keyed by the agent's username (preferred) or id, so the same
-  build serves many agents/projects without hardcoding values in Vibe itself.
-  Each deployment supplies its own table in config/runtime, e.g.:
-
-      config :vibe, :prompt_variable_overrides, %{
-        "<agent_username_or_id>" => %{"<variable_name>" => "<pinned_value>"}
-      }
   """
 
   @placeholder ~r/\{\{\s*([a-zA-Z0-9_\.]+)\s*\}\}/
 
   @doc """
-  Normalize raw input (from the API/agent) into the canonical list of variable
-  definition maps with string keys: `name`, `description`, `value`.
-  Drops entries without a usable name and de-dupes by name (last wins).
+  Normalize raw input (from the API/agent) into the canonical list of variable definition maps
+  with string keys: `name`, `description`, `value`.
   """
   def normalize(raw) do
     raw
@@ -71,9 +46,8 @@ defmodule Vibe.AI.PromptVariables do
   defp normalize_one(_), do: nil
 
   @doc """
-  Definitions enriched with the resolved effective value and a `locked` flag for
-  config display. Includes any code-override-only variables not present in the
-  stored list so operators can see what is pinned.
+  Definitions enriched with the resolved effective value and a `locked` flag for config
+  display.
   """
   def definitions(agent) do
     overrides = overrides_for(agent)
@@ -104,11 +78,6 @@ defmodule Vibe.AI.PromptVariables do
 
   @doc """
   Map of `name => effective value` used for rendering.
-
-  Pass `admin_mode: false` (default `true`, matching every existing caller) to
-  blank out any variable flagged `"secret" => true` instead of its real value —
-  used when the agent is answering someone other than its own owner, so an
-  owner-only variable can never be extracted via prompt injection.
   """
   def effective_values(agent, opts \\ []) do
     admin_mode = Keyword.get(opts, :admin_mode, true)
@@ -122,9 +91,7 @@ defmodule Vibe.AI.PromptVariables do
   end
 
   @doc """
-  Replace `{{name}}` placeholders in `text` with effective values. Unknown
-  placeholders are left untouched so authors notice the typo. See
-  `effective_values/2` for the `admin_mode` option.
+  Replace `{{name}}` placeholders in `text` with effective values.
   """
   def render(text, agent, opts \\ [])
 

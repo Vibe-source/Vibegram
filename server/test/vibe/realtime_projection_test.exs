@@ -1,8 +1,7 @@
 defmodule Vibe.RealtimeProjectionTest do
   @moduledoc """
-  Contract tests for the two pure pieces behind coexisting notifications and a
-  real-time chat list: the APNs collapse identity, and the compacted message the
-  per-user `new_message` mirror carries.
+  Contract tests for the two pure pieces behind coexisting notifications and a real-time chat
+  list: the APNs collapse identity.
   """
   use ExUnit.Case, async: true
 

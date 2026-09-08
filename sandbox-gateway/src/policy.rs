@@ -1,5 +1,3 @@
-//! Container/exec/file policy (spec docs/agent-platform-v1.md §3.6, task-gateway.md). Pure,
-//! unit-tested, and independent of any live docker/podman socket.
 use std::collections::HashMap;
 
 use bollard::models::HostConfig;
@@ -25,7 +23,7 @@ fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// First 16 hex chars (8 bytes) of sha256(input) — the shared suffix for container+volume names.
+/// First 16 hex chars (8 bytes) of sha256(input).
 pub fn owner_key_hash(owner_key: &str) -> String {
     let digest = Sha256::digest(owner_key.as_bytes());
     to_hex(&digest)[..16].to_string()
@@ -58,7 +56,7 @@ pub fn clamp_or_max_usize(requested: Option<usize>, max: usize) -> usize {
 
 const ALLOWED_ROOTS: [&str; 2] = ["/home/agent", "/tmp"];
 
-/// Absolute, lexically normalized, and rooted under /home/agent or /tmp. Rejects `..` escapes.
+/// Absolute, lexically normalized, and rooted under /home/agent or /tmp.
 pub fn validate_file_path(path: &str) -> Result<String, PolicyError> {
     let err = || PolicyError::PathNotAllowed(path.to_string());
     if !path.starts_with('/') || path.contains('\0') {
@@ -95,7 +93,7 @@ pub fn validate_file_size(len: usize, max: usize) -> Result<(), PolicyError> {
     }
 }
 
-/// Mirrors `^(HTTP_PROXY|HTTPS_PROXY|NO_PROXY|.*TOKEN.*|.*SECRET.*|.*KEY.*)$` (case-insensitive).
+/// Mirrors.
 pub fn is_blocked_env_key(key: &str) -> bool {
     let upper = key.to_uppercase();
     matches!(upper.as_str(), "HTTP_PROXY" | "HTTPS_PROXY" | "NO_PROXY")
@@ -104,7 +102,7 @@ pub fn is_blocked_env_key(key: &str) -> bool {
         || upper.contains("KEY")
 }
 
-/// The whole exec request is rejected (400) if any env key matches the blocked pattern.
+/// The whole exec request is rejected (400) if any env key matches the.
 pub fn check_exec_env(env: Option<&HashMap<String, String>>) -> Result<(), PolicyError> {
     if let Some(env) = env {
         for key in env.keys() {
@@ -141,8 +139,7 @@ pub struct HostConfigOpts<'a> {
     pub sandbox_network: &'a str,
 }
 
-/// The non-negotiable container hardening policy (spec §3.6): dropped caps, no-new-privileges,
-/// read-only rootfs + tmpfs `/tmp`, the owner's named volume at `/home/agent`, resource caps.
+/// The non-negotiable container hardening policy (spec §3.6):
 pub fn build_host_config(opts: HostConfigOpts) -> HostConfig {
     let mut tmpfs = HashMap::new();
     tmpfs.insert("/tmp".to_string(), "size=512m,nosuid,nodev".to_string());
@@ -167,7 +164,7 @@ pub fn build_host_config(opts: HostConfigOpts) -> HostConfig {
     }
 }
 
-/// Proxy env vars set on the container only in `network:"proxy"` mode (spec §3.6, frozen names).
+/// Proxy env vars set on the container only in `network:"proxy"` mode (spec.
 pub fn build_container_env(network: NetworkMode, egress_proxy: Option<&str>) -> Vec<String> {
     match (network, egress_proxy) {
         (NetworkMode::Proxy, Some(proxy)) => vec![
@@ -264,7 +261,6 @@ mod tests {
 
     #[test]
     fn validate_file_path_rejects_prefix_collision() {
-        // "/home/agentx" starts with "/home/agent" as a string but is not under it.
         assert!(validate_file_path("/home/agentx/x.txt").is_err());
         assert!(validate_file_path("/tmpfoo/x.txt").is_err());
     }
@@ -306,7 +302,6 @@ mod tests {
         assert!(is_blocked_env_key("SOME_SECRET"));
         assert!(is_blocked_env_key("AUTH_TOKEN"));
         assert!(is_blocked_env_key("my_token_here"));
-        // The frozen regex `.*KEY.*` is deliberately broad: any substring match blocks.
         assert!(is_blocked_env_key("MONKEY"));
     }
 

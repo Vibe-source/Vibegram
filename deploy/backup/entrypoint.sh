@@ -3,6 +3,10 @@
 # mounted file), installs the cron schedule, then runs cron in the foreground.
 set -eu
 
+# postgres:16-alpine runs as uid 70; initialise the shared archive volume for it.
+chown 70:70 /wal_archive
+chmod 0700 /wal_archive
+
 mkdir -p /root/.config/rclone
 cat > /root/.config/rclone/rclone.conf <<-EOF
 	[r2]

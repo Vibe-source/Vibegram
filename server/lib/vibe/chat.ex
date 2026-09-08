@@ -33,38 +33,18 @@ defmodule Vibe.Chat do
   @history_default_limit 30
   @history_max_limit 100
 
-  # Sealed/base64 blob fields that exist only for the open chat surface. They are the
-  # reason a mirror of the message payload cannot simply be the payload: one of these
-  # can be hundreds of kilobytes, and the mirror is sent once per participant.
+  # Sealed/base64 blob fields that exist only for the open chat surface.
   @mirror_dropped_keys [
     "agentBridgeAttachmentsEnc",
     "attachmentThumbnailsB64",
     :agentBridgeAttachmentsEnc,
     :attachmentThumbnailsB64
   ]
-  # Hard ceiling on one mirrored message. The mirror is fanned out once per participant,
-  # so a single oversized payload in a large room is multiplied by the room. Anything
-  # above this is simply not mirrored and the client falls back to its list refresh —
-  # slower for that one message, but never a fan-out amplifier.
+  # Hard ceiling on one mirrored message.
   @mirror_max_bytes 16_384
 
   @doc """
   Compact copy of a chat-topic `message` payload, for the per-user `new_message` mirror.
-
-  A device joins a chat's realtime topic only while that chat is on screen, so the
-  user-topic `new_message` ping is all a backgrounded chat list ever sees. Historically
-  it carried nothing but ids, so the client could not project the new message and had to
-  re-fetch the whole chat list before Home (and therefore the first frame of the opened
-  conversation) knew about it. Carrying the message itself makes that projection real
-  and immediate.
-
-  Everything the conversation needs on its first frame is preserved — text/ciphertext,
-  type, media url, reply target, agent identity, `thumbnailBase64` micro-thumb — while
-  the heavy sealed blobs are dropped and anything still over `@mirror_max_bytes` is
-  refused. Returns `nil` for a non-map, an oversized payload, or one JSON cannot encode,
-  so callers can omit the key and clients fall back to the previous refresh path.
-
-  Call it ONCE per message, not once per recipient.
   """
   def mirrored_message_payload(payload) when is_map(payload) do
     compacted =
@@ -156,7 +136,6 @@ defmodule Vibe.Chat do
     end
   end
 
-  # Row lock, so two devices toggling at once serialize instead of splitting state.
   defp lock_saved_message(user_id, original_message_id) do
     Repo.one(
       from(sm in SavedMessage,
@@ -209,8 +188,6 @@ defmodule Vibe.Chat do
 
   defp saved_message_reactions(_emoji), do: []
 
-  # Hot path: called on every channel message. 30s TTL, cross-node invalidated
-  # by every membership-changing function below (see participant_cache_key/2).
   def is_participant?(chat_id, user_id) do
     Vibe.Cache.fetch(participant_cache_key(chat_id, user_id), 30_000, fn ->
       Repo.exists?(
@@ -305,8 +282,6 @@ defmodule Vibe.Chat do
     end
   end
 
-  # Inbox-only agent event rows are implementation details for the dedicated
-  # Agent Inbox. They must not leak into normal chat history/home previews.
   defp visible_transcript_messages(query) do
     from(m in query,
       where:
@@ -328,8 +303,6 @@ defmodule Vibe.Chat do
 
     result =
       RepoRLS.with_user(user_id, fn ->
-        # Find all chats user is participating in (excluding deleted ones),
-        # split by the participant's active/archive state.
         user_chats_query =
           from(p in Participant,
             where:
@@ -342,13 +315,11 @@ defmodule Vibe.Chat do
         results = Repo.all(user_chats_query)
         chat_ids = Enum.map(results, fn {chat_id, _} -> chat_id end)
 
-        # Batch-fetch all rooms in one query
         rooms =
           from(r in Room, where: r.id in ^chat_ids)
           |> Repo.all()
           |> Map.new(fn r -> {r.id, r} end)
 
-        # Batch-fetch all friend participants with users preloaded in one query
         friend_participants =
           from(p in Participant,
             where: p.chat_id in ^chat_ids and p.user_id != ^user_id,
@@ -384,7 +355,6 @@ defmodule Vibe.Chat do
             |> Map.new()
           end
 
-        # Batch-fetch latest 15 messages per chat using a window function
         ranked_query =
           from(m in Message,
             where: m.chat_id in ^chat_ids
@@ -403,9 +373,11 @@ defmodule Vibe.Chat do
           if chat_ids == [] do
             []
           else
-            Repo.all(ranked_query)
-            |> Enum.filter(&(&1.rnk <= @home_preview_message_limit))
-            |> Enum.map(& &1.id)
+            from(r in subquery(ranked_query),
+              where: r.rnk <= ^@home_preview_message_limit,
+              select: r.id
+            )
+            |> Repo.all()
           end
 
         last_messages_by_chat =
@@ -420,11 +392,8 @@ defmodule Vibe.Chat do
             |> Enum.group_by(& &1.chat_id)
           end
 
-        # Same reaction contract as paged history, batched across every seeded
-        # message so the home list never falls back to a per-message query.
         seed_reactions = batched_reaction_summaries(top_message_ids, user_id)
 
-        # Batch-fetch member counts for group/channel chats
         group_channel_ids =
           Enum.filter(chat_ids, fn id ->
             room = Map.get(rooms, id)
@@ -450,11 +419,6 @@ defmodule Vibe.Chat do
           room = Map.get(rooms, chat_id)
           room_type = if(room, do: room.type, else: "dm")
 
-          # "Friend" fields (friendId/friendName/friendImage/friendIsAgent/…) describe
-          # the *other party* of a 1:1 DM. For groups/channels the client must render
-          # the room's own name/avatar and treat every participant as a member — if we
-          # leak a participant here (e.g. Codex), the client mistakes the whole group
-          # for that agent's DM and opens the wrong surface.
           friend_p =
             if room_type == "dm" do
               List.first(Map.get(friend_participants, chat_id, []))
@@ -465,19 +429,6 @@ defmodule Vibe.Chat do
           friend_agent =
             if(friend_p, do: Map.get(agent_friends_by_user_id, friend_p.user_id), else: nil)
 
-          # The instant this participant last cleared the chat, in epoch ms. Hoisted out of
-          # the filter below because the CLIENT needs it too, not just this query.
-          #
-          # Deleting a DM "for both sides" marks both participants cleared and pushes
-          # `chat-deleted` over the socket. That push is the peer's only signal, and it is
-          # fire-and-forget: a peer whose socket is down (device exports 2026-08-06 are
-          # wall-to-wall `ws dead socket reason=heartbeat_timeout`) never hears it. Its
-          # local SQLite + core store keep the whole transcript, this endpoint will never
-          # resend those messages because of the very filter below, and the two devices
-          # then disagree permanently with nothing left to repair it.
-          #
-          # Publishing the clear point makes the delete self-healing: any refresh is enough
-          # for a client to notice it is holding messages the server considers cleared.
           cleared_at_ms =
             if my_settings.messages_cleared_at do
               my_settings.messages_cleared_at
@@ -485,7 +436,6 @@ defmodule Vibe.Chat do
               |> DateTime.to_unix(:millisecond)
             end
 
-          # Filter last message by cleared_at if applicable
           chat_messages = Map.get(last_messages_by_chat, chat_id, [])
 
           chat_messages =
@@ -517,10 +467,6 @@ defmodule Vibe.Chat do
             |> Enum.map(&to_client_message/1)
             |> apply_reaction_summaries(seed_reactions)
 
-          # A single comparable "last activity" instant (epoch ms) so the client can
-          # sort the home list newest-first. Newest visible message wins; an empty
-          # chat (e.g. a just-created group) falls back to the room's creation time
-          # so it still surfaces near the top instead of sinking to the bottom.
           last_activity_at =
             case List.last(chat_messages) do
               %{timestamp: ts} when is_integer(ts) ->
@@ -556,16 +502,9 @@ defmodule Vibe.Chat do
           %{
             chatId: chat_id,
             type: room_type,
-            # True for multi-party rooms (groups + broadcast channels). Clients
-            # also derive this from type, but an explicit flag avoids DM fallthrough.
             isGroup: room_type in ["group", "channel"],
-            # Explicit channel flag so clients never fall back to "Group" chrome
-            # when type is missing from a stale cache row.
             isChannel: room_type == "channel",
             lastMessageAt: last_activity_at,
-            # Epoch ms of this participant's last clear, or nil if they never cleared.
-            # The client drops anything it stored at or before this instant — see the
-            # comment where it is computed.
             messagesClearedAt: cleared_at_ms,
             createdAt: created_at,
             name: if(room, do: room.name, else: nil),
@@ -754,14 +693,10 @@ defmodule Vibe.Chat do
           not legitimate_agent_sender?(chat_id, from_id) ->
         {:error, :forbidden_sender}
 
-      # Privacy: author set "Forwarded Messages" to nobody — block re-share.
       forward_restricted?(attrs, acting_user_id) ->
         {:error, :forward_restricted}
 
       true ->
-        # Message ids are client-generated, and clients legitimately re-send the
-        # same id after a reconnect (the ack got lost, not the message). Treat a
-        # duplicate insert as a no-op instead of raising messages_pkey.
         result =
           RepoRLS.with_user(acting_user_id || from_id, fn ->
             %Message{}
@@ -780,8 +715,6 @@ defmodule Vibe.Chat do
     end
   end
 
-  # Real agent-in-this-chat check, not a fixed id list: an is_agent user who is
-  # an active participant (or, for legacy Vibe AI, has an enabled group_agents row).
   defp legitimate_agent_sender?(chat_id, from_id) when is_binary(chat_id) and chat_id != "" do
     if legacy_group_agent_id?(from_id) do
       not is_nil(Vibe.Chat.GroupAgent.get_enabled_by_chat(chat_id))
@@ -790,7 +723,6 @@ defmodule Vibe.Chat do
     end
   end
 
-  # No chat to be a member of, so nothing can be authorised against it.
   defp legitimate_agent_sender?(_chat_id, _from_id), do: false
 
   defp agent_user?(user_id) do
@@ -833,14 +765,10 @@ defmodule Vibe.Chat do
       is_nil(author_id) ->
         false
 
-      # Forwarding your own content is always allowed.
       is_binary(acting_user_id) and acting_user_id == author_id ->
         false
 
       true ->
-        # Settings already expose everybody / contacts / nobody. Enforce nobody
-        # strictly; contacts mode falls open here until a shared contact graph
-        # helper is available server-side (client still respects the preference).
         case Repo.get(User, author_id) do
           %User{privacy_forward: "nobody"} -> true
           _ -> false
@@ -877,7 +805,6 @@ defmodule Vibe.Chat do
 
   def get_messages_for_user(chat_id, user_id) do
     RepoRLS.with_user(user_id, fn ->
-      # Get user's cleared_at timestamp
       participant =
         Repo.one(
           from(p in Participant,
@@ -1005,11 +932,6 @@ defmodule Vibe.Chat do
   def mark_read(message_id, reader_id) do
     result =
       RepoRLS.with_user(reader_id, fn ->
-        # Lock/update the parent row before inserting the receipt. A receipt can
-        # legitimately race a delete that was already broadcast to another
-        # participant. In that case there is no receipt to persist; attempting
-        # the child insert first raises a foreign-key error and kills the entire
-        # Phoenix chat-channel process, leaving clients joined to a dead topic.
         case from(m in Message, where: m.id == ^message_id)
              |> Repo.update_all(set: [status: "read"]) do
           {0, _} ->
@@ -1029,7 +951,6 @@ defmodule Vibe.Chat do
   def mark_delivered(message_id, user_id \\ nil) do
     result =
       RepoRLS.with_user(user_id, fn ->
-        # Only update if status is 'sent' (don't overwrite 'read')
         from(m in Message, where: m.id == ^message_id and m.status == "sent")
         |> Repo.update_all(set: [status: "delivered"])
       end)
@@ -1360,8 +1281,6 @@ defmodule Vibe.Chat do
                   if message.from_id != user_id do
                     {:error, :forbidden}
                   else
-                    # The original send time is the ordering key — an edit stamps
-                    # :edited_at and never moves the message in history.
                     next_edited_at =
                       if is_integer(edited_at) and edited_at > 0,
                         do: edited_at,
@@ -1389,10 +1308,8 @@ defmodule Vibe.Chat do
     end
   end
 
-  # ── Reactions, views, reports ───────────────────────────────────
 
   @engagement_batch_limit 200
-  # Ceiling on actor rows returned for one message's reaction detail.
   @reaction_detail_limit 500
   @no_user_uuid "00000000-0000-0000-0000-000000000000"
 
@@ -1590,15 +1507,12 @@ defmodule Vibe.Chat do
     end
   end
 
-  # Idempotent: re-reporting an already-blocked sender must still succeed.
   defp ensure_user_block(user_id, blocked_user_id) do
     %UserBlock{}
     |> UserBlock.changeset(%{user_id: user_id, blocked_user_id: blocked_user_id})
     |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :blocked_user_id])
   end
 
-  # Two queries, never per actor: the summary carries the exact counts, this
-  # carries the (capped) actor rows. `count` above `length(users)` means capped.
   defp reaction_detail_groups(message_uuid, user_id) do
     actors =
       Repo.all(
@@ -1672,8 +1586,6 @@ defmodule Vibe.Chat do
         :added
 
       existing.emoji == emoji ->
-        # Row-scoped, not struct-scoped: a second device toggling the same
-        # reaction must not raise StaleEntryError and kill the channel.
         from(r in MessageReaction, where: r.id == ^existing.id) |> Repo.delete_all()
         :removed
 
@@ -1725,7 +1637,6 @@ defmodule Vibe.Chat do
 
     cond do
       trimmed == "" -> {:error, :invalid_emoji}
-      # 64 bytes, not 32: a ZWJ family/couple sequence is ~35 bytes.
       byte_size(trimmed) > 64 -> {:error, :invalid_emoji}
       String.match?(trimmed, ~r/[[:space:][:cntrl:]]/u) -> {:error, :invalid_emoji}
       true -> {:ok, trimmed}
@@ -1995,15 +1906,9 @@ defmodule Vibe.Chat do
 
   @doc """
   Hide this user's message history for a chat, keeping the chat itself.
-
-  Only `messages_cleared_at` moves: the participant row stays undeleted and
-  unarchived, so membership, the MLS session and the peer's own copy are all
-  untouched. `delete_chat/3` is the other operation — it sets `deleted` as well.
   """
   def clear_messages(chat_id, user_id) when is_binary(chat_id) and is_binary(user_id) do
     if is_participant?(chat_id, user_id) do
-      # Truncated so the returned stamp is the one actually stored — the column keeps
-      # seconds, and clients compare against it.
       now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
       query =
@@ -2085,7 +1990,6 @@ defmodule Vibe.Chat do
   defp direct_room?(_), do: false
 
   def restore_if_deleted(chat_id, user_id) do
-    # Check if this user has deleted the chat
     participant =
       Repo.one(
         from(p in Participant,
@@ -2095,11 +1999,9 @@ defmodule Vibe.Chat do
 
     cond do
       is_nil(participant) ->
-        # No participant record - shouldn't happen but treat as not deleted
         :not_deleted
 
       participant.deleted == true ->
-        # Was deleted - restore it
         from(p in Participant, where: p.chat_id == ^chat_id and p.user_id == ^user_id)
         |> Repo.update_all(set: [deleted: false, archived: false])
 
@@ -2108,12 +2010,10 @@ defmodule Vibe.Chat do
         :restored
 
       true ->
-        # Not deleted
         :not_deleted
     end
   end
 
-  # ── Groups ──────────────────────────────────────────────────────
 
   def create_group(creator_id, name, member_ids, avatar_url \\ nil, description \\ nil) do
     id = Ecto.UUID.generate() |> String.slice(0, 12)
@@ -2176,9 +2076,6 @@ defmodule Vibe.Chat do
       accessType: if(room.type == "channel", do: room.access_type || "private", else: nil),
       publicSlug: if(room.type == "channel", do: room.public_slug, else: nil),
       shareLink: Keyword.get(opts, :share_link),
-      # Absolute, pasteable form of the same link. A public channel always has one
-      # (its slug); a private one only once an invite token exists. `shareLink` stays
-      # the relative path that the join endpoint accepts.
       shareUrl: room_share_url(room, Keyword.get(opts, :share_link)),
       joinApprovalRequired:
         if(room.type == "channel", do: room.join_approval_required || false, else: nil),
@@ -2241,13 +2138,10 @@ defmodule Vibe.Chat do
     result
   end
 
-  # ── Group administration (owner/admin) ──────────────────────────
 
   @doc """
-  Owner/admin edit of a group's name / description / avatar. `attrs` may carry
-  any of "name", "description", "avatarUrl" (camel or snake case); only present,
-  non-empty keys are applied. Returns `{:ok, room}` or a `{:error, reason}` where
-  reason is `:not_found`, `:not_authorized`, or an `Ecto.Changeset`.
+  Owner/admin edit of a group's name / description / avatar. `attrs` may carry any of "name",
+  "description", "avatarUrl" (camel or snake case).
   """
   def update_group(chat_id, actor_id, attrs) do
     settings = get_participant_settings(chat_id, actor_id)
@@ -2380,10 +2274,6 @@ defmodule Vibe.Chat do
     Repo.all(from(p in Participant, where: p.chat_id == ^chat_id, select: p.user_id))
   end
 
-  # System notice after membership change. Plaintext body in encrypted_content
-  # (non-hybrid) so clients parse it as text; type "system" for centered UI.
-  # Structured `metadata.service` is the canonical renderer input; legacy
-  # systemAction/text fields stay for older clients and history.
   defp maybe_insert_group_system_notice(chat_id, actor_id, target_id, action)
        when is_binary(chat_id) and is_binary(actor_id) and is_binary(target_id) and
               is_binary(action) do
@@ -2402,7 +2292,6 @@ defmodule Vibe.Chat do
     if is_binary(body) do
       service = Vibe.AI.AgentDecisions.membership_service_node(action, actor_name, target_name)
 
-      # Client decrypt path treats non-hybrid ciphertext as parseable payload JSON.
       payload =
         Jason.encode!(%{
           "text" => body,
@@ -2453,7 +2342,6 @@ defmodule Vibe.Chat do
 
           VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "message", broadcast_payload)
 
-          # Built once and reused for every recipient's user-topic mirror.
           mirrored_message = mirrored_message_payload(broadcast_payload)
 
           Enum.each(group_member_ids(chat_id), fn uid ->
@@ -2498,7 +2386,6 @@ defmodule Vibe.Chat do
 
   defp put_group_change(map, key, value), do: Map.put(map, key, value)
 
-  # ── Channels ────────────────────────────────────────────────────
 
   def create_channel(creator_id, attrs) when is_map(attrs),
     do: create_channel_from_attrs(creator_id, attrs)
@@ -2584,8 +2471,6 @@ defmodule Vibe.Chat do
     end
   end
 
-  # Kept for backwards compatibility. New callers should join through a public
-  # slug or private invite token so channel access policy is always enforced.
   def join_channel(channel_id, user_id) do
     case Repo.get(Room, channel_id) do
       %Room{type: "channel", access_type: "public", join_approval_required: false} = room ->
@@ -2605,7 +2490,6 @@ defmodule Vibe.Chat do
   end
 
   def leave_channel(channel_id, user_id) do
-    # Don't allow owner to leave
     case Repo.one(
            from(p in Participant,
              where: p.chat_id == ^channel_id and p.user_id == ^user_id
@@ -2754,14 +2638,10 @@ defmodule Vibe.Chat do
   def channel_settings(_), do: channel_settings(%Room{channel_settings: %{}})
 
   @doc """
-  Normalized public-slug form of any text (`"Daily News"` -> `"daily-news"`), or `nil`
-  when nothing slug-shaped survives. Exposed so callers can propose a link before
-  creating the channel.
+  Normalized public-slug form of any text (`"Daily News"` -> `"daily-news"`), or `nil` when
+  nothing slug-shaped survives.
   """
   def slugify_public_slug(value) do
-    # Sanitizing, not validating: this turns a human room name ("Daily News!") into a
-    # usable handle, where `normalize_public_slug/1` deliberately keeps invalid input
-    # invalid so an explicit user-supplied slug is still rejected.
     value
     |> to_string()
     |> String.downcase()
@@ -2994,9 +2874,7 @@ defmodule Vibe.Chat do
   end
 
   @doc """
-  Returns the room-scoped effective agent policy. Assignment allowlists are always
-  intersected with the standalone agent configuration, so a room can narrow (or
-  completely disable) capabilities but can never grant new ones.
+  Returns the room-scoped effective agent policy.
   """
   def channel_agent_policy(channel_id, %Agent{} = agent) do
     assignment =
@@ -3028,9 +2906,6 @@ defmodule Vibe.Chat do
 
       {%Room{}, _} ->
         if is_participant?(channel_id, agent.agent_user_id) do
-          # DM/گروه سقفی ندارد، ولی شکلِ policy باید با شاخهٔ channel یکی بماند:
-          # مصرف‌کننده با `policy.permissions` می‌خواند و دسترسیِ نقطه‌ای روی مپ،
-          # پیش از آنکه `||` فرصت جبران پیدا کند، KeyError می‌اندازد.
           {:ok,
            %{
              enabled_tools: agent.enabled_tools || [],
@@ -3048,14 +2923,8 @@ defmodule Vibe.Chat do
   end
 
   @doc """
-  Requester-aware agent policy: layers an `admin_mode` flag on top of
-  `channel_agent_policy/2` without ever widening what it returns.
-
-  `admin_mode` is true ONLY when the requester is the agent's owner AND this
-  chat is the private 1:1 DM between the owner and the agent itself — never by
-  requester identity alone, so an owner posting in a shared group/channel never
-  leaks admin capability to anyone else in it. Every other caller (including the
-  owner elsewhere) gets the plain room-scoped policy.
+  Requester-aware agent policy: layers an `admin_mode` flag on top of `channel_agent_policy/2`
+  without ever widening what it returns.
   """
   def effective_agent_policy(channel_id, %Agent{} = agent, requester_user_id) do
     with {:ok, base} <- channel_agent_policy(channel_id, agent) do
@@ -3996,7 +3865,6 @@ defmodule Vibe.Chat do
           :count
         )
 
-      # Recent subscribers (last 7 days)
       week_ago = DateTime.utc_now() |> DateTime.add(-7, :day)
 
       recent_joins =
@@ -4015,7 +3883,6 @@ defmodule Vibe.Chat do
     end)
   end
 
-  # ── Permissions ─────────────────────────────────────────────────
 
   def can_send?(chat_id, user_id) do
     case Repo.get(Room, chat_id) do
@@ -4035,7 +3902,6 @@ defmodule Vibe.Chat do
         )
 
       %Room{type: type} when type in ["dm", "group"] ->
-        # All participants can send in DMs and groups
         is_participant?(chat_id, user_id)
 
       nil ->
@@ -4106,7 +3972,6 @@ defmodule Vibe.Chat do
     )
   end
 
-  # ── Scheduled Posts ─────────────────────────────────────────────
 
   def create_scheduled_post(attrs) do
     %ScheduledPost{}
@@ -4324,8 +4189,6 @@ defmodule Vibe.Chat do
     }
   end
 
-  # Frozen engagement contract on a page of client messages: one batched query
-  # per kind, never per row. `viewCount` is group/channel only.
   defp decorate_engagement([], _chat_id, _user_id), do: []
 
   defp decorate_engagement(client_messages, chat_id, user_id) do
@@ -4357,7 +4220,6 @@ defmodule Vibe.Chat do
     end
   end
 
-  # Chunked so a large page stays one query per chunk, never one per message.
   defp batched_reaction_summaries([], _user_id), do: %{}
 
   defp batched_reaction_summaries(message_ids, user_id) do
@@ -4367,7 +4229,6 @@ defmodule Vibe.Chat do
     |> merge_maps()
   end
 
-  # Every client message carries `reactions`, empty list included.
   defp apply_reaction_summaries(client_messages, reactions) do
     Enum.map(client_messages, fn
       %{id: id} = message when is_binary(id) ->

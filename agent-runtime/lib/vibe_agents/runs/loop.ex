@@ -75,7 +75,6 @@ defmodule VibeAgents.Runs.Loop do
 
   defp llm_module, do: Application.get_env(:vibe_agents, :llm_module, VibeAgents.LLM.Loop)
 
-  # ── finish / fail ────────────────────────────────────────────────────────────────
 
   defp finish(run, input_messages, text, final_state) do
     if Map.get(final_state, :terminal_status) == "waiting_for_user" do
@@ -96,7 +95,6 @@ defmodule VibeAgents.Runs.Loop do
       "outputTokens" => Map.get(run.usage || %{}, "outputTokens", 0) + output_tokens
     }
 
-    # A tool-only round can end with no prose; never post an empty bubble for it.
     if String.trim(to_string(text)) != "" do
       outputs = [VibeContracts.Outputs.text_output(text, %{})] |> VibeContracts.Outputs.finalize_batch(agent_turn_id: run.id)
       deliver(run, outputs)
@@ -123,7 +121,6 @@ defmodule VibeAgents.Runs.Loop do
     })
   end
 
-  # Sandbox time only counts when a computer/browser capability was granted and actually used.
   defp sandbox_seconds_for(run) do
     used_capability = (run.capabilities || %{})["computer"] || (run.capabilities || %{})["browser"]
 
@@ -155,8 +152,6 @@ defmodule VibeAgents.Runs.Loop do
         update_run(run, %{status: "waiting_ask", state: state_map})
 
       _ ->
-        # ask_user set terminal_status without a decision row somehow — fail loudly rather
-        # than silently strand the run in "running".
         fail(run, "ask_user ended the turn without a pending decision.", "ask_missing_decision")
     end
   end
@@ -185,7 +180,6 @@ defmodule VibeAgents.Runs.Loop do
     text |> to_string() |> String.slice(0, 140)
   end
 
-  # ── messages ─────────────────────────────────────────────────────────────────────
 
   defp build_initial_messages(run) do
     history = (run.context || %{})["history"] || []
@@ -228,7 +222,6 @@ defmodule VibeAgents.Runs.Loop do
       "if it was not approved, do not retry the same action; tell the user and offer an alternative.]"
   end
 
-  # ── LLM event -> RunEvent ───────────────────────────────────────────────────────
 
   defp handle_llm_event(run, %{type: :text, content: content}) do
     Events.emit(run, "run.text.delta", %{"text" => content})

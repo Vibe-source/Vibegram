@@ -40,15 +40,11 @@ defmodule VibeWeb.ApiController do
       version: "1.0.0",
       features: ["e2ee", "p2p", "push", "media"],
       limits: %{maxFileSize: 52428800},
-      # Host that public share links hang off, so clients render the same link the
-      # server hands out even after the domain changes.
       shareBaseUrl: Vibe.Links.share_base_url()
     })
   end
 
   def servers(conn, _params) do
-    # Return list of available servers for client bootstrap
-    # Use the current request's host as the primary URL
 
     scheme = case get_req_header(conn, "x-forwarded-proto") do
       [proto | _] -> proto
@@ -66,7 +62,6 @@ defmodule VibeWeb.ApiController do
       "#{scheme}://#{host}:#{conn.port}"
     end
 
-    # Fallback to env if needed or sanitize results
     url = if String.contains?(url, "localhost") and System.get_env("PHX_HOST") != nil and System.get_env("PHX_HOST") != "localhost" do
        "https://#{System.get_env("PHX_HOST")}"
     else
@@ -86,7 +81,6 @@ defmodule VibeWeb.ApiController do
   end
 
   def vapid_key(conn, _params) do
-    # Return VAPID public key for web push notifications
     vapid_public_key = System.get_env("VAPID_PUBLIC_KEY") || ""
     json(conn, %{publicKey: vapid_public_key})
   end
@@ -101,13 +95,11 @@ defmodule VibeWeb.ApiController do
 
     ice_servers =
       cond do
-        # Option 1: Static credentials (metered.ca or any TURN provider)
         is_binary(turn_url) and turn_url != "" and is_binary(turn_username) ->
           [
             %{urls: turn_url, username: turn_username, credential: turn_credential || ""}
           ]
 
-        # Option 2: HMAC time-limited credentials (coturn with use-auth-secret)
         is_binary(turn_url) and turn_url != "" and is_binary(turn_secret) and turn_secret != "" ->
           timestamp = System.system_time(:second) + ttl
           username = "#{timestamp}:vibe"
@@ -117,7 +109,6 @@ defmodule VibeWeb.ApiController do
             %{urls: turn_url, username: username, credential: credential}
           ]
 
-        # Fallback: metered.ca free TURN over TLS on 443 (works through most DPI)
         true ->
           [
             %{
@@ -141,17 +132,13 @@ defmodule VibeWeb.ApiController do
   end
 
   def index(conn, _params) do
-    # For releases, the file is at /app/priv/static/index.html
-    # For mix phx.server, it is usually priv/static/index.html relative to app root
 
-    # Try absolute path first (Docker Release)
     path = "/app/priv/static/index.html"
 
     final_path =
       if File.exists?(path) do
         path
       else
-        # Fallback to app directory (Mix Development)
         Application.app_dir(:vibe, "priv/static/index.html")
       end
 

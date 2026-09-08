@@ -3,25 +3,17 @@ defmodule Vibe.Crypto do
   Crypto helpers for Vibe. Handles key pairs and encryption.
   """
 
-  # SECURITY: PBKDF2 iteration count - OWASP 2023 recommends 600,000+
+  # SECURITY:
   @pbkdf2_iterations 600_000
 
   @doc """
   Generates a 2048-bit RSA keypair.
-  Returns {public_key_pem, private_key_pem}.
-
-  WARNING: This should only be used for legacy v1 clients.
-  For E2E security, keys should be generated on the client.
   """
   def generate_rsa_keypair do
-    # Generate RSA Key
-    # public_exponent = 65537 (default in openssl)
     private_key_entry = :public_key.generate_key({:rsa, 2048, 65537})
 
-    # Extract public part
     public_key_entry = extract_public_key(private_key_entry)
 
-    # Convert to PEM
     private_pem = :public_key.pem_encode([:public_key.pem_entry_encode(:RSAPrivateKey, private_key_entry)])
     public_pem  = :public_key.pem_encode([:public_key.pem_entry_encode(:SubjectPublicKeyInfo, public_key_entry)])
 
@@ -29,16 +21,12 @@ defmodule Vibe.Crypto do
   end
 
   defp extract_public_key(private_key) do
-    # Erlang record for RSAPrivateKey has 11 elements including optional otherPrimeInfos
     {:RSAPrivateKey, _, n, e, _, _, _, _, _, _, _} = private_key
     {:RSAPublicKey, n, e}
   end
 
   @doc """
   Derives a key using PBKDF2-HMAC-SHA256.
-  SECURITY: Uses 600,000 iterations per OWASP 2023 recommendations.
-
-  Must match client-side iteration count for compatibility.
   """
   def derive_key(passphrase, salt) do
     :crypto.pbkdf2_hmac(:sha256, passphrase, salt, @pbkdf2_iterations, 32)
@@ -59,7 +47,6 @@ defmodule Vibe.Crypto do
   def encrypt_private_key(private_key_pem, derived_key) do
     iv = :crypto.strong_rand_bytes(12)
 
-    # AES-256-GCM
     {ciphertext, tag} = :crypto.crypto_one_time_aead(
       :aes_256_gcm,
       derived_key,
@@ -70,7 +57,6 @@ defmodule Vibe.Crypto do
       true # Encrypt
     )
 
-    # Format: base64(iv + ciphertext + tag)
     combined = iv <> ciphertext <> tag
     Base.encode64(combined)
   end

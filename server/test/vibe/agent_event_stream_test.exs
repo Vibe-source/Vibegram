@@ -1,10 +1,6 @@
 defmodule Vibe.AgentEventStreamTest do
   @moduledoc """
   Pure-logic tests for `message.stream` (no DB).
-
-  Covers seq ordering, ignore-stale, done-only create+finalize decision,
-  and invalid content on done — all via public helpers on
-  `Vibe.AI.AgentEventRuntime`.
   """
   use ExUnit.Case, async: true
 
@@ -127,7 +123,6 @@ defmodule Vibe.AgentEventStreamTest do
       assert {:ignore, :stale_seq} =
                AgentEventRuntime.stream_frame_decision(state, frame(3, false))
 
-      # Stale even if done=true (must not re-finalize on replay)
       assert {:ignore, :stale_seq} =
                AgentEventRuntime.stream_frame_decision(state, frame(4, true))
     end
@@ -207,7 +202,6 @@ defmodule Vibe.AgentEventStreamTest do
     end
 
     test "invalid content on done: keeps text and returns invoke-shaped error" do
-      # Unknown contract → parse error; finalize should keep plain text.
       bad = %{
         "contract" => "nope.v9",
         "fallbackText" => "x",
@@ -217,8 +211,6 @@ defmodule Vibe.AgentEventStreamTest do
       assert {:error, {:invalid_content, reason}, "keep me"} =
                AgentEventRuntime.finalize_stream_content("keep me", bad)
 
-      # reason is whatever ProviderContent.parse returned as the error payload
-      # (atom or {:invalid_content, atom}) — surface is always {:invalid_content, _}.
       assert reason == {:invalid_content, :unknown_contract} or is_atom(reason)
     end
 

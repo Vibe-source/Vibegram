@@ -14,8 +14,7 @@ defmodule VibeAgents.LLM.Loop do
   @default_openai_reasoning_effort "medium"
   @adaptive_claude_models ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5"]
 
-  # Standalone substitute for Vibe.AI.ModelRegistry.thinking_levels/2 — this runtime has no
-  # core dependency. Anything not listed here falls back to the static adaptive-model check.
+  # Standalone substitute for Vibe.AI.ModelRegistry.thinking_levels/2.
   @thinking_levels %{
     {"anthropic", "claude-fable-5"} => ["low", "medium", "high", "xhigh", "max"],
     {"anthropic", "claude-opus-4-8"} => ["low", "medium", "high", "xhigh", "max"],
@@ -69,8 +68,6 @@ defmodule VibeAgents.LLM.Loop do
     end
   end
 
-  # Depth exhaustion must not throw away streamed text — hand back what accumulated so far
-  # with a state flag, rather than an error that discards a visible partial answer.
   defp do_run(
          _messages,
          %Config{max_depth: max_depth} = config,
@@ -96,9 +93,6 @@ defmodule VibeAgents.LLM.Loop do
 
       {:tool_use, tool_calls, partial_response, partial_text} ->
         callback = config.callback || fn _event -> :ok end
-        # Round-start snapshot for crash/restart resume — a blocking tool (approval/ask/
-        # permission) persists this before it waits, so VibeAgents.Runs.Resumer can replay
-        # from here if the whole VM dies mid-wait. See VibeAgents.Tools.Executor.
         state_with_snapshot = Map.put(config.state, :current_messages, messages)
         {tool_results, next_state} = config.execute_tools.(tool_calls, state_with_snapshot, callback)
 
@@ -123,8 +117,6 @@ defmodule VibeAgents.LLM.Loop do
     end
   end
 
-  # Which model ACTUALLY answered, not which one was requested — a substituted fallback
-  # should never look like a weak-model problem to the caller or the diagnostics export.
   defp served_by(%Config{} = config, provider_state) do
     {provider, model} =
       case Map.get(provider_state, :selected) do
@@ -194,8 +186,6 @@ defmodule VibeAgents.LLM.Loop do
     end
   end
 
-  # Map the requested Claude tier onto the closest OpenAI one and carry the effort across,
-  # clamped to what the substitute supports. An explicit OPENAI_AGENT_FALLBACK_MODEL wins.
   defp preserve_effort_across_fallback(%Config{} = config) do
     model =
       case nonblank_environment("OPENAI_AGENT_FALLBACK_MODEL") do
@@ -536,10 +526,6 @@ defmodule VibeAgents.LLM.Loop do
 
   defp adaptive_thinking_model?(_model), do: false
 
-  # ── Anthropic prompt caching ────────────────────────────────────────────────
-  # A run re-sends system + tools + the whole transcript on every tool step (up
-  # to :max_steps), so one breakpoint on each turns those repeats into cache
-  # reads at 0.1x input. Three breakpoints, under Anthropic's limit of four.
 
   @cache_control %{"type" => "ephemeral"}
 
@@ -561,8 +547,6 @@ defmodule VibeAgents.LLM.Loop do
 
   defp cache_tools(tools), do: tools
 
-  # The breakpoint rides the newest message, so each step reads the previous
-  # step's transcript back instead of re-paying for it.
   defp cache_messages(messages) when is_list(messages) and messages != [] do
     if prompt_cache?(), do: mark_last(messages, &mark_message/1), else: messages
   end
@@ -576,8 +560,6 @@ defmodule VibeAgents.LLM.Loop do
     end
   end
 
-  # Messages carry string keys from the run state and atom keys when freshly
-  # built, so both are handled; anything else is left alone.
   defp mark_message(message) do
     {key, content} =
       cond do

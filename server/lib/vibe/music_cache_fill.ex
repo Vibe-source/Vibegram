@@ -1,23 +1,6 @@
 defmodule Vibe.MusicCacheFill do
   @moduledoc """
   Single-flight and failure backoff for music cache fills.
-
-  A cache fill is a `yt-dlp` download plus a Supabase upload: seconds of work, one
-  subprocess, and a fixed `-o` output path per `video_id`. Two things went wrong
-  without this:
-
-  * **Duplicate work.** The client calls `/api/music/info/:id` and then
-    `/api/music/stream/:id` a few seconds later. Both missed the cache, so both
-    spawned `yt-dlp` writing the *same* temp path — racing each other over one file.
-  * **No backoff.** Every failure re-ran the full download *and* a second `yt-dlp`
-    for the direct-URL fallback before returning 500 — about 4s of subprocess per
-    request. When the extractor is failing for an external reason (YouTube's bot
-    check, expired cookies) that repeats for every tap, forever.
-
-  Callers wait on the *same* fill instead of starting another, and a failed id
-  short-circuits for `@failure_backoff_ms` so a broken source costs one attempt, not
-  one per request. Nothing here caches success — that is the database's job, and a
-  row written by any fill is visible to every later request.
   """
   use GenServer
 
@@ -32,10 +15,6 @@ defmodule Vibe.MusicCacheFill do
 
   @doc """
   Run `fun` for `video_id`, at most once at a time.
-
-  Returns whatever `fun` returns. Concurrent callers for the same id share the
-  running fill's result. A recent failure is replayed immediately without running
-  `fun` at all.
   """
   @spec fill(String.t(), (-> term()), timeout()) :: term()
   def fill(video_id, fun, timeout \\ @default_timeout)
@@ -46,8 +25,6 @@ defmodule Vibe.MusicCacheFill do
       {:error, "Cache fill timed out"}
 
     :exit, {:noproc, _} ->
-      # Not started (tests, or a restart in flight) — never block the request path
-      # on this being alive; just do the work inline.
       fun.()
   end
 
@@ -99,7 +76,6 @@ defmodule Vibe.MusicCacheFill do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # -- internals ------------------------------------------------------------
 
   defp add_waiter(state, video_id, from) do
     entry = Map.fetch!(state.inflight, video_id)
@@ -124,8 +100,6 @@ defmodule Vibe.MusicCacheFill do
     end
   end
 
-  # Only failures are remembered. A success needs no note here — it has written the
-  # database row every later request reads first.
   defp record_outcome(failures, video_id, {:error, reason}) do
     Map.put(failures, video_id, {System.monotonic_time(:millisecond), reason})
   end

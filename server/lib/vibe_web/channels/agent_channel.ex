@@ -1,8 +1,6 @@
 defmodule VibeWeb.AgentChannel do
   @moduledoc """
   Phoenix Channel for real-time AI Agent communication.
-  Supports streaming responses with tool progress updates.
-  Now with database-backed conversation history for business use.
   """
 
   use Phoenix.Channel
@@ -19,7 +17,6 @@ defmodule VibeWeb.AgentChannel do
   Join the agent channel for a user.
   """
   def join("agent:" <> user_id, params, socket) do
-    # Verify user matches socket assigns
     if socket.assigns[:user_id] == user_id do
       conversation_id = params["conversation_id"]
 
@@ -230,9 +227,7 @@ defmodule VibeWeb.AgentChannel do
     {:noreply, socket}
   end
 
-  # Reasoning stream → a `kind: "thinking"` node. The iOS cell already renders these as
-  # "Thinking · N tokens" / "Thought for Ns" (VibeAgentKitMessageCell), and reads the summary
-  # text from `thinkingText`; the native agent simply never produced one before.
+  # Reasoning stream → a `kind:
   def handle_info({:push, "thinking", payload}, socket) do
     started_at = socket.assigns[:thinking_started_at] || System.monotonic_time(:millisecond)
     running? = to_string(payload[:status] || "running") != "done"
@@ -261,7 +256,6 @@ defmodule VibeWeb.AgentChannel do
       if running? do
         socket
       else
-        # Next reasoning block in the same turn gets its own row.
         socket
         |> assign(:thinking_index, (socket.assigns[:thinking_index] || 0) + 1)
         |> assign(:thinking_started_at, nil)
@@ -283,9 +277,6 @@ defmodule VibeWeb.AgentChannel do
   def handle_info({:push, "error", payload}, socket) do
     enriched = "error" |> AgenticEventShape.enrich(payload) |> with_turn_nodes(socket)
     push(socket, "error", enriched)
-    # A failed turn is not an empty turn. Tools may already have done real work (a resolved
-    # track, a written file) before the provider call failed; the old path pushed "error"
-    # and reset, so the card was dropped and the assistant row stayed content:"" forever.
     socket = persist_partial_turn(socket)
     {:noreply, reset_stream_ui_state(socket)}
   end
@@ -337,9 +328,6 @@ defmodule VibeWeb.AgentChannel do
       })
     end
 
-    # Update the last message in the database. progressNodes + toolDigest are what let a
-    # cold open re-render this turn's feed and what let the NEXT turn know what this turn
-    # actually did (see history_from_messages/1).
     AgentConversation.update_last_message(conv_id, %{
       "content" => final_text,
       "isStreaming" => false,
@@ -349,19 +337,16 @@ defmodule VibeWeb.AgentChannel do
       "toolDigest" => tool_digest(tool_results)
     })
 
-    # Reset streaming state
     socket = reset_stream_ui_state(socket)
 
     {:noreply, socket}
   end
 
   def handle_info({:update_history, history}, socket) do
-    # Keep only last 20 messages to manage token usage
     trimmed = Enum.take(history, -20)
     {:noreply, assign(socket, :conversation_history, trimmed)}
   end
 
-  # Private helpers
 
   defp handle_message(text, params, model_selection, socket) do
     images = params["images"] || []
@@ -369,36 +354,29 @@ defmodule VibeWeb.AgentChannel do
     user_id = socket.assigns[:user_id]
     truncate_id = params["truncate_at_id"]
 
-    # Handle truncation if requested (for regeneration)
     if truncate_id && conversation_id do
       AgentConversation.truncate_history(conversation_id, user_id, truncate_id)
     end
 
-    # Get or create conversation
     {conv_id, history, turn_memory} =
       get_or_create_conversation(user_id, conversation_id, text)
 
-    # Store conversation ID in socket
     socket =
       socket
       |> assign(:active_conversation_id, conv_id)
       |> reset_stream_ui_state()
 
-    # Acknowledge receipt with conversation ID
     push(socket, "ack", %{status: "processing", conversation_id: conv_id})
 
-    # Add user message to database
     AgentConversation.add_message(conv_id, %{
       "role" => "user",
       "content" => text,
       "images" => images
     })
 
-    # Start async task for AI response
     channel_pid = self()
 
     Task.start(fn ->
-      # Create placeholder assistant message
       {:ok, _conv} =
         AgentConversation.add_message(conv_id, %{
           "role" => "assistant",
@@ -413,17 +391,12 @@ defmodule VibeWeb.AgentChannel do
              turn_memory: turn_memory,
              images: images,
              user_id: user_id,
-             # The DM socket IS the authenticated owner. Without this every owner-scoped
-             # lookup (list_my_agents, agent config, connected apps) failed with
-             # "Owner lookup is required" — the user asked "do I have any agent?" and the
-             # assistant could only apologise.
              requester_user_id: user_id,
              model_provider: model_selection.provider,
              model_id: model_selection.model_id,
              thinking_level: model_selection.thinking_level
            ) do
         {:ok, full_response, runtime_state} ->
-          # Update the assistant message in database
           send(channel_pid, {:finalize_message, conv_id, full_response})
 
           send(
@@ -437,7 +410,6 @@ defmodule VibeWeb.AgentChannel do
           )
 
         {:ok, full_response} ->
-          # Update the assistant message in database
           send(channel_pid, {:finalize_message, conv_id, full_response})
           send(channel_pid, {:push, "done", %{success: true, conversation_id: conv_id}})
 
@@ -451,10 +423,8 @@ defmodule VibeWeb.AgentChannel do
   end
 
   defp get_or_create_conversation(user_id, nil, first_message) do
-    # Create new conversation with placeholder title
     {:ok, conv} = AgentConversation.create(user_id, "New Chat")
 
-    # Generate title asynchronously using AI
     Task.start(fn -> generate_title_async(conv.id, first_message) end)
 
     {conv.id, [], []}
@@ -463,7 +433,6 @@ defmodule VibeWeb.AgentChannel do
   defp get_or_create_conversation(user_id, conv_id, _first_message) do
     case AgentConversation.get_for_user(conv_id, user_id) do
       nil ->
-        # Conversation not found, create new
         {:ok, conv} = AgentConversation.create(user_id, "New Chat")
         {conv.id, [], []}
 
@@ -477,17 +446,9 @@ defmodule VibeWeb.AgentChannel do
     |> List.wrap()
     |> Enum.map(fn msg -> %{role: msg["role"], content: msg["content"] || ""} end)
     |> Enum.filter(fn msg -> msg.content != "" end)
-    # Keep last 20 for token limit
     |> Enum.take(-20)
   end
 
-  # History is role/content only, so every tool call and result used to be stripped: the
-  # agent could not know which track it had just sent, "send it again" became a fresh blind
-  # search, and the only thing left in context was its own filler line — which it then
-  # copied verbatim, turn after turn. The missing memory now rides in the SYSTEM prompt as a
-  # compact digest of what each assistant turn actually produced (in message content the
-  # model copied the digest format into its visible reply). Derived from stored toolResults,
-  # so it also works on conversations recorded before this change.
   defp turn_memory_from_messages(messages) do
     messages
     |> List.wrap()
@@ -498,10 +459,6 @@ defmodule VibeWeb.AgentChannel do
   end
 
   @doc false
-  # One line per tool call: what ran and what it produced. Short on purpose — this rides in
-  # every subsequent request. Runs through the same music selection as the cards, so memory
-  # records what the user actually RECEIVED, not every candidate the agent looked at (that
-  # is how "again" could otherwise resend a track the agent had already rejected).
   def tool_digest(tool_results) do
     tool_results
     |> List.wrap()
@@ -586,7 +543,6 @@ defmodule VibeWeb.AgentChannel do
     end)
   end
 
-  # A step still marked "running" when the turn ends never completed; do not seal it as done.
   defp seal_status("running"), do: "done"
   defp seal_status(nil), do: "done"
   defp seal_status(status), do: to_string(status)
@@ -738,13 +694,6 @@ defmodule VibeWeb.AgentChannel do
     |> assign(:thinking_started_at, nil)
   end
 
-  # ── Turn node container ────────────────────────────────────────────────────────
-  #
-  # The client used to receive ONE node per event and had to re-derive the feed with
-  # heuristics (match-a-still-running-step, "_send" suffixes), so two identical requests
-  # produced different note lists and nothing could be rebuilt after a relaunch. The server
-  # now owns the ordered list — narration text nodes interleaved with tool nodes, in stream
-  # order — and ships the whole container on every push, same contract as the bridge agents.
 
   @text_node_limit 4000
 
@@ -784,8 +733,6 @@ defmodule VibeWeb.AgentChannel do
 
   defp upsert_tool_node(socket, _node), do: socket
 
-  # Salvage whatever a failed turn produced: partial text, the steps it ran, and any media a
-  # completed tool already resolved.
   defp persist_partial_turn(socket) do
     conv_id = socket.assigns[:active_conversation_id]
     tool_results = socket.assigns[:tool_results] || []
@@ -844,7 +791,6 @@ defmodule VibeWeb.AgentChannel do
     assign(socket, :pending_agent_cards, [])
   end
 
-  # Generate a short, descriptive title using AI
   defp generate_title_async(conv_id, message) do
     prompt = """
     Generate a very short title (3-5 words max) for a conversation that starts with this message:
@@ -870,7 +816,6 @@ defmodule VibeWeb.AgentChannel do
         AgentConversation.update_title(conv_id, clean_title)
         Logger.info("Generated title for #{conv_id}: #{clean_title}")
 
-        # Broadcast title update to client
         VibeWeb.Endpoint.broadcast("agent:*", "title_updated", %{
           conversation_id: conv_id,
           title: clean_title
@@ -878,7 +823,6 @@ defmodule VibeWeb.AgentChannel do
 
       {:error, reason} ->
         Logger.warn("Failed to generate title: #{inspect(reason)}")
-        # Fall back to first 30 chars
         fallback = String.slice(message, 0..30)
         AgentConversation.update_title(conv_id, fallback)
     end

@@ -4,10 +4,9 @@
 // CLI driver for sandbox-gateway's browser routes (spec docs/agent-platform-v1.md §3.6).
 // Usage: node browser.js '<json request>' — prints exactly one JSON line to stdout.
 const { spawn } = require('child_process');
-const dns = require('dns').promises;
 const fs = require('fs');
-const net = require('net');
 const { chromium } = require('playwright-core');
+const { assertSafeUrl } = require('./safe-url');
 
 const CDP_PORT = 9222;
 const CDP_URL = `http://127.0.0.1:${CDP_PORT}`;
@@ -20,56 +19,6 @@ const ACTION_TIMEOUT_MS = 10000;
 const LAUNCH_WAIT_MS = 15000;
 const DISPLAY = process.env.DISPLAY || ':99';
 const XVFB_SCREEN = process.env.XVFB_SCREEN || '1280x800x24';
-
-// [network, prefix bits] — SSRF guard for navigate/click-driven navigation.
-const BLOCKED_V4_RANGES = [
-  ['127.0.0.0', 8],
-  ['10.0.0.0', 8],
-  ['172.16.0.0', 12],
-  ['192.168.0.0', 16],
-  ['169.254.0.0', 16],
-];
-
-function ipToInt(ip) {
-  const parts = ip.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)) return null;
-  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
-}
-
-function isBlockedV4(ip) {
-  const value = ipToInt(ip);
-  if (value === null) return false;
-  return BLOCKED_V4_RANGES.some(([base, bits]) => {
-    const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
-    return (value & mask) === (ipToInt(base) & mask);
-  });
-}
-
-// Resolves the hostname and blocks private/link-local targets; a DNS failure is not a security
-// block (the container's egress proxy is the real perimeter — see deploy/egress-proxy).
-async function assertSafeUrl(rawUrl) {
-  let url;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    throw new Error('invalid url');
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`blocked scheme: ${url.protocol}`);
-  }
-  const host = url.hostname;
-  if (net.isIP(host) === 4) {
-    if (isBlockedV4(host)) throw new Error(`blocked host: ${host}`);
-    return url;
-  }
-  try {
-    const { address } = await dns.lookup(host, { family: 4 });
-    if (isBlockedV4(address)) throw new Error(`blocked host: ${host} resolves to ${address}`);
-  } catch (e) {
-    if (e && /^blocked host/.test(e.message)) throw e;
-  }
-  return url;
-}
 
 function cdpReachable() {
   return fetch(`${CDP_URL}/json/version`).then((r) => r.ok).catch(() => false);
@@ -141,8 +90,23 @@ async function ensureBrowser() {
   return chromium.connectOverCDP(CDP_URL);
 }
 
+// Chromium follows redirects itself, so goto() only ever validates the first URL: every
+// navigation request, redirect hops included, is re-checked here before it leaves.
+async function guardNavigation(context) {
+  await context.route('**/*', async (route, request) => {
+    if (!request.isNavigationRequest()) return route.continue();
+    try {
+      await assertSafeUrl(request.url());
+      await route.continue();
+    } catch {
+      await route.abort('blockedbyclient');
+    }
+  });
+}
+
 async function getPage(browser) {
   const context = browser.contexts()[0] || (await browser.newContext());
+  await guardNavigation(context);
   return context.pages()[0] || context.newPage();
 }
 

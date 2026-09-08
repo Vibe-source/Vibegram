@@ -1,12 +1,7 @@
 defmodule Vibe.AgentAdminModeTest do
   @moduledoc """
-  A custom agent's own runtime (Vibe.AI.StandaloneAgent) answers messages from ANYONE it can
-  be DMed or added to a channel by. These cover the owner-vs-everyone-else split added to stop
-  owner-only tools/config leaking into a conversation with someone who isn't the owner:
-
-    * Chat.effective_agent_policy/3 — the authorization resolver
-    * Vibe.AI.Agent tool gating (admin-only tools disappear entirely outside admin_mode)
-    * Vibe.AI.PromptVariables — a variable flagged "secret" never renders outside admin_mode
+  A custom agent's own runtime (Vibe.AI.StandaloneAgent) answers messages from ANYONE it can be
+  DMed or added to a channel by.
   """
 
   use ExUnit.Case, async: false
@@ -58,9 +53,6 @@ defmodule Vibe.AgentAdminModeTest do
                Chat.effective_agent_policy(chat_id, agent, other_owner.id)
     end
 
-    # رگرسیون: شاخهٔ DM کلیدهای `permissions`/`trigger_config` را برنمی‌گرداند و
-    # StandaloneAgent با `policy.permissions` می‌خواند — دسترسیِ نقطه‌ای روی مپِ
-    # بدون آن کلید KeyError می‌انداخت و هر پیامِ DM به ایجنت بی‌پاسخ می‌ماند.
     test "DM policy carries the same keys as the channel policy", %{owner: owner} do
       agent = insert_agent(owner, display_name: "Helper")
       {:ok, chat_id, _status} = Chat.ensure_dm_chat(owner.id, agent.agent_user_id)
@@ -71,7 +63,6 @@ defmodule Vibe.AgentAdminModeTest do
         assert Map.has_key?(policy, key), "policy is missing #{inspect(key)}"
       end
 
-      # همان دسترسی‌ای که در عمل می‌ترکید.
       assert policy.permissions == %{}
     end
   end

@@ -3,8 +3,6 @@ defmodule Vibe.Accounts.UserBlock do
   import Ecto.Changeset
 
   schema "user_blocks" do
-    # Both columns are uuid in the DB; without :type they default to :id and
-    # every query casts a uuid to an integer.
     belongs_to :user, Vibe.Accounts.User, type: :binary_id
     belongs_to :blocked_user, Vibe.Accounts.User, type: :binary_id
 

@@ -1,8 +1,7 @@
 defmodule Vibe.Telemetry.Metrics do
   @moduledoc """
-  Telemetry.Metrics definitions scraped by TelemetryMetricsPrometheus.Core:
-  Phoenix endpoint duration, repo query time, VM memory/run-queue, and the
-  rate-limiter's blocked-request counter.
+  Telemetry.Metrics definitions scraped by TelemetryMetricsPrometheus.Core: Phoenix endpoint
+  duration.
   """
   import Telemetry.Metrics
 

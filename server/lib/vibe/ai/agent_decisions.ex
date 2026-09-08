@@ -1,10 +1,6 @@
 defmodule Vibe.AI.AgentDecisions do
   @moduledoc """
   Sender-declared decision sets on agent events.
-
-  Callers post an `actions` array on an inbound event. Tokens are server-generated
-  and stored only as SHA-256 hashes. Callbacks always go to the agent owner's
-  configured `callback_url` — never a URL from the event payload.
   """
 
   import Ecto.Query, warn: false
@@ -39,9 +35,6 @@ defmodule Vibe.AI.AgentDecisions do
 
   @doc """
   Parse and validate a sender-declared action set from event params.
-
-  Returns `{:ok, nil}` when actions are absent/empty (additive, no behaviour change),
-  `{:ok, declaration}` when valid, or `{:error, reason}` when present but invalid.
   """
   def normalize_declaration(params) when is_map(params) do
     raw_actions = params["actions"] || params[:actions]
@@ -81,9 +74,6 @@ defmodule Vibe.AI.AgentDecisions do
 
   @doc """
   Build a structured service-message node for message.metadata.
-
-  Includes a server-composed `text` fallback for older clients, plus `parts`
-  so clients can localise later without parsing body prose.
   """
   def service_node(attrs) when is_map(attrs) do
     kind = Map.get(attrs, :kind) || Map.get(attrs, "kind") || "custom"
@@ -142,7 +132,6 @@ defmodule Vibe.AI.AgentDecisions do
     })
   end
 
-  # ── Create declared decision ───────────────────────────────────────────────
 
   def create_declared_decision(agent, thread, event, normalized, declaration, policy) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -151,7 +140,6 @@ defmodule Vibe.AI.AgentDecisions do
     title = normalized.title || normalized.event_type || "Decision required"
     detail = normalized.text
 
-    # Generate tokens before insert so plaintext can ride the message once.
     prepared =
       declaration.actions
       |> Enum.with_index()
@@ -251,14 +239,20 @@ defmodule Vibe.AI.AgentDecisions do
   plumbing as `create_declared_decision/6`, but no thread/event to attach to.
   """
   def create_runtime_decision(agent, chat_id, params) when is_map(params) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
     run_id = params["runId"] || params[:runId]
     decision_id = params["decisionId"] || params[:decisionId]
     kind = params["kind"] || params[:kind] || "approval"
-    title = params["title"] || params[:title] || "Decision required"
-    detail = params["detail"] || params[:detail]
+    capability = params["capability"] || params[:capability]
+    scope = params["scope"] || params[:scope]
+    title = params["title"] || params[:title] || default_decision_title(kind, capability)
+    detail = params["detail"] || params[:detail] || params["reason"] || params[:reason]
     risk = params["risk"] || params[:risk]
-    raw_actions = params["actions"] || params[:actions] || []
+
+    raw_actions =
+      case params["actions"] || params[:actions] || [] do
+        [] -> default_decision_actions(kind)
+        actions -> actions
+      end
 
     with {:ok, action_mode} <- normalize_action_mode(params["actionMode"] || params[:actionMode]),
          {:ok, expires_at} <- normalize_expires_at(params["expiresAt"] || params[:expiresAt]),
@@ -282,6 +276,8 @@ defmodule Vibe.AI.AgentDecisions do
             "decisionId" => decision_id,
             "kind" => kind,
             "risk" => risk,
+            "capability" => capability,
+            "scope" => scope,
             "tool" => params["tool"] || params[:tool]
           },
           rationale: "Runtime decision request for run #{run_id}",
@@ -331,6 +327,8 @@ defmodule Vibe.AI.AgentDecisions do
             "actions" => client_actions,
             "chosen" => nil,
             "risk" => risk,
+            "capability" => capability,
+            "scope" => scope,
             "tool" => params["tool"] || params[:tool]
           }
         })
@@ -377,16 +375,24 @@ defmodule Vibe.AI.AgentDecisions do
 
   def runtime_decision_run_id(_decision_id), do: nil
 
-  # ── Respond ────────────────────────────────────────────────────────────────
+  @doc "`%{taskId:, messageId:}` of the task already created for `decision_id`, or nil."
+  def runtime_decision_refs(decision_id) when is_binary(decision_id) and decision_id != "" do
+    Repo.one(
+      from(t in AgentApprovalTask,
+        where:
+          t.source == "runtime" and
+            fragment("?->>'decisionId' = ?", t.requested_action, ^decision_id),
+        select: %{taskId: t.id, messageId: t.message_id},
+        limit: 1
+      )
+    )
+  end
+
+  def runtime_decision_refs(_decision_id), do: nil
+
 
   @doc """
   Claim a decision action by its opaque token.
-
-  Authorization: the user must be a non-agent participant of the task's chat
-  (same entitlement surface as other chat-scoped agent interactions).
-
-  Race safety: uses conditional `UPDATE ... WHERE status = 'pending'` so
-  concurrent responders produce exactly one winner in single mode.
   """
   def respond(user_id, token) when is_binary(user_id) and is_binary(token) do
     token = String.trim(token)
@@ -474,7 +480,6 @@ defmodule Vibe.AI.AgentDecisions do
     end)
   end
 
-  # ── Internals ──────────────────────────────────────────────────────────────
 
   defp normalize_actions(raw_actions) do
     raw_actions
@@ -509,7 +514,6 @@ defmodule Vibe.AI.AgentDecisions do
     style = raw["style"] || raw[:style] || "secondary"
     confirm = raw["confirm"] || raw[:confirm]
 
-    # Ignore any caller-supplied callback URL / token fields — never trust them.
     _ = raw["callbackUrl"] || raw["callback_url"] || raw["token"] || raw["url"]
 
     cond do
@@ -595,6 +599,22 @@ defmodule Vibe.AI.AgentDecisions do
   defp hash_token(token) when is_binary(token) do
     :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
   end
+
+  defp default_decision_title("permission", capability) when is_binary(capability) and capability != "" do
+    "Allow access to #{capability}?"
+  end
+
+  defp default_decision_title(_kind, _capability), do: "Decision required"
+
+  defp default_decision_actions("permission") do
+    [
+      %{"id" => "allow_once", "label" => "Allow once", "style" => "primary"},
+      %{"id" => "allow_run", "label" => "Allow for this run", "style" => "primary"},
+      %{"id" => "deny", "label" => "Deny", "style" => "destructive"}
+    ]
+  end
+
+  defp default_decision_actions(_kind), do: []
 
   defp decision_pending_parts(title, detail) do
     parts = [%{"type" => "plain", "value" => title}]
@@ -821,7 +841,6 @@ defmodule Vibe.AI.AgentDecisions do
     end
   end
 
-  # Runtime decisions resolve into the isolated run, not an owner-configured webhook.
   defp maybe_dispatch_callback(%{
          task: %{requested_action: %{"actionType" => "runtime_decision"}} = task,
          action: action,
@@ -856,7 +875,6 @@ defmodule Vibe.AI.AgentDecisions do
     })
   end
 
-  # "Always allow" is a standing rule on the agent, not just a grant for the rest of this run.
   defp persist_always_allow(%{agent_id: agent_id, requested_action: requested}) do
     tool = requested["tool"]
 
@@ -882,9 +900,6 @@ defmodule Vibe.AI.AgentDecisions do
     event = task.event_id && Repo.get(AgentEvent, task.event_id)
     thread = task.thread_id && Repo.get(AgentEventThread, task.thread_id)
 
-    # Echo the original event's payload so any integration can act without a
-    # second lookup. This is intentionally generic (not Leorre-shaped): claim
-    # ids, order refs, runbook keys all ride through as the sender declared them.
     event_payload =
       case event do
         %AgentEvent{payload: payload} when is_map(payload) -> payload
@@ -914,7 +929,6 @@ defmodule Vibe.AI.AgentDecisions do
       "chatId" => task.chat_id
     }
 
-    # Unique per claim so multi-mode callbacks do not collide on event_id.
     invocation_event_id =
       "decision:#{task.id}:#{action.action_id}:#{System.unique_integer([:positive])}"
 
@@ -951,9 +965,6 @@ defmodule Vibe.AI.AgentDecisions do
       fallback = "#{action.label} · #{actor_name}"
       decision = settled_decision_payload(task, action, actor, mode)
 
-      # Single mode settles fully (no live buttons). Multi keeps remaining
-      # unused tokens from the existing message metadata so independent
-      # actions can still fire without re-emitting secrets from the DB.
       {status, text, parts} =
         if mode == "single" or decision["actions"] == [] do
           {"decided", fallback,
@@ -1037,8 +1048,6 @@ defmodule Vibe.AI.AgentDecisions do
   defp settled_decision_payload(task, action, actor, mode) do
     remaining =
       if mode == "multi" do
-        # Tokens live only on the wire (message metadata), never in the DB.
-        # Keep still-pending actions by filtering the previous client payload.
         previous_actions = existing_client_actions(task)
 
         previous_actions
@@ -1046,7 +1055,6 @@ defmodule Vibe.AI.AgentDecisions do
           (item["id"] || item[:id]) == action.action_id
         end)
       else
-        # Single mode: a decided set must never leave live buttons for anyone.
         []
       end
 

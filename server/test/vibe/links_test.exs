@@ -43,7 +43,6 @@ defmodule Vibe.LinksTest do
       assert Links.handle_url("newsroom") == "https://vibe.me/newsroom"
 
       System.delete_env("VIBE_SHARE_BASE_URL")
-      # Falls back to the host that actually serves these paths today.
       assert Links.share_base_url() == "https://api.vibegram.io"
     end
 
@@ -132,7 +131,6 @@ defmodule Vibe.LinksTest do
       assert channel.shareLink == "/r/launch-room"
       assert channel.shareUrl == "https://vibegram.io/r/launch-room"
 
-      # And again when the room is re-read without create-time opts.
       reread = Chat.canonical_room_summary(Chat.get_chat(channel.chatId), role: "owner")
       assert reread.shareUrl == "https://vibegram.io/r/launch-room"
     end

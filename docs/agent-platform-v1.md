@@ -74,7 +74,7 @@ x-vibe-signature: v1=<hex hmac-sha256>
 Signing string (exact bytes, `\n` separated):
 
 ```
-"v1" \n METHOD \n path_with_query \n timestamp \n nonce \n sha256_hex(body)
+"v1" \n service \n METHOD \n path_with_query \n timestamp \n nonce \n sha256_hex(body)
 ```
 
 Key: `VIBE_INTERNAL_HMAC_KEY` (raw string, ≥ 32 bytes, same value on both services).

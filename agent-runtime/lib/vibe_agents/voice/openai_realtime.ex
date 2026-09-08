@@ -52,14 +52,11 @@ defmodule VibeAgents.Voice.OpenAIRealtime do
   @impl VibeAgents.Voice.Provider
   def stop(pid), do: GenServer.stop(pid, :normal)
 
-  # --- GenServer ---
 
   @impl true
   def init(opts) do
     owner = Keyword.fetch!(opts, :owner)
     agent_profile = Keyword.get(opts, :agent_profile, %{})
-    # Voice has no RunRequest.capabilities signal; trust agentProfile.enabledTools as-is
-    # rather than stripping computer/browser tools Policy/Catalog would otherwise gate.
     capabilities = Keyword.get(opts, :capabilities, %{"computer" => true, "browser" => true})
     api_key = Application.get_env(:vibe_agents, :openai_api_key)
 
@@ -75,8 +72,6 @@ defmodule VibeAgents.Voice.OpenAIRealtime do
         tools: realtime_tools(agent_profile, capabilities)
       }
 
-      # Connect off the init path so a slow TLS handshake to OpenAI never blocks the
-      # channel join; a connect failure surfaces as {:error, _} then {:done} instead.
       {:ok, state, {:continue, :connect}}
     end
   end
@@ -153,8 +148,6 @@ defmodule VibeAgents.Voice.OpenAIRealtime do
   end
 
   def handle_cast(:commit, state) do
-    # Explicit end-of-utterance: flush the buffer and force a reply. server_vad still
-    # drives mid-call turns on its own; this covers push-to-talk with no trailing silence.
     state =
       state
       |> send_event(%{"type" => "input_audio_buffer.commit"})
@@ -213,7 +206,6 @@ defmodule VibeAgents.Voice.OpenAIRealtime do
     :ok
   end
 
-  # --- transport responses ---
 
   defp handle_response({:status, ref, status}, %{ref: ref} = state), do: %{state | status: status}
 
@@ -263,7 +255,6 @@ defmodule VibeAgents.Voice.OpenAIRealtime do
 
   defp handle_frame(_frame, state), do: state
 
-  # --- Realtime server events -> {:voice_provider, event} (docs/agent-voice-v1.md §5) ---
 
   defp handle_event(%{"type" => "session.created"}, state) do
     send_event(state, session_update_event(state))
@@ -371,7 +362,6 @@ defmodule VibeAgents.Voice.OpenAIRealtime do
     end
   end
 
-  # --- outbound wire helpers ---
 
   defp send_event(state, event), do: send_frame(state, {:text, Jason.encode!(event)})
 
@@ -395,7 +385,6 @@ defmodule VibeAgents.Voice.OpenAIRealtime do
 
   defp notify(owner, event), do: send(owner, {:voice_provider, event})
 
-  # --- session.update payload; see docs/agent-voice-v1.md §5 for the schema note ---
 
   defp session_update_event(state) do
     %{
@@ -404,7 +393,6 @@ defmodule VibeAgents.Voice.OpenAIRealtime do
         "type" => "realtime",
         "model" => state.model,
         "instructions" => state.instructions,
-        # GA Realtime accepts ["audio"] or ["text"], never both; audio still yields transcripts.
         "output_modalities" => ["audio"],
         "audio" => %{
           "input" => %{

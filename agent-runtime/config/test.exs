@@ -15,9 +15,9 @@ config :vibe_agents, VibeAgentsWeb.Endpoint,
     "test_secret_key_base_test_secret_key_base_test_secret_key_base_agents",
   server: false
 
-# Deterministic auth/broker tests: fixed key, no network nonces to race.
+# Deterministic auth/broker tests:
 config :vibe_agents, :internal_hmac_key, "test-internal-hmac-key-at-least-32-bytes-long!!"
-# No background pollers under the sandboxed Repo; tests call Outbox.flush_now/0.
+# No background pollers under the sandboxed Repo.
 config :vibe_agents, :background_jobs, false
 config :vibe_agents, :llm_module, VibeAgents.LLM.FakeLoop
 config :vibe_agents, :core_http, VibeAgents.Test.FakeCoreHTTP

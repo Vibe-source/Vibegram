@@ -18,7 +18,6 @@ defmodule VibeWeb.AgentController do
     user_id = conn.assigns.current_user.id
     chat_id = params["chatId"] || params["chat_id"]
 
-    # Set up SSE streaming
     conn = conn
       |> put_resp_content_type("text/event-stream")
       |> put_resp_header("cache-control", "no-cache")
@@ -38,9 +37,6 @@ defmodule VibeWeb.AgentController do
       %{type: :subagent} = event ->
         send_sse_event(conn, "subagent", Map.delete(event, :type))
 
-      # Catch-all: the loop can emit :agent_cards / :state / :ui_request / :review_ready
-      # (reachable via delegate_to_subagent → AgentBuilder). An unmatched clause raised
-      # FunctionClauseError *inside* the runtime and took the whole turn down.
       %{type: type} = event ->
         send_sse_event(conn, to_string(type), Map.delete(event, :type))
 
@@ -79,7 +75,6 @@ defmodule VibeWeb.AgentController do
     user_id = conn.assigns.current_user.id
     chat_id = params["chatId"] || params["chat_id"]
 
-    # Collect all chunks using Elixir Agent
     {:ok, collected} = Agent.start_link(fn -> "" end)
 
     callback = fn

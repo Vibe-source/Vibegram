@@ -1,4 +1,3 @@
-//! Shared gateway state: docker client, config, and the in-memory sandbox tracking map.
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -17,7 +16,7 @@ pub struct SandboxEntry {
     pub ttl_seconds: Option<u64>,
 }
 
-/// Ring size per sandbox. The log is a live view for the owner, not an audit trail.
+/// Ring size per sandbox.
 const EXEC_LOG_CAP: usize = 60;
 
 pub struct AppState {
@@ -64,7 +63,6 @@ impl AppState {
         self.sandboxes.lock().unwrap().len()
     }
 
-    /// Records one shell run and hands back the seq it was filed under.
     pub fn record_exec(&self, id: &str, mut entry: ExecLogEntry) -> u64 {
         let seq = self.exec_seq.fetch_add(1, Ordering::Relaxed) + 1;
         entry.seq = seq;
@@ -77,7 +75,6 @@ impl AppState {
         seq
     }
 
-    /// Entries newer than `since`, oldest first, capped at `limit`.
     pub fn exec_log(&self, id: &str, since: u64, limit: usize) -> Vec<ExecLogEntry> {
         let log = self.exec_log.lock().unwrap();
         let Some(ring) = log.get(id) else {
@@ -109,7 +106,6 @@ mod tests {
     #[test]
     fn upsert_get_remove_roundtrip() {
         let cfg = crate::config::test_config();
-        // HTTP transport builds synchronously (no socket probe), so this needs no live daemon.
         let docker = Docker::connect_with_http_defaults().unwrap();
         let state = AppState::new(cfg, docker);
         assert_eq!(state.len(), 0);

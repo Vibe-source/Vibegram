@@ -7,7 +7,8 @@
 #   export VIBE_LOGS_TOKEN=<grafana service-account token>   # mint-logs-token.sh
 #   deploy/scripts/vibe-logs.sh core -f
 #   deploy/scripts/vibe-logs.sh core -n 500 -s 2h -g 'error|timeout'
-#   deploy/scripts/vibe-logs.sh --list
+#   deploy/scripts/vibe-logs.sh -u cloudflared -s 30m   # host unit, not a container
+#   deploy/scripts/vibe-logs.sh --list                  # containers, then host units
 set -euo pipefail
 
 URL="${VIBE_LOGS_URL:?VIBE_LOGS_URL not set}"
@@ -15,13 +16,14 @@ TOKEN="${VIBE_LOGS_TOKEN:?VIBE_LOGS_TOKEN not set}"
 PROXY="${URL%/}/api/datasources/proxy/uid/vibe-loki/loki/api/v1"
 command -v jq >/dev/null || { echo "vibe-logs: needs jq" >&2; exit 1; }
 
-SERVICE="" FOLLOW=0 LIMIT=200 SINCE="1h" PATTERN="" LIST=0
+SERVICE="" FOLLOW=0 LIMIT=200 SINCE="1h" PATTERN="" LIST=0 UNIT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -f|--follow) FOLLOW=1 ;;
     -n) LIMIT="$2"; shift ;;
     -s|--since) SINCE="$2"; shift ;;
     -g|--grep) PATTERN="$2"; shift ;;
+    -u|--unit) UNIT="$2"; shift ;;
     --list) LIST=1 ;;
     -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
     -*) echo "vibe-logs: unknown flag $1" >&2; exit 1 ;;
@@ -33,12 +35,18 @@ done
 api() { curl -sS --fail-with-body -H "Authorization: Bearer ${TOKEN}" "$@"; }
 
 if [ "$LIST" -eq 1 ]; then
-  api --get "${PROXY}/label/container/values" | jq -r '.data[]?' | sort
+  echo "containers (pass as the bare argument):"
+  api --get "${PROXY}/label/container/values" | jq -r '.data[]? | "  " + .' | sort
+  echo "host units (pass with -u):"
+  api --get "${PROXY}/label/unit/values" | jq -r '.data[]? | "  " + .' | sort
   exit 0
 fi
 
 selector='{job="journal"'
-[ -n "$SERVICE" ] && selector="${selector}, container=\"${SERVICE}\""
+# compose names containers deploy_<service>_1; accept the short service name too.
+[ -n "$SERVICE" ] && selector="${selector}, container=~\"(deploy_)?${SERVICE}(_[0-9]+)?\""
+# journald labels host units with the .service suffix; accept the bare name too.
+[ -n "$UNIT" ] && selector="${selector}, unit=\"${UNIT%.service}.service\""
 selector="${selector}}"
 [ -n "$PATTERN" ] && selector="${selector} |~ \`(?i)${PATTERN}\`"
 

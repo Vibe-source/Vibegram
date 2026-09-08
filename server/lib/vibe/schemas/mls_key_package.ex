@@ -1,11 +1,6 @@
 defmodule Vibe.Schemas.MlsKeyPackage do
   @moduledoc """
   A single MLS KeyPackage published by one of a user's devices.
-
-  Each row holds a *one-time* init key. MLS adds a member to a group by
-  consuming their KeyPackage, so a row must never be handed out by `claim`
-  more than once — see `Vibe.Mls.claim_key_package/1` for the atomic update
-  that guarantees that.
   """
 
   use Ecto.Schema

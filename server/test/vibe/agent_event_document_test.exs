@@ -1,9 +1,7 @@
 defmodule Vibe.AgentEventDocumentTest do
   @moduledoc """
-  A document arriving from an event has to reach the chat as ONE cell: the file
-  with the event summary as its caption. The client renders a caption inside the
-  document bubble, so anything the server splits into two messages shows up as a
-  text bubble followed by an unlabelled file — which is what this guards against.
+  A document arriving from an event has to reach the chat as ONE cell: the file with the event
+  summary as its caption.
   """
   use ExUnit.Case, async: true
 
@@ -67,7 +65,6 @@ defmodule Vibe.AgentEventDocumentTest do
       assert AgentEventRuntime.attachment_file_name(%{}) == nil
     end
 
-    # `/print/container/2` تولید می‌کرد سلولی با نامِ «2».
     test "an extensionless path is not a file name" do
       assert AgentEventRuntime.attachment_file_name(%{
                "url" => "https://example.test/print/container/2?exp=1&sig=a"

@@ -35,10 +35,7 @@ defmodule VibeAgents.MixProject do
       {:plug_cowboy, "~> 2.5"},
       {:telemetry_metrics, "~> 0.6"},
       {:telemetry_poller, "~> 1.0"},
-      # Voice socket transport (owned by the voice worker); pulled in here so
-      # the dep is available the moment lib/vibe_agents/voice/** lands.
       {:mint_web_socket, "~> 1.0"},
-      # Shared contracts with the chat core (docs/agent-platform-v1.md).
       {:vibe_contracts, path: "../contracts"}
     ]
   end

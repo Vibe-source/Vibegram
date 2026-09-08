@@ -1,8 +1,7 @@
 defmodule Vibe.RateLimit.Backend do
   @moduledoc """
-  Behaviour for a rate-limit counter backend. `hit/3` records one request
-  against `key` and reports whether it is within `max` for the current
-  `window_ms`. See `Vibe.RateLimit.ETS` and `Vibe.RateLimit.Valkey`.
+  Behaviour for a rate-limit counter backend. `hit/3` records one request against `key` and
+  reports whether it is within `max` for the current `window_ms`.
   """
 
   @callback hit(key :: term(), max :: pos_integer(), window_ms :: pos_integer()) ::

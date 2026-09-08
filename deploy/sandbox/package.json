@@ -4,6 +4,9 @@
   "private": true,
   "description": "Playwright CDP driver invoked by sandbox-gateway inside the vibe-sandbox image",
   "main": "browser.js",
+  "scripts": {
+    "test": "node --test"
+  },
   "dependencies": {
     "playwright-core": "1.61.0"
   }

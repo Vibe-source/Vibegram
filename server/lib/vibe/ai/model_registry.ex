@@ -114,8 +114,6 @@ defmodule Vibe.AI.ModelRegistry do
 
   @doc """
   Thinking effort levels a model supports, or nil when the model is unknown here.
-
-  A single-level model (Haiku 4.5) does not support the adaptive-thinking request fields.
   """
   def thinking_levels(provider, model_id) when is_binary(provider) and is_binary(model_id) do
     case model_entry(String.trim(provider), String.trim(model_id)) do

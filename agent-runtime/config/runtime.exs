@@ -1,8 +1,6 @@
 import Config
 
-# Provider/service config is read here (not compile-time) so every env can override it
-# with plain env vars. Missing values degrade to a readable tool error, never a crash —
-# see VibeAgents.CoreClient / VibeAgents.Sandbox.
+# Provider/service config is read here (not compile-time) so every env can.
 
 config :vibe_agents, :core_internal_url, System.get_env("VIBE_CORE_INTERNAL_URL")
 config :vibe_agents, :anthropic_api_key, System.get_env("ANTHROPIC_API_KEY")
@@ -25,7 +23,7 @@ config :vibe_agents, :max_run_seconds, parse_int.("VIBE_AGENTS_MAX_RUN_SECONDS",
 config :vibe_agents, :max_run_tokens, parse_int.("VIBE_AGENTS_MAX_RUN_TOKENS", 400_000)
 config :vibe_agents, :max_tool_failures, parse_int.("VIBE_AGENTS_MAX_TOOL_FAILURES", 6)
 config :vibe_agents, :max_handoff_depth, parse_int.("VIBE_AGENTS_MAX_HANDOFF_DEPTH", 4)
-# Live run servers at once; excess runs stay `queued` and the Dispatcher drains them.
+# Live run servers at once.
 config :vibe_agents, :max_concurrent_runs, parse_int.("VIBE_AGENTS_MAX_CONCURRENT_RUNS", 8)
 
 config :vibe_agents, :voice_model, System.get_env("VIBE_VOICE_MODEL") || "gpt-realtime"
@@ -56,7 +54,6 @@ if config_env() == :prod do
     System.get_env("SECRET_KEY_BASE") ||
       raise "environment variable SECRET_KEY_BASE is missing"
 
-  # Ranch's per-listener default is 1024, and it queues past it instead of rejecting.
   ranch_max_connections = String.to_integer(System.get_env("RANCH_MAX_CONNECTIONS") || "16384")
 
   config :vibe_agents, VibeAgentsWeb.Endpoint,

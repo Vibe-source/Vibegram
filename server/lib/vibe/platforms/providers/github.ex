@@ -1,8 +1,6 @@
 defmodule Vibe.Platforms.Providers.GitHub do
   @moduledoc """
   GitHub OAuth connector for PR review/create/comment and issue workflows.
-
-  Tokens stay server-side; agents call actions through `Vibe.Platforms.invoke/4`.
   """
 
   @behaviour Vibe.Platforms.Provider
@@ -204,7 +202,6 @@ defmodule Vibe.Platforms.Providers.GitHub do
 
   @impl true
   def refresh_tokens(refresh_token) when is_binary(refresh_token) and refresh_token != "" do
-    # Classic OAuth Apps rarely issue refresh tokens; GitHub Apps user tokens may.
     body =
       Jason.encode!(%{
         "client_id" => client_id(),
@@ -472,7 +469,6 @@ defmodule Vibe.Platforms.Providers.GitHub do
 
   def invoke_action(_, _, _), do: {:error, :invalid_token}
 
-  ## HTTP helpers
 
   defp gh_get(token, path) do
     request =
@@ -638,12 +634,6 @@ defmodule Vibe.Platforms.Providers.GitHub do
 
   @doc """
   Public HTTPS base for OAuth callbacks and absolute API links.
-
-  Env priority (first present wins):
-  1. `VIBE_PUBLIC_BASE_URL`
-  2. `PUBLIC_BASE_URL` (Railway / legacy)
-  3. `PHX_HOST` (scheme added if missing)
-  4. `https://api.vibegram.io`
   """
   def public_base_url do
     base =

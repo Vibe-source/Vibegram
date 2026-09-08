@@ -11,10 +11,6 @@ defmodule Vibe.AI.Tools.Channel do
 
   @doc """
   Creates a group or channel owned by the requester.
-
-  Works from the built-in assistant DM too, where there is no attached agent: the
-  room is simply created with nothing attached unless the caller names an agent to
-  attach (`attach_agent`, an id or @username the requester owns).
   """
   def create_chat_space(input, agent_id, requester_user_id) when is_map(input) do
     with {:ok, owner_id} <- require_owner(requester_user_id),
@@ -39,10 +35,6 @@ defmodule Vibe.AI.Tools.Channel do
 
   @doc """
   Attaches an owned agent to an owned group or channel.
-
-  Defaults to the current agent (so `attach_current_agent_to_chat` behaviour is
-  unchanged) but accepts an explicit `agent` id/@username, which is the only way
-  this can work from the built-in assistant DM.
   """
   def attach_agent_to_chat(input, agent_id, requester_user_id) when is_map(input) do
     chat_id = normalize_string(input["chat_id"] || input["chatId"])
@@ -82,7 +74,6 @@ defmodule Vibe.AI.Tools.Channel do
     type = input["type"] || "text"
     media_url = input["media_url"]
 
-    # Verify user owns the channel
     case Chat.get_user_role(channel_id, user_id) do
       role when role in ["owner", "admin"] ->
         message_id = Ecto.UUID.generate()
@@ -110,13 +101,10 @@ defmodule Vibe.AI.Tools.Channel do
               "timestamp" => timestamp
             }
 
-            # Broadcast to channel subscribers
             VibeWeb.Endpoint.broadcast!("chat:#{channel_id}", "message", broadcast_payload)
 
-            # Built once and reused for every recipient's user-topic mirror.
             mirrored_message = Chat.mirrored_message_payload(broadcast_payload)
 
-            # Notify subscribers
             Chat.get_participant_ids(channel_id)
             |> Enum.each(fn pid ->
               if pid != user_id do
@@ -226,7 +214,6 @@ defmodule Vibe.AI.Tools.Channel do
   end
 
   defp notify_channel_participants(channel_id, sender_id, message_id, timestamp, message_payload) do
-    # Built once and reused for every recipient's user-topic mirror.
     mirrored_message = Chat.mirrored_message_payload(message_payload)
 
     Chat.get_participant_ids(channel_id)
@@ -253,7 +240,6 @@ defmodule Vibe.AI.Tools.Channel do
   def get_analytics(input, user_id) do
     channel_id = input["channel_id"]
 
-    # Verify user has access
     case Chat.get_user_role(channel_id, user_id) do
       role when role in ["owner", "admin"] ->
         analytics = Chat.get_channel_analytics(channel_id, user_id)
@@ -267,7 +253,6 @@ defmodule Vibe.AI.Tools.Channel do
   def schedule_post(input, user_id) do
     channel_id = input["channel_id"]
 
-    # Verify user owns the channel
     case Chat.get_user_role(channel_id, user_id) do
       role when role in ["owner", "admin"] ->
         scheduled_at =
@@ -396,9 +381,6 @@ defmodule Vibe.AI.Tools.Channel do
       }
 
       with {:ok, room} <- Chat.create_channel(requester_user_id, attrs) do
-        # `create_channel` attaches the agent with default policy. Only when the caller
-        # asked for specific tools/output modes (e.g. "handle media in this channel") do
-        # we re-attach to write that policy onto the assignment.
         maybe_apply_agent_policy(room, agent, requester_user_id, input)
         {:ok, room}
       end
@@ -439,14 +421,10 @@ defmodule Vibe.AI.Tools.Channel do
     |> maybe_put("permissions", input["permissions"])
   end
 
-  # "Topic" is how people describe a room's subject; it's the same field as description.
   defp room_description(input) do
     normalize_string(input["description"]) || normalize_string(input["topic"])
   end
 
-  # A public channel is worthless without a link, so derive the slug from the name when
-  # the caller didn't pick one. Taken slugs walk a short list of readable suffixes —
-  # never a random number.
   defp resolve_public_slug(input, name, access_type) do
     case normalize_string(input["public_slug"] || input["publicSlug"]) do
       explicit when is_binary(explicit) ->
@@ -495,8 +473,6 @@ defmodule Vibe.AI.Tools.Channel do
   defp attach_agent(_type, _chat_id, _agent, _requester_user_id, _input),
     do: {:error, :invalid_room_type}
 
-  # The room result the model sees. `share_url` is the absolute link a person can
-  # actually paste anywhere — always quote that one, never the relative path.
   defp room_result(room, agent, current_agent_id) do
     share_path = room[:shareLink] || room["shareLink"]
     share_url = room[:shareUrl] || room["shareUrl"] || Vibe.Links.room_url(share_path)
@@ -555,10 +531,6 @@ defmodule Vibe.AI.Tools.Channel do
   defp require_agent({:ok, nil}), do: {:error, :agent_required}
   defp require_agent(other), do: other
 
-  # Which agent (if any) should end up in the room:
-  #   * an explicitly named one wins (the only option in the built-in assistant DM),
-  #   * otherwise the current agent, unless the caller opted out,
-  #   * otherwise nothing — creating a plain room is a perfectly good outcome.
   defp resolve_attach_target(input, current_agent_id, owner_id) do
     explicit =
       normalize_string(

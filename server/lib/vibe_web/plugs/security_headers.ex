@@ -38,8 +38,6 @@ defmodule VibeWeb.Plugs.SecurityHeaders do
     end
   end
 
-  # Railway/most PaaS terminate TLS upstream, so conn.scheme is often :http even
-  # for a real HTTPS visitor — trust x-forwarded-proto as the second signal.
   defp https?(conn) do
     conn.scheme == :https or get_req_header(conn, "x-forwarded-proto") == ["https"]
   end

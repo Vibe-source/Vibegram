@@ -1,23 +1,6 @@
 defmodule VibeWeb.RelayChannel do
   @moduledoc """
   Phoenix Channel for the VibeNet relay network.
-
-  Handles:
-  - Relay node registration and signaling
-  - Peer discovery and connection brokering
-  - Public relay directory
-  - Data forwarding between peers and relays
-
-  Channel topics:
-  - "relay:<relay_id>"  — Relay node's signaling channel
-  - "relay:lookup"      — Find a relay by invite code
-  - "relay:directory"   — Browse public relays
-
-  Authorization:
-  - Relay role (host) joins may only claim an id owned by the socket user
-    (or a free id). Mutations require `role == "relay"`.
-  - Client role may join only if the relay is public, the caller is the owner,
-    or the join payload presents a matching invite credential.
   """
 
   use VibeWeb, :channel
@@ -26,7 +9,6 @@ defmodule VibeWeb.RelayChannel do
 
   @impl true
   def join("relay:directory", _payload, socket) do
-    # Anyone can browse the directory
     relays = RelayRegistry.list_public_relays()
     {:ok, %{relays: relays}, socket}
   end
@@ -63,7 +45,6 @@ defmodule VibeWeb.RelayChannel do
   end
 
   def join("relay:" <> relay_id, payload, socket) do
-    # A relay node registering itself (host / owner role)
     user_id = socket.assigns.user_id
     invite_code = payload["invite_code"] || payload["inviteCode"]
     invite_key = payload["invite_key"] || payload["inviteKey"]
@@ -117,8 +98,6 @@ defmodule VibeWeb.RelayChannel do
 
   @impl true
   def handle_in("peer_connect", %{"shared_secret" => shared_secret}, socket) do
-    # The legacy JS relay path must never leak the raw shared secret through the public relay directory.
-    # Packet bootstrap/tickets are the real data path now.
     _ = shared_secret
 
     broadcast_from!(socket, "peer_connect", %{
@@ -131,7 +110,6 @@ defmodule VibeWeb.RelayChannel do
   end
 
   def handle_in("peer_connect", payload, socket) do
-    # Fallback: forward as-is (still never log secrets)
     broadcast_from!(socket, "peer_connect", payload)
     {:noreply, socket}
   end
@@ -144,8 +122,6 @@ defmodule VibeWeb.RelayChannel do
   # ─── Data forwarding ─────────────────────────────────────────────
 
   def handle_in("peer_data", %{"peer_id" => peer_id, "data" => data}, socket) do
-    # Forward encrypted data between relay and client
-    # The server CANNOT read this data — it's just a message broker
     broadcast_from!(socket, "peer_data", %{
       peer_id: peer_id,
       data: data
@@ -155,7 +131,6 @@ defmodule VibeWeb.RelayChannel do
   end
 
   def handle_in("peer_data", %{"data" => data}, socket) do
-    # Client sending data (no peer_id — it goes to the relay)
     broadcast_from!(socket, "peer_data", %{
       peer_id: socket.assigns.user_id,
       data: data
@@ -276,7 +251,6 @@ defmodule VibeWeb.RelayChannel do
   def handle_in("mesh_fragment", payload, socket) do
     case Vibe.MeshAssembler.submit_fragment(payload) do
       {:ok, reconstructed_payload} ->
-        # Fragment set complete — deliver the reassembled message
         broadcast!(socket, "mesh_assembled", %{
           set_id: payload["set_id"],
           payload: Base.encode64(reconstructed_payload),
@@ -338,7 +312,6 @@ defmodule VibeWeb.RelayChannel do
       user_id = socket.assigns[:user_id]
 
       if relay_id do
-        # Only the owner removes the registry entry (as_user enforces ownership).
         case RelayRegistry.unregister_relay(relay_id, as_user: user_id) do
           :ok ->
             VibeWeb.Endpoint.broadcast!("relay:directory", "relay_removed", %{
@@ -407,13 +380,11 @@ defmodule VibeWeb.RelayChannel do
 
   defp credential_match?(stored, provided)
        when is_binary(stored) and is_binary(provided) and stored != "" and provided != "" do
-    # Constant-time compare; unequal lengths are a non-match without raising.
     byte_size(stored) == byte_size(provided) and Plug.Crypto.secure_compare(stored, provided)
   end
 
   defp credential_match?(_, _), do: false
 
-  # Simple region detection based on connection metadata
   defp detect_region(_socket) do
     "unknown"
   end

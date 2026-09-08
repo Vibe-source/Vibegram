@@ -1,7 +1,7 @@
 defmodule VibeContracts.ModelRates do
   @moduledoc "Cents-per-1,000-token rates per provider/model, shared by the core and the agent runtime."
 
-  # Cents per 1,000 tokens {input, output}. Placeholders — update with real billing.
+  # Cents per 1,000 tokens {input, output}.
   @rates %{
     {"anthropic", "claude-fable-5"} => {0.5, 2.5},
     {"anthropic", "claude-opus-4-8"} => {1.5, 7.5},

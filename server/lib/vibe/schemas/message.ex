@@ -11,7 +11,6 @@ defmodule Vibe.Chat.Message do
     field :metadata, :map, default: %{}
     field :status, :string, default: "sent"
     field :timestamp, :integer # Node uses ms timestamp
-    # Edit stamp in ms. Separate from :timestamp so an edit never reorders history.
     field :edited_at, :integer
 
     belongs_to :chat, Vibe.Chat.Room, type: :string # Chat IDs are strings in Node app

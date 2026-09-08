@@ -14,7 +14,7 @@ defmodule VibeWeb.GroupController do
     invalid_agent =
       Enum.find(member_ids, fn uid ->
         case Accounts.get_user(uid) do
-          %{is_agent: true} -> not addable_agent_user?(uid)
+          %{is_agent: true} -> not addable_agent_user?(uid, creator_id)
           _ -> false
         end
       end)
@@ -42,7 +42,7 @@ defmodule VibeWeb.GroupController do
         Enum.map(member_ids, fn uid ->
           case Accounts.get_user(uid) do
             %{is_agent: true} ->
-              if addable_agent_user?(uid) do
+              if addable_agent_user?(uid, requester_id) do
                 case Chat.add_member(chat_id, uid, "member", actor_id: requester_id) do
                   {:ok, _} -> %{userId: uid, added: true}
                   _ -> %{userId: uid, added: false}
@@ -65,8 +65,17 @@ defmodule VibeWeb.GroupController do
     end
   end
 
-  defp addable_agent_user?(uid) do
-    Agents.published_agent_user?(uid) or LocalAgentWorker.resolve_by_agent_user_id(uid) != nil
+  # Our own team (server-runtime workers) is private: only an allowlisted owner can
+  # add them to a group. Public agents stay addable by anyone.
+  defp addable_agent_user?(uid, requester_id) do
+    case LocalAgentWorker.resolve_by_agent_user_id(uid) do
+      nil ->
+        Agents.published_agent_user?(uid)
+
+      worker ->
+        not LocalAgentWorker.server_runtime?(worker) or
+          LocalAgentWorker.dispatch_allowed?(worker, requester_id)
+    end
   end
 
   defp ensure_local_agent_users(member_ids) when is_list(member_ids) do
@@ -91,7 +100,6 @@ defmodule VibeWeb.GroupController do
     end
   end
 
-  # PUT /group/:id — owner/admin edit of name / description / avatar.
   def update(conn, %{"id" => chat_id} = params) do
     actor_id = conn.assigns.current_user.id
 
@@ -109,7 +117,6 @@ defmodule VibeWeb.GroupController do
     end
   end
 
-  # DELETE /group/:id — owner-only hard delete of the whole group.
   def delete(conn, %{"id" => chat_id}) do
     actor_id = conn.assigns.current_user.id
 
@@ -119,7 +126,6 @@ defmodule VibeWeb.GroupController do
     end
   end
 
-  # POST /group/:id/leave — a non-owner member leaves.
   def leave(conn, %{"id" => chat_id}) do
     actor_id = conn.assigns.current_user.id
 
@@ -129,7 +135,6 @@ defmodule VibeWeb.GroupController do
     end
   end
 
-  # PUT /group/:id/members/:user_id/role — owner-only promote/demote.
   def set_role(conn, %{"id" => chat_id, "user_id" => user_id, "role" => role}) do
     actor_id = conn.assigns.current_user.id
 

@@ -1,8 +1,6 @@
 defmodule Vibe.Scheduler do
   @moduledoc """
   GenServer that manages scheduled channel posts.
-  Uses Process.send_after for timer-based execution.
-  On startup, loads all pending posts from the DB and schedules them.
   """
 
   use GenServer
@@ -31,7 +29,6 @@ defmodule Vibe.Scheduler do
 
   @impl true
   def init(_state) do
-    # Load pending posts after a short delay to let Repo start
     Process.send_after(self(), :load_pending, 2_000)
     {:ok, %{timers: %{}, load_retry_count: 0}}
   end
@@ -79,7 +76,6 @@ defmodule Vibe.Scheduler do
   def handle_call({:cancel, post_id, user_id}, _from, state) do
     case Chat.cancel_scheduled_post(post_id, user_id) do
       {:ok, _post} ->
-        # Cancel the timer
         case Map.get(state.timers, post_id) do
           nil -> :ok
           ref -> Process.cancel_timer(ref)
@@ -96,7 +92,6 @@ defmodule Vibe.Scheduler do
   # ── Private ─────────────────────────────────────────────────────
 
   defp load_and_schedule_pending(timers) do
-    # Load all pending posts from all channels
     import Ecto.Query
     alias Vibe.Chat.ScheduledPost
 
@@ -130,7 +125,6 @@ defmodule Vibe.Scheduler do
       scheduled = post.scheduled_at
 
       delay_ms = DateTime.diff(scheduled, now, :millisecond)
-      # If past due, execute immediately
       delay_ms = max(delay_ms, 0)
 
       ref = Process.send_after(self(), {:execute_post, post.id}, delay_ms)
@@ -146,7 +140,6 @@ defmodule Vibe.Scheduler do
   end
 
   defp execute_post(post_id) do
-    # Atomic claim first: on 2+ nodes every scheduler fires; only the winner delivers.
     case Chat.claim_scheduled_post(post_id) do
       {:ok, post} ->
         message_id = Ecto.UUID.generate()
@@ -174,13 +167,10 @@ defmodule Vibe.Scheduler do
               "timestamp" => timestamp
             }
 
-            # Broadcast to channel subscribers
             VibeWeb.Endpoint.broadcast!("chat:#{post.channel_id}", "message", broadcast_payload)
 
-            # Built once and reused for every recipient's user-topic mirror.
             mirrored_message = Chat.mirrored_message_payload(broadcast_payload)
 
-            # Notify all subscribers via user channel
             Chat.get_participant_ids(post.channel_id)
             |> Enum.each(fn participant_id ->
               if participant_id != post.user_id do
@@ -210,7 +200,6 @@ defmodule Vibe.Scheduler do
               "[Scheduler] Failed to post scheduled message #{post_id}: #{inspect(reason)}"
             )
 
-            # Give the failed delivery back so the next boot retries it.
             Chat.reopen_scheduled_post(post_id)
         end
 

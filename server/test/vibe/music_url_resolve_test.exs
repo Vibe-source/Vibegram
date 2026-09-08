@@ -45,10 +45,7 @@ defmodule Vibe.MusicUrlResolveTest do
     assert %{error: _} = Music.search(%{})
   end
 
-  # Regression: yt-dlp reports SoundCloud durations as floats (e.g. 269.485). The
-  # cache column is :integer, so an un-coerced float failed the Ecto cast and aborted
-  # the whole write — leaving no row → /api/music/stream/sc_* 500. coerce_seconds
-  # rounds to whole seconds so the row lands and the track becomes playable.
+  # yt-dlp reports SoundCloud durations as floats (e.g.
   test "coerce_seconds rounds float/string durations to integer" do
     assert MusicCache.coerce_seconds(269.485) == 269
     assert MusicCache.coerce_seconds("30.9") == 31

@@ -163,9 +163,8 @@ defmodule VibeWeb.PlatformsController do
   end
 
   @doc """
-  POST /api/platforms/tools/invoke
-  Bridge / client proxy for server-side platform actions (tokens never leave server).
-  Body: { provider, action, params?, connectionId?, granteeType?, granteeId? }
+  POST /api/platforms/tools/invoke Bridge / client proxy for server-side platform actions
+  (tokens never leave server).
   """
   def invoke_tool(conn, params) do
     user_id = conn.assigns.current_user.id
@@ -199,7 +198,6 @@ defmodule VibeWeb.PlatformsController do
     end
   end
 
-  ## Helpers
 
   defp redirect_to_app(conn, _status, query) do
     deep_link = "vibe://platforms/oauth?" <> URI.encode_query(query)

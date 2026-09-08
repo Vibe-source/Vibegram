@@ -1,20 +1,6 @@
 defmodule Vibe.AI.MCP.Client do
   @moduledoc """
   Minimal MCP client speaking JSON-RPC 2.0 over the Streamable HTTP transport.
-
-  Only three methods matter to us: `initialize`, `tools/list`, `tools/call`.
-  We do not open the optional server→client SSE stream — nothing in the agent
-  loop consumes server-initiated messages, and an idle long-poll per agent per
-  server is a socket we would be holding for nothing.
-
-  Stateless by choice. We never send `Mcp-Session-Id`, so a server restart or a
-  second instance behind a load balancer cannot strand a conversation
-  mid-turn. Servers that *require* sessions will say so and are unsupported;
-  that is a deliberate trade for operational simplicity.
-
-  Servers may answer with `application/json` or with a one-shot
-  `text/event-stream`. Both are legal, so both are parsed here — a server that
-  streams its single response should not look like an outage.
   """
 
   require Logger
@@ -25,16 +11,13 @@ defmodule Vibe.AI.MCP.Client do
   @client_info %{"name" => "vibe", "version" => "1.0.0"}
   @default_timeout_ms 20_000
   @max_timeout_ms 60_000
-  # One MCP response carrying a document. Anything past this is not a
-  # document, it is someone trying to exhaust the node.
+  # One MCP response carrying a document.
   @max_response_bytes 32 * 1024 * 1024
   # Server-supplied text lands in the system prompt, so it is bounded.
   @max_instructions_chars 4_000
 
   @doc """
-  Handshake. Returns the server's own description of itself, including the
-  `instructions` string — which is how a server teaches the agent to use it
-  without anyone hand-writing that into an agent prompt.
+  Handshake.
   """
   def initialize(server) do
     params = %{
@@ -75,11 +58,6 @@ defmodule Vibe.AI.MCP.Client do
 
   @doc """
   Invokes one tool.
-
-  A tool that fails is not a transport failure: MCP reports it as a normal
-  result carrying `isError: true`, so the model can read the message and pick
-  a different move. We preserve that distinction — `{:ok, %{is_error: true}}`
-  means "the tool said no", `{:error, reason}` means "we never reached it".
   """
   def call_tool(server, tool_name, arguments) do
     params = %{"name" => tool_name, "arguments" => arguments || %{}}
@@ -104,8 +82,6 @@ defmodule Vibe.AI.MCP.Client do
         {:ok, String.trim(url)}
 
       %URI{scheme: "http"} = uri ->
-        # Plain HTTP to anywhere else would put a super-admin bearer token on
-        # the wire in clear text. Local dev is the only case worth allowing.
         case SafeURL.validate(URI.to_string(uri)) do
           {:ok, _} -> {:error, :insecure_scheme}
           {:error, reason} -> {:error, reason}
@@ -160,10 +136,6 @@ defmodule Vibe.AI.MCP.Client do
     end
   end
 
-  # `Finch.request/3` buffers the whole body with no ceiling, so a hostile or
-  # broken server could answer a 200-byte request with gigabytes and take the
-  # node down with it. Streaming lets us stop reading the moment the body
-  # passes what any legitimate MCP response could need.
   defp bounded_request(request, timeout) do
     acc = %{status: nil, headers: [], body: [], size: 0}
 
@@ -206,12 +178,6 @@ defmodule Vibe.AI.MCP.Client do
 
   defp collect(_other, acc), do: acc
 
-  # An https URL can still resolve to 169.254.169.254 or a private range, so
-  # the host is checked, not just the scheme.
-  #
-  # Loopback is the one exception, and only because `validate_url/1` already
-  # refused to reach it over anything but a literal localhost host — that is
-  # the local-development server, not an SSRF target reached through DNS.
   defp guard_host(url) do
     if loopback?(url) do
       :ok
@@ -259,7 +225,6 @@ defmodule Vibe.AI.MCP.Client do
     end)
   end
 
-  # A one-shot SSE body: take the last `data:` payload, which is the response.
   defp extract_sse_json(raw) do
     raw
     |> String.split(~r/\r?\n/)
@@ -272,8 +237,6 @@ defmodule Vibe.AI.MCP.Client do
     end
   end
 
-  # Header names and values come from operator config. A newline in either
-  # would split the request and let a crafted config forge extra headers.
   defp auth_headers(server) do
     server
     |> Map.get(:headers, %{})
@@ -294,11 +257,6 @@ defmodule Vibe.AI.MCP.Client do
     end
   end
 
-  # `instructions` is text a third party controls that we place in the system
-  # prompt, which makes it the most direct prompt-injection surface in this
-  # module. It cannot be dropped — it is how a server teaches its own usage —
-  # so it is bounded instead: capped in length so it cannot bury the real
-  # prompt, and the caller labels it as untrusted server-supplied text.
   defp bounded_instructions(value) do
     case normalize_string(value) do
       nil -> nil

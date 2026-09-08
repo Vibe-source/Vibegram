@@ -1,4 +1,3 @@
-//! `x-sandbox-token` auth: every route except /healthz requires a constant-time token match.
 use std::sync::Arc;
 
 use axum::extract::{Request, State};
@@ -10,7 +9,7 @@ use crate::state::AppState;
 
 const TOKEN_HEADER: &str = "x-sandbox-token";
 
-/// Constant-time byte comparison so a mismatch can't leak timing info about the token.
+/// Constant-time byte comparison so a mismatch can't leak timing info about.
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;

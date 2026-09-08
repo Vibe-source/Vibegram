@@ -1,8 +1,7 @@
 defmodule Vibe.ChatClearMessagesTest do
   @moduledoc """
-  Clearing is not deleting. `clear_messages/2` hides the caller's history and must
-  leave membership, the chat and the peer's own copy alone — the two operations
-  were one call for a while, and clearing a chat removed it.
+  Clearing is not deleting. `clear_messages/2` hides the caller's history and must leave
+  membership, the chat and the peer's own copy alone.
   """
 
   use ExUnit.Case, async: false

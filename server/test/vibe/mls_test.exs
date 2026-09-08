@@ -46,7 +46,6 @@ defmodule Vibe.MlsTest do
     refute first.id == second.id
     refute first.key_package == second.key_package
 
-    # The first claim is durably marked claimed, not just absent from a cache.
     reloaded = Repo.get!(MlsKeyPackage, first.id)
     refute is_nil(reloaded.claimed_at)
   end
@@ -126,7 +125,6 @@ defmodule Vibe.MlsTest do
       })
 
     assert {:ok, _} = Mls.claim_key_package(user.id)
-    # Drained again — still a clean not-found, not an error/crash.
     assert {:error, :not_found} = Mls.claim_key_package(user.id)
   end
 
@@ -137,10 +135,6 @@ defmodule Vibe.MlsTest do
     {:ok, %{count: ^n}} =
       Mls.publish_key_packages(user.id, %{"deviceId" => "device-a", "keyPackages" => packages})
 
-    # Shared mode lets the Task.async_stream workers below use the same
-    # sandboxed connection as this test process without individually calling
-    # Sandbox.allow/3 — this is what actually lets them race against the real
-    # Repo instead of a mocked/serialized stand-in.
     Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.mode(Repo, :manual) end)
 
@@ -158,9 +152,6 @@ defmodule Vibe.MlsTest do
     claimed_ids = Enum.map(results, fn {:ok, package} -> package.id end)
     claimed_bins = Enum.map(results, fn {:ok, package} -> package.key_package end)
 
-    # This is the property the atomic UPDATE ... WHERE id IN (SELECT ... FOR
-    # UPDATE SKIP LOCKED) exists to guarantee: N racing claims, N distinct
-    # winners, nobody doubles up on somebody else's one-time init key.
     assert length(Enum.uniq(claimed_ids)) == n
     assert length(Enum.uniq(claimed_bins)) == n
     assert MapSet.new(claimed_bins) == MapSet.new(Enum.map(packages, &Base.decode64!/1))
@@ -171,10 +162,6 @@ defmodule Vibe.MlsTest do
   test "a user cannot publish on behalf of another user", %{user: user} do
     victim = insert_user("mls_victim")
 
-    # Even if the request body smuggles another user's id, publish is always
-    # scoped to the explicit (trusted) user_id argument — mirroring how the
-    # controller only ever passes conn.assigns.current_user.id, never a
-    # client-supplied "userId".
     assert {:ok, %{count: 1}} =
              Mls.publish_key_packages(user.id, %{
                "userId" => victim.id,
@@ -199,7 +186,6 @@ defmodule Vibe.MlsTest do
                "keyPackages" => too_many
              })
 
-    # Rejected means nothing landed — not "the first 100 got in".
     assert Mls.count_available(user.id) == 0
   end
 
@@ -224,20 +210,11 @@ defmodule Vibe.MlsTest do
              })
   end
 
-  # ── helpers ────────────────────────────────────────────────────────────────
 
   defp fake_key_package(label) do
     Base.encode64("mls-keypkg-#{label}-#{System.unique_integer([:positive])}")
   end
 
-  # ── Retiring a device's signing key ────────────────────────────────────
-  #
-  # These are not housekeeping. A device asks for this when its MLS signing key
-  # changed, and everything left on file names the key it no longer holds: a
-  # peer claiming one of those KeyPackages builds a group around a leaf the
-  # device cannot sign as, and neither side can read the other afterwards while
-  # both look perfectly healthy. `claim_key_package/1` hands out the *oldest*
-  # first, so without this the stale ones are the ones that get used.
 
   test "retiring drops this device's unclaimed packages and leaves only the fresh batch", %{
     user: user
@@ -258,8 +235,6 @@ defmodule Vibe.MlsTest do
 
     assert Mls.count_available(user.id) == 2
 
-    # Every claim must come from the fresh batch — a single stale one leaking
-    # through is enough to wedge a conversation permanently.
     for _ <- 1..2 do
       assert {:ok, claimed} = Mls.claim_key_package(user.id)
       assert Base.encode64(claimed.key_package) in fresh
@@ -300,8 +275,6 @@ defmodule Vibe.MlsTest do
         "retireDeviceKeys" => true
       })
 
-    # A claim is single-use and irreversible; deleting the row would destroy the
-    # only record that this package was already spent.
     assert Repo.get(MlsKeyPackage, spent.id)
   end
 
@@ -317,9 +290,6 @@ defmodule Vibe.MlsTest do
         "retireDeviceKeys" => true
       })
 
-    # A pending Welcome targets a KeyPackage signed by the retired key, and the
-    # matching private init key is still in the device's store — so the join
-    # would SUCCEED and produce a session that is unreadable from birth.
     assert [] = Mls.pending_welcomes(user.id)
   end
 
@@ -338,9 +308,6 @@ defmodule Vibe.MlsTest do
   end
 
   test "the response says whether the retirement actually happened", %{user: user} do
-    # The client cannot otherwise tell this server from one that predates the
-    # flag and silently ignored it — and assuming success against an old server
-    # clears its pending retirement while every stale KeyPackage stays claimable.
     assert {:ok, %{retired: false}} =
              Mls.publish_key_packages(user.id, %{
                "deviceId" => "device-a",
@@ -371,11 +338,6 @@ defmodule Vibe.MlsTest do
     assert Mls.count_available(user.id) == 2
   end
 
-  # ── Welcome relay ──────────────────────────────────────────────────────
-  #
-  # A Welcome carries the group secrets for whoever it is addressed to, so the
-  # authorization properties below are the whole point of this relay: serving
-  # or letting someone ack another user's Welcome hands them the conversation.
 
   test "a welcome round-trips to its recipient", %{user: sender} do
     recipient = insert_user("mls_recipient")
@@ -458,7 +420,6 @@ defmodule Vibe.MlsTest do
     {:ok, row} = post_welcome(sender.id, recipient.id, "chat-1")
 
     assert {:error, :not_found} = Mls.ack_welcome(outsider.id, row.id)
-    # Still pending for its real recipient — the failed ack changed nothing.
     assert [_one] = Mls.pending_welcomes(recipient.id)
 
     assert :ok = Mls.ack_welcome(recipient.id, row.id)
@@ -514,7 +475,6 @@ defmodule Vibe.MlsTest do
 
     assert {:error, :too_many_pending} = post_welcome(sender.id, recipient.id, "chat-21")
 
-    # The cap is per sender, so an unrelated sender is unaffected.
     other_sender = insert_user("mls_other_sender")
     assert {:ok, _} = post_welcome(other_sender.id, recipient.id, "chat-22")
   end

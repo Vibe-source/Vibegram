@@ -4,7 +4,6 @@ defmodule VibeContracts.ServiceAuth do
   agent-runtime. Keys must be >= 32 raw bytes; verification is constant-time.
   """
 
-  @nonce_table :vibe_internal_nonces
   @nonce_ttl_seconds 600
   @default_tolerance_seconds 300
   @default_allowed_services ["core", "agent-runtime"]
@@ -17,6 +16,7 @@ defmodule VibeContracts.ServiceAuth do
            | :bad_signature
            | :stale_timestamp
            | :replayed_nonce
+           | :nonce_store_unavailable
            | :unknown_service
            | :weak_key}
 
@@ -76,7 +76,7 @@ defmodule VibeContracts.ServiceAuth do
       service = Keyword.fetch!(opts, :service)
       ts = opts |> Keyword.get(:timestamp) |> normalize_timestamp()
       nonce = Keyword.get(opts, :nonce) || generate_nonce()
-      signature = compute_signature(key, method, path_with_query, ts, nonce, body)
+      signature = compute_signature(key, service, method, path_with_query, ts, nonce, body)
 
       {:ok,
        %{
@@ -132,6 +132,7 @@ defmodule VibeContracts.ServiceAuth do
     expected =
       compute_signature(
         key,
+        hmap["x-vibe-service"],
         method,
         path_with_query,
         hmap["x-vibe-timestamp"],
@@ -147,12 +148,19 @@ defmodule VibeContracts.ServiceAuth do
 
   defp check_nonce(hmap, opts) do
     nonce_seen? = Keyword.get(opts, :nonce_seen?, &default_nonce_seen?/1)
-    if nonce_seen?.(hmap["x-vibe-nonce"]), do: {:error, :replayed_nonce}, else: :ok
+
+    case nonce_seen?.(hmap["x-vibe-nonce"]) do
+      false -> :ok
+      true -> {:error, :replayed_nonce}
+      _unavailable -> {:error, :nonce_store_unavailable}
+    end
   end
 
-  defp compute_signature(key, method, path_with_query, ts, nonce, body) do
+  defp compute_signature(key, service, method, path_with_query, ts, nonce, body) do
     signing_string =
       "v1\n" <>
+        service <>
+        "\n" <>
         String.upcase(method) <>
         "\n" <>
         path_with_query <> "\n" <> to_string(ts) <> "\n" <> nonce <> "\n" <> sha256_hex(body)
@@ -166,52 +174,7 @@ defmodule VibeContracts.ServiceAuth do
 
   defp generate_nonce, do: VibeContracts.Internal.uuid4()
 
-  # Replay cache: a lazily-created public ETS table, self-owned by a detached
-  # process so it survives past the caller's request process.
-  defp default_nonce_seen?(nonce) do
-    ensure_nonce_table()
-    maybe_sweep_expired()
-    not :ets.insert_new(@nonce_table, {nonce, System.system_time(:second) + @nonce_ttl_seconds})
-  end
+  defp default_nonce_seen?(nonce),
+    do: VibeContracts.NonceStore.seen?(nonce, @nonce_ttl_seconds)
 
-  # A full scan per request is O(table); sweep on ~2% of calls or once the table is large.
-  @sweep_size_threshold 10_000
-  defp maybe_sweep_expired do
-    if :rand.uniform(50) == 1 or :ets.info(@nonce_table, :size) > @sweep_size_threshold do
-      sweep_expired()
-    end
-
-    :ok
-  end
-
-  defp ensure_nonce_table do
-    if :ets.whereis(@nonce_table) == :undefined do
-      parent = self()
-      ref = make_ref()
-
-      spawn(fn ->
-        try do
-          :ets.new(@nonce_table, [:named_table, :public, :set, read_concurrency: true])
-        rescue
-          ArgumentError -> :ok
-        end
-
-        send(parent, {ref, :ready})
-        Process.sleep(:infinity)
-      end)
-
-      receive do
-        {^ref, :ready} -> :ok
-      after
-        1000 -> :ok
-      end
-    end
-
-    :ok
-  end
-
-  defp sweep_expired do
-    now = System.system_time(:second)
-    :ets.select_delete(@nonce_table, [{{:_, :"$1"}, [{:<, :"$1", now}], [true]}])
-  end
 end

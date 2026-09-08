@@ -1,24 +1,19 @@
 defmodule VibeWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :vibe
 
-  # JSON/urlencoded cap. MLS welcome posts carry a base64 ratchet tree up to
-  # ~5.5MB encoded (Vibe.Mls @max_ratchet_tree_bytes), so this sits above that.
+  # JSON/urlencoded cap.
   @max_json_body_bytes (case Integer.parse(System.get_env("MAX_JSON_BODY_BYTES") || "8000000") do
                           {value, _} when value > 0 -> value
                           _ -> 8_000_000
                         end)
 
-  # Content-Length sanity ceiling across all routes, enforced by BodyLimit
-  # before parsing. Multipart uploads get their own cap in the router pipeline.
-  # 99 MB, not 120: Cloudflare rejects bodies over 100 MB at the edge with a 413 we never see.
+  # Content-Length sanity ceiling across all routes.
   @max_upload_body_bytes (case Integer.parse(System.get_env("MAX_UPLOAD_BYTES") || "99000000") do
                              {value, _} when value > 0 -> value
                              _ -> 99_000_000
                            end)
 
-  # The session will be stored in the cookie and signed,
-  # this means its contents can be read but not tampered with.
-  # Set :encryption_salt if you would also like to encrypt it.
+  # The session will be stored in the cookie and signed.
   @session_options [
     store: :cookie,
     key: "_vibe_key",
@@ -27,17 +22,13 @@ defmodule VibeWeb.Endpoint do
 
   socket("/socket", VibeWeb.UserSocket,
     websocket: [
-      # Phoenix only forwards headers whose names start with "x-". Mobile clients
-      # send `x-vibe-auth: Bearer <login_token>` (not Authorization) so the token
-      # is available here without putting it in the WebSocket URL query string.
+      # Phoenix only forwards headers whose names start with "x-".
       connect_info: [:x_headers]
     ],
     longpoll: false
   )
 
-  # Agent bridge daemon (the user's computer) connects here, authenticated by its
-  # bridge_token via `x-vibe-bridge-token: Bearer <bridge_token>`. Outbound-only
-  # from the daemon's perspective. Query param `token` remains a fallback.
+  # Agent bridge daemon (the user's computer) connects here.
   socket("/agent-bridge", VibeWeb.AgentBridgeSocket,
     websocket: [connect_info: [:x_headers]],
     longpoll: false
@@ -46,9 +37,6 @@ defmodule VibeWeb.Endpoint do
   socket("/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]])
 
   # Serve at "/" the static files from "priv/static" directory.
-  #
-  # You should set gzip to true if you are running phx.digest
-  # when deploying your static files in production.
   if code_reloading? do
     socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
     plug(Phoenix.LiveReloader)
@@ -80,7 +68,6 @@ defmodule VibeWeb.Endpoint do
   plug(Plug.Head)
   plug(Plug.Session, @session_options)
 
-  # CORS Plug
   cors_origins =
     case System.get_env("CORS_ORIGINS") do
       nil ->
@@ -116,7 +103,6 @@ defmodule VibeWeb.Endpoint do
       "X-Requested-With",
       "If-Modified-Since",
       "ngrok-skip-browser-warning",
-      # WebSocket / HTTP clients that prefer header auth over query tokens.
       "x-vibe-auth",
       "x-vibe-bridge-token"
     ]
@@ -127,12 +113,6 @@ defmodule VibeWeb.Endpoint do
 
   @doc """
   Production Ecto SSL options from env-style inputs.
-
-  - `verify_env` of `"none"` (case-insensitive) opts out → `verify_none`
-  - otherwise (including `nil` / unset) → `verify_peer` when a CA bundle path
-    is provided; falls back to `verify_none` only when no CA is available
-
-  Pure helper so unit tests can prove the prod default without booting runtime.exs.
   """
   def db_ssl_opts(verify_env, cacert_ders) do
     verify =

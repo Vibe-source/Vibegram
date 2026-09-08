@@ -39,7 +39,6 @@ defmodule VibeWeb.ChatControllerTest do
 
       assert %{plug: ChatController, plug_opts: :message_reactions} = route
 
-      # Dispatched through the router, an unauthenticated call never reaches the action.
       conn =
         Plug.Test.conn(:get, "/api/chat/any/messages/#{Ecto.UUID.generate()}/reactions")
         |> VibeWeb.Router.call(VibeWeb.Router.init([]))

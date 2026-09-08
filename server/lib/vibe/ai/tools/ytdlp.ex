@@ -1,13 +1,6 @@
 defmodule Vibe.AI.Tools.YtDlp do
   @moduledoc """
   yt-dlp wrapper for extracting audio streams from YouTube and other platforms.
-  Runs as a subprocess to avoid blocking the main server.
-
-  Features:
-  - Search YouTube for music
-  - Extract audio stream URLs (no download, just URL extraction)
-  - Get metadata (title, artist, duration, thumbnail)
-  - Non-blocking via Task.async
   """
 
   require Logger
@@ -23,15 +16,11 @@ defmodule Vibe.AI.Tools.YtDlp do
   def search(query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 3)
 
-    # Use ytsearch to search YouTube
     search_query = "ytsearch#{limit}:#{query}"
 
-    # FAST mode: --flat-playlist skips stream extraction (just metadata)
-    # This is 10x faster than full extraction
     base_args = [
       "--no-download",
       "--print-json",
-      # Critical: only get metadata, no stream URLs
       "--flat-playlist",
       "--no-warnings",
       "--ignore-errors",
@@ -45,7 +34,6 @@ defmodule Vibe.AI.Tools.YtDlp do
       "https://www.youtube.com/"
     ]
 
-    # Add cookies if available
     args =
       case get_cookies_path() do
         nil -> base_args ++ [search_query]
@@ -64,20 +52,12 @@ defmodule Vibe.AI.Tools.YtDlp do
   end
 
   @doc """
-  Get detailed info including stream URL for a specific video or page URL
-  (YouTube, SoundCloud, and other yt-dlp extractors).
-
-  Returns a stable `video_id` used by `/api/music/stream/:id` plus `webpage_url`
-  so non-YouTube tracks can be re-downloaded without inventing a YouTube URL.
+  Get detailed info including stream URL for a specific video or page URL (YouTube, SoundCloud,
+  and other yt-dlp extractors).
   """
   def get_stream_url(video_id_or_url) do
     url = normalize_url(video_id_or_url)
 
-    # SECURITY (SSRF): yt-dlp will HTTP-GET whatever URL we hand it. Any external
-    # URL must be a known music host AND must not resolve to a private/link-local
-    # address, or a caller could turn this into a server-side request to internal
-    # services / cloud metadata (169.254.169.254). Bare ids / youtube-built URLs
-    # skip the check (they are not attacker-chosen hosts). See safe_media_url/1.
     if String.starts_with?(url, "http") do
       case safe_media_url(url) do
         {:ok, _} ->
@@ -100,7 +80,6 @@ defmodule Vibe.AI.Tools.YtDlp do
       [
         "--no-download",
         "--print-json",
-        # More flexible format: try audio formats, then any best format
         "-f",
         "bestaudio/bestaudio*/best",
         "--no-playlist",
@@ -170,18 +149,12 @@ defmodule Vibe.AI.Tools.YtDlp do
 
   def music_page_url?(_), do: false
 
-  # Hosts yt-dlp is allowed to fetch. Kept in parity with music_page_url?/1 so no
-  # source that path recognizes is newly rejected. Suffix-matched strictly (host
-  # == domain or ends with ".<domain>") — NOT String.contains?, which would let
-  # `soundcloud.com.evil.com` through.
   @music_hosts ~w(
     soundcloud.com youtube.com youtu.be bandcamp.com vimeo.com mixcloud.com
   )
 
   @doc """
-  SSRF gate for any URL handed to yt-dlp. `{:ok, url}` only when the URL is
-  http(s), on a known music host, AND does not resolve to a private/link-local
-  address (`Vibe.Net.SafeURL`). Everything else is `{:error, reason}`.
+  SSRF gate for any URL handed to yt-dlp. `{:ok.
   """
   def safe_media_url(url) when is_binary(url) do
     trimmed = String.trim(url)
@@ -234,7 +207,6 @@ defmodule Vibe.AI.Tools.YtDlp do
         links["youtube"]
 
       String.starts_with?(track_id, "sc_") ->
-        # Cannot rebuild SoundCloud without cache; callers should pass links.
         track_id
 
       String.starts_with?(track_id, "http") ->
@@ -255,14 +227,12 @@ defmodule Vibe.AI.Tools.YtDlp do
   def search_with_streams(query, opts \\ []) do
     limit = Keyword.get(opts, :limit, 3)
 
-    # Direct search with full extraction
     search_query = "ytsearch#{limit}:#{query}"
 
     base_args =
       [
         "--no-download",
         "--print-json",
-        # More flexible format: try audio formats, then any best format
         "-f",
         "bestaudio/bestaudio*/best",
         "--no-warnings",
@@ -297,14 +267,10 @@ defmodule Vibe.AI.Tools.YtDlp do
     end
   end
 
-  # Run yt-dlp as subprocess
   defp run_ytdlp(args), do: run_cmd(args)
 
   @doc """
   Run yt-dlp with the given CLI args.
-
-  Prefer a real binary (`YTDLP_PATH` / PATH). If only the Python package is
-  installed (common on Alpine/Railway), falls back to `python3 -m yt_dlp`.
   """
   def run_cmd(args, opts \\ [])
 
@@ -332,7 +298,6 @@ defmodule Vibe.AI.Tools.YtDlp do
 
                 {output, code} ->
                   Logger.warning("[YtDlp] Exit code #{code}: #{String.slice(output, 0, 500)}")
-                  # Try to extract partial results even on error
                   if String.contains?(output, "\"id\":") do
                     {:ok, output}
                   else
@@ -357,9 +322,6 @@ defmodule Vibe.AI.Tools.YtDlp do
 
   @doc """
   Absolute path to the `yt-dlp` binary, or nil if only the Python module is available.
-
-  Checks `YTDLP_PATH` / `VIBE_YTDLP_PATH`, then PATH, then common install locations
-  (Homebrew, pip --user, Alpine/Railway `/usr/local/bin`).
   """
   def executable do
     env =
@@ -388,7 +350,6 @@ defmodule Vibe.AI.Tools.YtDlp do
     end)
   end
 
-  # {cmd, prefix_args, label}
   defp runner do
     case executable() do
       bin when is_binary(bin) ->
@@ -431,7 +392,6 @@ defmodule Vibe.AI.Tools.YtDlp do
     _ -> false
   end
 
-  # Parse flat playlist search results
   defp parse_search_results(output) do
     output
     |> String.split("\n", trim: true)
@@ -456,7 +416,6 @@ defmodule Vibe.AI.Tools.YtDlp do
     |> Enum.reject(&is_nil/1)
   end
 
-  # Parse full results with stream URLs
   defp parse_full_results(output) do
     output
     |> String.split("\n", trim: true)
@@ -477,9 +436,7 @@ defmodule Vibe.AI.Tools.YtDlp do
             duration: format_duration(data["duration"]),
             duration_seconds: data["duration"],
             cover: thumbnail,
-            # Direct audio stream URL
             stream_url: data["url"],
-            # Same as stream for full audio
             preview_url: data["url"],
             links: %{
               youtube: "https://www.youtube.com/watch?v=#{data["id"]}",
@@ -498,7 +455,6 @@ defmodule Vibe.AI.Tools.YtDlp do
   defp get_best_thumbnail([]), do: nil
 
   defp get_best_thumbnail(thumbnails) do
-    # Prefer medium/high quality
     Enum.find(thumbnails, fn t -> t["height"] && t["height"] >= 360 end)
     |> then(fn
       nil -> List.last(thumbnails)
@@ -639,7 +595,6 @@ defmodule Vibe.AI.Tools.YtDlp do
         trimmed
 
       String.starts_with?(trimmed, "sc_") ->
-        # Stream endpoint may call us with a SoundCloud cache id; require full URL via cache.
         trimmed
 
       String.length(trimmed) == 11 and Regex.match?(~r/^[A-Za-z0-9_-]{11}$/, trimmed) ->
@@ -669,8 +624,6 @@ defmodule Vibe.AI.Tools.YtDlp do
 
   @doc """
   Common anti-bot hardening args (UA rotation, referer, cookies when configured).
-  Shared with MusicController's cache-fill download, which previously ran yt-dlp
-  bare and tripped bot checks that the extraction paths here survive.
   """
   def hardening_args do
     base =
@@ -695,14 +648,6 @@ defmodule Vibe.AI.Tools.YtDlp do
 
   @doc """
   Which YouTube player clients to ask, in order.
-
-  Which clients YouTube gates changes week to week — `android_vr` (yt-dlp's fallback
-  when the others are refused) is currently one of the hardest-gated, and landing on
-  it is what surfaces "Sign in to confirm you're not a bot". Because that moves
-  faster than our deploys, the list is an env var: set `YTDLP_PLAYER_CLIENTS` on the
-  host to retune without a rebuild, or to `""` to hand the choice back to yt-dlp's
-  own defaults. Namespaced to `youtube:`, so SoundCloud and everything else is
-  unaffected.
   """
   def player_client_args do
     clients =
@@ -717,7 +662,6 @@ defmodule Vibe.AI.Tools.YtDlp do
     end
   end
 
-  # Random user agent to avoid detection
   defp random_user_agent do
     agents = [
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -730,9 +674,7 @@ defmodule Vibe.AI.Tools.YtDlp do
     Enum.random(agents)
   end
 
-  # Check for cookies file (set via environment variable or default path)
   defp get_cookies_path do
-    # 1. Try to generate from content env var (most reliable)
     case System.get_env("YTDLP_COOKIES_CONTENT") do
       nil ->
         check_existing_paths()
@@ -747,7 +689,6 @@ defmodule Vibe.AI.Tools.YtDlp do
   defp check_existing_paths do
     case System.get_env("YTDLP_COOKIES_PATH") do
       nil ->
-        # Check default locations
         default_path = "/app/cookies.txt"
         if File.exists?(default_path), do: default_path, else: nil
 

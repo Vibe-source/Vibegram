@@ -11,8 +11,6 @@ defmodule VibeWeb.LinkControllerTest do
 
     index = fn path -> Enum.find_index(routes, &(&1.path == path)) end
 
-    # `/:handle` must lose to the two-segment room links and to every /api route, and
-    # must win against the SPA catch-all (which would otherwise swallow every handle).
     assert index.("/r/:slug") < index.("/:handle")
     assert index.("/j/:token") < index.("/:handle")
     assert index.("/api/links/resolve") < index.("/:handle")

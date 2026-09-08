@@ -26,7 +26,7 @@ defmodule Vibe.ProviderContentTest do
     Map.merge(%{"kind" => kind, "text" => text}, extra)
   end
 
-  # ── parse: happy path ──────────────────────────────────────────────────────
+  # ── parse:
 
   test "parse accepts all 7 core kinds with defaults and trims" do
     raw =
@@ -102,7 +102,7 @@ defmodule Vibe.ProviderContentTest do
     assert p["ext"]["com.openai.widget"]["id"] == "w1"
   end
 
-  # ── parse: errors ──────────────────────────────────────────────────────────
+  # ── parse:
 
   test "parse rejects nil and non-map input" do
     assert ProviderContent.parse(nil) == {:error, :invalid_content}
@@ -232,8 +232,6 @@ defmodule Vibe.ProviderContentTest do
     assert p["data"]["label"] == "Call"
     assert p["data"]["mode"] == "voice"
 
-    # Unknown/ext kinds are not media — body is the text lane only (must-ignore
-    # with fallback). Rich clients read the preserved part from metadata.content.
     attrs = ProviderContent.to_message_attrs(normalized)
     assert attrs["text"] == "Tap to start a voice call with this agent"
     assert attrs["attachments"] == []

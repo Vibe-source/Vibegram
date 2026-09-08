@@ -4,6 +4,8 @@ defmodule VibeAgents.Application do
 
   @impl true
   def start(_type, _args) do
+    VibeAgentsWeb.Plugs.PublicRateLimit.init_table()
+
     children = [
       VibeAgents.Repo,
       {Phoenix.PubSub, name: VibeAgents.PubSub},
@@ -12,7 +14,7 @@ defmodule VibeAgents.Application do
       {DynamicSupervisor, name: VibeAgents.Runs.Supervisor, strategy: :one_for_one},
       {Task.Supervisor, name: VibeAgents.TaskSupervisor},
       VibeAgents.Outbox,
-      # Dispatcher before Resumer: the resumer's queued runs go through admission.
+      VibeAgents.Retention,
       VibeAgents.Runs.Dispatcher,
       VibeAgents.Runs.Resumer,
       VibeAgents.Runs.Janitor,

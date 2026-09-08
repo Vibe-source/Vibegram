@@ -1,4 +1,5 @@
-//! Env-sourced config. All names are frozen by docs/agent-platform-v1.md §4 / task-gateway.md.
+//! Env-sourced config.
+
 use std::env;
 
 #[derive(Debug, Clone)]
@@ -49,7 +50,7 @@ fn env_parsed<T: std::str::FromStr>(key: &str, default: T) -> Result<T, ConfigEr
     }
 }
 
-/// Fails closed: a missing/short token must never silently start the gateway.
+/// Fails closed:
 pub fn validate_token(token: &str) -> Result<(), ConfigError> {
     if token.len() < 32 {
         return Err(ConfigError::TokenTooShort);
@@ -103,7 +104,7 @@ impl Config {
 }
 
 #[cfg(test)]
-/// Struct-literal config for tests: avoids mutating process env (parallel-test-safe).
+/// Struct-literal config for tests:
 pub fn test_config() -> Config {
     Config {
         port: 8090,

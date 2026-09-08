@@ -6,7 +6,6 @@ defmodule VibeAgents.Runs.DispatcherTest do
   alias VibeAgents.Runs.Dispatcher
 
   setup do
-    # delete, not put(nil): put_env(nil) makes get_env return nil instead of the default.
     previous = Application.fetch_env(:vibe_agents, :max_concurrent_runs)
 
     on_exit(fn ->

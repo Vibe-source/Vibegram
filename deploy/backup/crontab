@@ -1,3 +1,5 @@
 # Every 6h. /proc/1/fd/1 is this container's own stdout, so `compose logs
 # backup` shows cron job output (crond's own logging isn't wired to it).
 0 */6 * * * /app/backup.sh >>/proc/1/fd/1 2>&1
+*/15 * * * * /app/wal-ship.sh >>/proc/1/fd/1 2>&1
+0 1 * * 0 /app/basebackup.sh >>/proc/1/fd/1 2>&1

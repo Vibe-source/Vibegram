@@ -1,5 +1,5 @@
-//! Live-daemon smoke test. Skipped unless `SANDBOX_LIVE_TEST=1` — this machine may have no
-//! Docker/Podman socket at all, and `cargo test` must stay green either way.
+//! Live-daemon smoke test.
+
 use bollard::Docker;
 
 #[tokio::test]

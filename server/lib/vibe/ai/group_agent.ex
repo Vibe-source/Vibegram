@@ -1,8 +1,6 @@
 defmodule Vibe.AI.GroupAgent do
   @moduledoc """
   AI Agent for group/channel chats.
-  Handles @vibe mentions, generates responses with per-group custom prompts,
-  and manages conversation memory with auto-compaction.
   """
 
   require Logger
@@ -331,8 +329,6 @@ defmodule Vibe.AI.GroupAgent do
 
   @doc """
   Normalize enabled tools list coming from API input/database.
-  Falls back to all available tools if list is empty or invalid.
-  Mandatory tools are always enabled even if omitted in selections.
   """
   def normalize_enabled_tools(raw_tools) do
     available = available_tool_names()
@@ -353,9 +349,6 @@ defmodule Vibe.AI.GroupAgent do
     Enum.filter(available, &MapSet.member?(selected_set, &1))
   end
 
-  # If a group agent may search the web it may read what it found. Every group agent in the
-  # database has an `enabled_tools` list written before `read_url` existed; without this,
-  # all of them stay permanently snippet-bound.
   defp grant_reading_to_searchers(selected_set) do
     if MapSet.member?(selected_set, "search_google") do
       MapSet.put(selected_set, "read_url")
@@ -436,20 +429,17 @@ defmodule Vibe.AI.GroupAgent do
   defp process_mention(chat_id, agent_config, user_message, user_id, metadata) do
     enabled_tools = normalize_enabled_tools(Map.get(agent_config, :enabled_tools))
 
-    # 1. Load memory
     {:ok, memory} = GroupAgentMemory.get_or_create(chat_id, acting_user_id: user_id)
 
     Logger.info(
       "[GroupAgent] Memory loaded for #{chat_id}: #{length(memory.messages)} messages, summary=#{if memory.summary, do: "yes", else: "no"}"
     )
 
-    # 2. Build system prompt with memory + current group document context
     group_document_context = build_group_document_context(chat_id)
 
     system_prompt =
       build_system_prompt(agent_config, memory, enabled_tools, group_document_context)
 
-    # 3. Build message history from memory + current message
     messages = build_messages(memory, user_message, metadata)
 
     broadcast_agent_progress(
@@ -464,7 +454,6 @@ defmodule Vibe.AI.GroupAgent do
       "[GroupAgent] Calling Claude for #{chat_id}: #{length(messages)} messages, system_prompt_len=#{String.length(system_prompt)}"
     )
 
-    # 4. Call Claude
     case call_claude(messages, system_prompt, user_id, enabled_tools, chat_id) do
       {:ok, %{text: response_text, attachment: tool_attachment}} ->
         fallback_result =
@@ -480,7 +469,6 @@ defmodule Vibe.AI.GroupAgent do
         response = fallback_result.text
         resolved_attachment = fallback_result.attachment
 
-        # 5. Store in memory
         attachment_summary = summarize_attachments_for_memory(metadata)
 
         stored_user_content =
@@ -503,10 +491,8 @@ defmodule Vibe.AI.GroupAgent do
             "content" => response
           }, acting_user_id: user_id)
 
-        # 6. Check if compaction needed
         maybe_compact(chat_id, user_id)
 
-        # 7. Broadcast agent response as a chat message
         broadcast_agent_progress(
           chat_id,
           "Finalizing...",
@@ -539,7 +525,6 @@ defmodule Vibe.AI.GroupAgent do
           %{"stage" => "failed"}
         )
 
-        # Broadcast an error message so users know something went wrong
         broadcast_agent_message(
           chat_id,
           agent_config,
@@ -801,7 +786,6 @@ defmodule Vibe.AI.GroupAgent do
   end
 
   defp build_messages(memory, current_message, metadata) do
-    # Take last N messages from memory as context
     recent_messages =
       memory.messages
       |> Enum.take(-@context_message_limit)
@@ -819,7 +803,6 @@ defmodule Vibe.AI.GroupAgent do
     attachment_context = build_attachment_context(image_urls, document_urls)
     merged_message_text = append_attachment_context(current_message, attachment_context)
 
-    # Build current message with optional images
     current_content =
       if Enum.empty?(image_urls) do
         merged_message_text
@@ -948,11 +931,6 @@ defmodule Vibe.AI.GroupAgent do
     end
   end
 
-  # Group agents had NO provider fallback: a non-200 from Anthropic ended the turn. With the
-  # production key out of credit that meant every group and channel agent failed on every
-  # message, while the DM assistant kept working because its runtime falls back. Borrow that
-  # runtime's OpenAI path, which hands back the same decoded shape this loop already parses,
-  # so the tool loop, attachments and audit below are untouched.
   defp fallback_to_openai(messages, system_prompt, tool_definitions, reason, dispatch) do
     Logger.warning("[GroupAgent] Anthropic unavailable (#{reason}); falling back to OpenAI")
 
@@ -975,8 +953,6 @@ defmodule Vibe.AI.GroupAgent do
     end
   end
 
-  # One place that decides what a provider response means, so the Anthropic path and the
-  # OpenAI fallback cannot drift apart.
   defp dispatch_provider_response(
          parsed,
          messages,
@@ -1046,14 +1022,12 @@ defmodule Vibe.AI.GroupAgent do
          pending_attachment,
          tool_audit
        ) do
-    # Extract tool calls from content
     tool_calls =
       Enum.filter(content, fn
         %{"type" => "tool_use"} -> true
         _ -> false
       end)
 
-    # Execute tools and carry forward latest attachment from create_document.
     {tool_results, latest_attachment, next_tool_audit} =
       Enum.reduce(tool_calls, {[], pending_attachment, tool_audit}, fn tool,
                                                                        {acc_results,
@@ -1074,7 +1048,6 @@ defmodule Vibe.AI.GroupAgent do
 
     tool_results = Enum.reverse(tool_results)
 
-    # Build content blocks for assistant message (text + tool_use blocks)
     assistant_content =
       Enum.map(content, fn
         %{"type" => "text", "text" => text} ->
@@ -1367,7 +1340,6 @@ defmodule Vibe.AI.GroupAgent do
 
       start_time = System.monotonic_time(:millisecond)
 
-      # Log raw tool input for debugging
       if name == "create_document" do
         raw_cols_count =
           case tool_input_value(input, "columns") do
@@ -1964,8 +1936,6 @@ defmodule Vibe.AI.GroupAgent do
        ) do
     columns = spreadsheet_columns(input, sections, [])
 
-    # For create_new, if Claude explicitly sent rows=[] (empty list), respect it
-    # and create a headers-only spreadsheet. Don't fall back to body text.
     explicit_rows_raw = tool_input_raw(input, "rows")
 
     rows =
@@ -1979,7 +1949,6 @@ defmodule Vibe.AI.GroupAgent do
       "[GroupAgent] create_new_spreadsheet cols=#{inspect(columns)} row_count=#{length(rows)}"
     )
 
-    # Post-process: strip unwanted columns, recalculate math
     {columns, rows} = sanitize_spreadsheet_data(columns, rows)
 
     with {:ok, storage, csv_content} <-
@@ -2064,7 +2033,6 @@ defmodule Vibe.AI.GroupAgent do
           end
           |> ensure_non_empty_rows(columns, body)
 
-        # Post-process: strip unwanted columns, recalculate math
         {columns, final_rows} = sanitize_spreadsheet_data(columns, final_rows)
 
         with {:ok, storage, csv_content} <-
@@ -2326,7 +2294,6 @@ defmodule Vibe.AI.GroupAgent do
     }
   end
 
-  # ── Row-level tools ──
 
   defp find_rows_tool(chat_id, input) do
     query = tool_input_value(input, "query") |> String.downcase()
@@ -2939,8 +2906,6 @@ defmodule Vibe.AI.GroupAgent do
   end
 
   defp doc_renderer_url do
-    # Priority: DOC_RENDERER_URL > localhost fallback
-    # The renderer runs in the same container, so localhost is correct for Docker deployments
     System.get_env("DOC_RENDERER_URL") || "http://127.0.0.1:5050"
   end
 
@@ -3142,16 +3107,12 @@ defmodule Vibe.AI.GroupAgent do
     Map.merge(base, storage)
   end
 
-  # ── Spreadsheet data sanitizer ──────────────────────────────────────────
-  # This is the AGENTIC math layer: code verifies and recalculates all
-  # numbers instead of trusting the LLM's arithmetic.
   defp sanitize_spreadsheet_data(columns, rows) when is_list(columns) and is_list(rows) do
     {columns, rows}
     |> strip_unwanted_columns()
     |> recalculate_totals()
   end
 
-  # Step 1: Remove columns the user didn't ask for (e.g. "جمع به حروف")
   defp strip_unwanted_columns({columns, rows}) do
     banned_patterns = ["جمع به حروف", "مبلغ به حروف", "amount in words", "به حروف"]
 
@@ -3190,7 +3151,6 @@ defmodule Vibe.AI.GroupAgent do
     end
   end
 
-  # Step 2: Detect weight/price/total columns and recalculate
   defp recalculate_totals({columns, rows}) do
     col_lower = Enum.map(columns, &(to_string(&1) |> String.downcase()))
 
@@ -3198,7 +3158,6 @@ defmodule Vibe.AI.GroupAgent do
     price_idx = find_column_index(col_lower, ["قیمت واحد", "فی", "price", "unit price", "قیمت"])
     total_idx = find_column_index(col_lower, ["جمع", "total", "مبلغ کل", "مبلغ", "جمع کل"])
 
-    # Keywords that identify a summary/total row
     total_row_keywords = ["مجموع", "جمع کل", "مجموع کل", "total", "sum"]
 
     if weight_idx && price_idx && total_idx do
@@ -3208,7 +3167,6 @@ defmodule Vibe.AI.GroupAgent do
 
       recalculated_rows =
         Enum.map(rows, fn row ->
-          # Check if this is a summary/total row
           is_summary =
             Enum.any?(row, fn cell ->
               cell_str = cell |> to_string() |> String.trim() |> String.downcase()
@@ -3220,7 +3178,6 @@ defmodule Vibe.AI.GroupAgent do
             end)
 
           if is_summary do
-            # Don't recalculate individual cell — we'll fix the sum below
             row
           else
             weight_val = parse_numeric(Enum.at(row, weight_idx))
@@ -3235,7 +3192,6 @@ defmodule Vibe.AI.GroupAgent do
           end
         end)
 
-      # Now recalculate the total/summary row
       final_rows =
         recalculate_summary_row(recalculated_rows, weight_idx, total_idx, total_row_keywords)
 
@@ -3260,7 +3216,6 @@ defmodule Vibe.AI.GroupAgent do
         end)
 
       if is_summary do
-        # Sum all non-summary rows for weight and total columns
         {weight_sum, total_sum} =
           Enum.reduce(rows, {0.0, 0.0}, fn r, {w_acc, t_acc} ->
             r_is_summary =
@@ -3291,7 +3246,6 @@ defmodule Vibe.AI.GroupAgent do
     end)
   end
 
-  # Parse a cell value to a number, handling commas, Persian digits, slash notation
   defp parse_numeric(nil), do: 0.0
   defp parse_numeric(val) when is_number(val), do: val / 1
 
@@ -3300,7 +3254,6 @@ defmodule Vibe.AI.GroupAgent do
       val
       |> to_string()
       |> String.trim()
-      # Replace Persian/Arabic digits
       |> String.replace(~r/[۰٠]/, "0")
       |> String.replace(~r/[۱١]/, "1")
       |> String.replace(~r/[۲٢]/, "2")
@@ -3311,10 +3264,8 @@ defmodule Vibe.AI.GroupAgent do
       |> String.replace(~r/[۷٧]/, "7")
       |> String.replace(~r/[۸٨]/, "8")
       |> String.replace(~r/[۹٩]/, "9")
-      # Remove commas and thousand separators
       |> String.replace(",", "")
       |> String.replace("/", "")
-      # Remove any non-numeric characters except dots and minus
       |> String.replace(~r/[^\d.\-]/, "")
 
     case Float.parse(cleaned) do
@@ -3365,7 +3316,6 @@ defmodule Vibe.AI.GroupAgent do
   end
 
   defp generate_xlsx_binary(title, columns, rows) do
-    # Try Python renderer first (openpyxl — better styling), fall back to built-in XML
     payload = %{"title" => title, "columns" => columns, "rows" => rows, "rtl" => true}
 
     case call_doc_renderer("/xlsx", payload) do
@@ -3764,7 +3714,6 @@ defmodule Vibe.AI.GroupAgent do
       rows
       |> Enum.with_index(1)
       |> Enum.map_join("", fn {cells, row_index} ->
-        # Row 1 = header (style 1), rest = data (style 2)
         style_id = if row_index == 1, do: "1", else: "2"
 
         cell_xml =
@@ -4357,13 +4306,10 @@ defmodule Vibe.AI.GroupAgent do
           payload_base
       end
 
-    # Broadcast to the chat channel
     VibeWeb.Endpoint.broadcast!("chat:#{chat_id}", "message", payload)
 
-    # Built once and reused for every recipient's user-topic mirror.
     mirrored_message = Vibe.Chat.mirrored_message_payload(payload)
 
-    # Persist the agent message to the database
     Task.start(fn ->
       case ensure_agent_user_record() do
         :ok ->
@@ -4391,7 +4337,6 @@ defmodule Vibe.AI.GroupAgent do
 
               maybe_refresh_pinned_agent_file(chat_id, message_id, message_type)
 
-              # Notify all participants about the new message
               participants = Vibe.Chat.get_all_participant_settings(chat_id)
 
               Enum.each(participants, fn p ->
@@ -4568,7 +4513,6 @@ defmodule Vibe.AI.GroupAgent do
 
   defp maybe_strip_remaining_links(text, _attachment), do: text
 
-  # ── Memory Compaction ──
 
   defp maybe_compact(chat_id, user_id) do
     Task.start(fn ->
@@ -4587,7 +4531,6 @@ defmodule Vibe.AI.GroupAgent do
     to_compact = Enum.take(messages, length(messages) - @keep_recent_count)
     to_keep = Enum.take(messages, -@keep_recent_count)
 
-    # Format messages for summarization
     conversation_text =
       to_compact
       |> Enum.map(fn msg ->

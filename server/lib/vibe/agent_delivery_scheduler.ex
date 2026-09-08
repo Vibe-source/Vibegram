@@ -25,7 +25,6 @@ defmodule Vibe.AgentDeliveryScheduler do
     Agents.due_delivery_events()
     |> Enum.each(&deliver_event/1)
 
-    # Undecided action sets must not sit pending forever.
     _ = Vibe.AI.AgentDecisions.expire_due_tasks()
 
     Process.send_after(self(), :poll, @poll_interval_ms)

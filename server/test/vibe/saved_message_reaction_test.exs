@@ -36,7 +36,6 @@ defmodule Vibe.SavedMessageReactionTest do
 
       assert reaction_of(alice, id) == nil
 
-      # A multi-codepoint ZWJ sequence is a legal reaction, and untrimmed input is trimmed.
       family = "👩🏽‍❤️‍💋‍👨🏽"
 
       assert {:ok, %{action: :added, reactions: [%{emoji: ^family}]}} =
@@ -148,7 +147,6 @@ defmodule Vibe.SavedMessageReactionTest do
 
       assert %{plug: SavedMessageController, plug_opts: :reaction} = route
 
-      # Dispatched through the router, an unauthenticated call never reaches the action.
       conn =
         Plug.Test.conn(:put, "/api/saved_messages/anything/reaction", %{"emoji" => "👍"})
         |> VibeWeb.Router.call(VibeWeb.Router.init([]))

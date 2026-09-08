@@ -1,8 +1,7 @@
 defmodule Vibe.Cluster do
   @moduledoc """
   libcluster topology selected by CLUSTER_STRATEGY (none default | gossip | dns).
-  `child_specs/0` returns the Cluster.Supervisor child for application.ex, or
-  `[]` when strategy is "none" (today's single-node behaviour, unchanged).
+  `child_specs/0` returns the Cluster.Supervisor child for application.ex, or `[]` when.
   """
 
   def strategy, do: System.get_env("CLUSTER_STRATEGY") || "none"

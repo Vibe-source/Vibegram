@@ -38,8 +38,7 @@ defmodule VibeAgents.SandboxComputerTest do
     assert FakeSandboxHTTP.calls() == []
   end
 
-  # Opening the sheet is how a cold agent gets a computer, so session creates rather
-  # than 404s — every other call still needs an existing sandbox.
+  # Opening the sheet is how a cold agent gets a computer.
   test "opening a session creates the sandbox when the agent has never browsed", %{agent_id: agent_id} do
     assert {:ok, _} = Sandbox.computer_session(agent_id, %{"viewerId" => "u1"})
 

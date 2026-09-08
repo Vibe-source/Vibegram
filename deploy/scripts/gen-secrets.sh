@@ -9,6 +9,7 @@ hex() { openssl rand -hex "$1"; }
 
 core_db_pw=$(b64 24)
 agents_db_pw=$(b64 24)
+readonly_db_pw=$(b64 24)
 pg_superuser_pw=$(b64 24)
 valkey_pw=$(b64 24)
 hmac_key=$(hex 32)
@@ -38,6 +39,10 @@ SANDBOX_GATEWAY_TOKEN=${sandbox_token}
 POSTGRES_PASSWORD=${pg_superuser_pw}
 VIBE_CORE_DB_PASSWORD=${core_db_pw}
 VIBE_AGENTS_DB_PASSWORD=${agents_db_pw}
+VIBE_READONLY_DB_PASSWORD=${readonly_db_pw}
+
+# ---- deploy/env/postgres-exporter.env ----
+DATA_SOURCE_NAME=postgresql://vibe_readonly:${readonly_db_pw}@postgres:5432/vibe_core?sslmode=disable
 
 # ---- deploy/env/pgbouncer.env ----
 VIBE_CORE_DB_PASSWORD=${core_db_pw}

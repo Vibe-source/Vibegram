@@ -1,8 +1,6 @@
 defmodule VibeWeb.Plugs.RateLimiter do
   @moduledoc """
-  Rate limiting plug. Delegates the actual counting to `Vibe.RateLimit.backend()`
-  (node-local ETS by default, or Valkey when `RATE_LIMIT_BACKEND=valkey`) — this
-  module only resolves limits/identifiers and shapes the response.
+  Rate limiting plug.
   """
   import Plug.Conn
   require Logger
@@ -19,9 +17,7 @@ defmodule VibeWeb.Plugs.RateLimiter do
     strict: {60, 60_000},
     # 600 requests per minute for secret-backed agent ingress
     public_agent: {600, 60_000},
-    # 10 per 5 minutes for AI media edits. Each call is a paid third-party
-    # generation (~$0.17 an image, ~$1 a 10s video clip), so the strict bucket's
-    # 60/min was an unbounded spend surface, not a safety limit.
+    # 10 per 5 minutes for AI media edits.
     ai_media: {10, 300_000}
   }
 
@@ -77,17 +73,11 @@ defmodule VibeWeb.Plugs.RateLimiter do
   end
 
   defp get_identifier(conn) do
-    cond do
-      user = conn.assigns[:current_user] ->
-        identifier(:user, user.id)
+    case conn.assigns[:current_user] do
+      %Vibe.Accounts.User{id: user_id} ->
+        identifier(:user, user_id)
 
-      bearer = extract_bearer(conn) ->
-        identifier(:bearer_token, bearer)
-
-      secret = extract_agent_secret(conn) ->
-        identifier(:agent_secret, secret)
-
-      true ->
+      _ ->
         identifier(:ip, forwarded_or_remote_ip(conn))
     end
   end
@@ -161,33 +151,17 @@ defmodule VibeWeb.Plugs.RateLimiter do
     end
   end
 
-  # SECURITY: `X-Forwarded-For` is fully client-controlled. A client can PREPEND
-  # arbitrary entries; the trusted proxy in front of us (Railway/Cloudflare/etc.)
-  # then APPENDS the address it actually saw connect. So the real client is the
-  # entry `trusted_hops` from the RIGHT — never `List.first`, which is exactly the
-  # spoofable value. Taking the leftmost let an attacker mint unlimited distinct
-  # identifiers and sail past the auth rate limit (and grow the ETS table without
-  # bound). `TRUSTED_PROXY_HOPS` (default 1) says how many proxies we operate.
   defp forwarded_or_remote_ip(conn) do
     hops = trusted_proxy_hops()
     chain = forwarded_chain(conn)
 
     cond do
-      # hops == 0: no trusted proxy in front of us (e.g. direct/local). XFF is
-      # entirely client-controlled here, so it is ignored and we key on the real
-      # TCP peer, which cannot be forged.
       hops == 0 ->
         remote_ip(conn)
 
-      # A chain shorter than the number of proxies we operate means the expected
-      # proxy-appended entries are not present (XFF stripped, or a direct hit that
-      # bypassed the proxy). Don't trust it — fall back to the real peer.
       length(chain) < hops ->
         remote_ip(conn)
 
-      # The real client is the entry `hops` from the RIGHT: our proxies each append
-      # once, last-appended is closest to us, and a client can only inject entries
-      # to the LEFT of what the trusted proxy appended.
       true ->
         Enum.at(chain, length(chain) - hops) || remote_ip(conn)
     end
@@ -195,8 +169,6 @@ defmodule VibeWeb.Plugs.RateLimiter do
 
   defp remote_ip(conn), do: conn.remote_ip |> :inet.ntoa() |> to_string()
 
-  # Every value across (possibly multiple) X-Forwarded-For headers, left→right,
-  # trimmed, blanks dropped.
   defp forwarded_chain(conn) do
     conn
     |> get_req_header("x-forwarded-for")
@@ -206,10 +178,6 @@ defmodule VibeWeb.Plugs.RateLimiter do
     |> Enum.reject(&(&1 == ""))
   end
 
-  # How many trusted reverse proxies sit in front of the app. Production behind a
-  # single edge (Railway) is 1 (the default). Set 0 for a direct/local deployment
-  # so `X-Forwarded-For` is ignored entirely. `parse_positive_env` treats 0 as the
-  # fallback, so 0 is read explicitly here.
   defp trusted_proxy_hops do
     case System.get_env("TRUSTED_PROXY_HOPS") do
       nil ->
@@ -221,24 +189,6 @@ defmodule VibeWeb.Plugs.RateLimiter do
           _ -> 1
         end
     end
-  end
-
-  defp extract_bearer(conn) do
-    case get_req_header(conn, "authorization") do
-      [header | _] ->
-        case String.split(header, " ", parts: 2) do
-          [scheme, token] when scheme in ["Bearer", "bearer"] -> String.trim(token)
-          _ -> nil
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  defp extract_agent_secret(conn) do
-    List.first(get_req_header(conn, "x-vibe-agent-secret")) ||
-      List.first(get_req_header(conn, "x-vibe-integration-secret"))
   end
 
   defp identifier(kind, value) do

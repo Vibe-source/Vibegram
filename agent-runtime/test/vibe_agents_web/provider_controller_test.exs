@@ -51,13 +51,37 @@ defmodule VibeAgentsWeb.ProviderControllerTest do
     assert length(FakeCoreHTTP.calls_to("/provider-auth")) == 1
   end
 
-  test "task status is readable" do
-    headers = [{"content-type", "application/json"}, {"authorization", "Bearer good-secret"}]
+  defp start_task(secret) do
+    headers = [{"content-type", "application/json"}, {"authorization", "Bearer #{secret}"}]
     conn = invoke(build_conn(), "someagent", %{"input" => %{"text" => "hello"}, "chatId" => "chat-1"}, headers)
-    task_id = json_response(conn, 202)["taskId"]
+    json_response(conn, 202)["taskId"]
+  end
 
-    conn = get(build_conn(), "/v1/tasks/#{task_id}")
+  defp read_task(task_id, headers) do
+    conn = Enum.reduce(headers, build_conn(), fn {k, v}, acc -> put_req_header(acc, k, v) end)
+    get(conn, "/v1/tasks/#{task_id}")
+  end
+
+  test "task status is readable with the secret that started it" do
+    task_id = start_task("good-secret")
+    conn = read_task(task_id, [{"x-vibe-agent-secret", "good-secret"}])
     assert json_response(conn, 200)["taskId"] == task_id
+  end
+
+  test "task requires the provider secret" do
+    task_id = start_task("good-secret")
+    assert json_response(read_task(task_id, []), 401)["error"] == "unauthorized"
+  end
+
+  test "task rejects another agents secret" do
+    task_id = start_task("good-secret")
+    conn = read_task(task_id, [{"x-vibe-agent-secret", "other-secret"}])
+    assert json_response(conn, 401)["error"] == "unauthorized"
+  end
+
+  test "an unknown task is 404, not a secret oracle" do
+    conn = read_task(Ecto.UUID.generate(), [{"x-vibe-agent-secret", "good-secret"}])
+    assert conn.status in [401, 404]
   end
 
   test "public healthz needs no auth; internal healthz does" do

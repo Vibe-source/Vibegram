@@ -1,5 +1,3 @@
-//! Computer session routes (docs/agent-computer-v1.md §3.1). Phase 1 is pull + base64:
-//! `/frame` is polled and answers 204 when the caller already holds the newest frame.
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -89,7 +87,6 @@ mod tests {
 
     fn app_state() -> Arc<AppState> {
         let cfg = test_config();
-        // HTTP transport builds synchronously, so these tests need no live daemon.
         let docker = Docker::connect_with_http_defaults().unwrap();
         let state = Arc::new(AppState::new(cfg, docker));
         state.upsert(
@@ -242,7 +239,6 @@ mod tests {
         assert_eq!(v["control"], "user");
         assert_eq!(v["holder"], session_id);
 
-        // The gate is open now: what follows is the container exec, which these tests do not run.
         assert!(state
             .computer
             .authorize_input(SANDBOX, &session_id, crate::runtime::now_unix())

@@ -9,9 +9,7 @@ defmodule Vibe.Subscriptions do
   alias Vibe.Accounts
   alias Vibe.Badges
 
-  # ============================================
   # Plan Functions
-  # ============================================
 
   def list_plans do
     Repo.all(from p in Plan, order_by: [asc: p.price_cents])
@@ -33,9 +31,6 @@ defmodule Vibe.Subscriptions do
     |> Repo.insert()
   end
 
-  # ============================================
-  # Subscription Functions
-  # ============================================
 
   def get_user_subscription(user_id) do
     Repo.one(
@@ -68,9 +63,6 @@ defmodule Vibe.Subscriptions do
     })
   end
 
-  # ============================================
-  # Tier Calculation
-  # ============================================
 
   @doc """
   Calculate the effective tier for a user based on subscription and referrals.
@@ -112,9 +104,6 @@ defmodule Vibe.Subscriptions do
     end
   end
 
-  # Per-tier agent caps are lifted for now (product decision, 2026-07-26) while usage-based
-  # limits are designed. Keep the tiered shape so re-enabling a real cap later is a one-line
-  # change instead of re-plumbing quota_for_user/create_agent's :quota_exceeded path.
   @unlimited_agent_cap 1_000_000
 
   def agent_limit_for_user(user_id) do
@@ -126,9 +115,6 @@ defmodule Vibe.Subscriptions do
     end
   end
 
-  # ============================================
-  # Subscription Lifecycle
-  # ============================================
 
   @doc """
   Handle new subscription creation (called from webhook)

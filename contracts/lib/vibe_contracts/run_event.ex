@@ -14,8 +14,7 @@ defmodule VibeContracts.RunEvent do
 
   @terminal_kinds ~w(run.cancelled run.completed run.failed)
 
-  # Required payload keys per kind (spec §3.4). Spec leaves run.approval.requested's exact
-  # subset unenumerated; chosen here as the actionable fields, detail/actionMode/expiresAt optional.
+  # Required payload keys per kind (spec §3.4).
   @payload_schemas %{
     "run.queued" => ~w(source model),
     "run.started" => ~w(source model),

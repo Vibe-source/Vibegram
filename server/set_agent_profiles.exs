@@ -16,7 +16,6 @@ defmodule SetAgentProfiles do
   end
 
   def run_agy_only do
-    # Cache-bust: CDN serves old agy.png as immutable; use versioned path.
     upload_and_set("agy", @agy_image, "agent-profiles/agy-v3.png")
   end
 
@@ -58,8 +57,7 @@ defmodule SetAgentProfiles do
   end
 end
 
-# railway run SET_AGENT_ONLY=agy mix run set_agent_profiles.exs
-# (same env as Claude/Codex; defaults to all profiles)
+# railway run SET_AGENT_ONLY=agy mix run set_agent_profiles.exs (same env.
 case System.get_env("SET_AGENT_ONLY") do
   "agy" -> SetAgentProfiles.run_agy_only()
   "grok" -> SetAgentProfiles.run_grok_only()

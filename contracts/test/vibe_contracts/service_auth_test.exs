@@ -4,7 +4,7 @@ defmodule VibeContracts.ServiceAuthTest do
 
   @key String.duplicate("k", 32)
 
-  # Unique per call so tests hitting the default ETS replay store never collide.
+  # Unique per call so tests hitting the default ETS replay store never.
   defp unique_nonce, do: "nonce-#{System.unique_integer([:positive])}"
 
   test "a freshly signed request verifies ok" do
@@ -53,6 +53,25 @@ defmodule VibeContracts.ServiceAuthTest do
 
     assert {:error, :bad_signature} =
              ServiceAuth.verify(@key, "POST", "/x", "tampered", headers, now: 1000)
+  end
+
+  test "a swapped x-vibe-service is rejected even with an otherwise valid signature" do
+    nonce = unique_nonce()
+
+    headers =
+      ServiceAuth.sign(@key, "POST", "/internal/v1/agent-events", "{}",
+        service: "agent-runtime",
+        timestamp: 1000,
+        nonce: nonce
+      )
+
+    swapped = Map.put(headers, "x-vibe-service", "core")
+
+    assert {:error, :bad_signature} =
+             ServiceAuth.verify(@key, "POST", "/internal/v1/agent-events", "{}", swapped,
+               now: 1000,
+               allowed_services: ["core", "agent-runtime"]
+             )
   end
 
   test "a stale timestamp is rejected outside tolerance, accepted at the edge" do
@@ -112,11 +131,31 @@ defmodule VibeContracts.ServiceAuthTest do
                nonce_seen?: fn _ -> false end
              )
 
+    signed_as_evil =
+      ServiceAuth.sign(@key, "POST", "/x", "a",
+        service: "evil-service",
+        timestamp: 1000,
+        nonce: unique_nonce()
+      )
+
     assert :ok =
-             ServiceAuth.verify(@key, "POST", "/x", "a", bad,
+             ServiceAuth.verify(@key, "POST", "/x", "a", signed_as_evil,
                now: 1000,
                nonce_seen?: fn _ -> false end,
                allowed_services: ["evil-service"]
+             )
+  end
+
+  test "verification fails closed when the replay store is unavailable" do
+    nonce = unique_nonce()
+
+    headers =
+      ServiceAuth.sign(@key, "POST", "/x", "a", service: "core", timestamp: 1000, nonce: nonce)
+
+    assert {:error, :nonce_store_unavailable} =
+             ServiceAuth.verify(@key, "POST", "/x", "a", headers,
+               now: 1000,
+               nonce_seen?: fn _ -> :unavailable end
              )
   end
 

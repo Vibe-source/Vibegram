@@ -1,8 +1,6 @@
 defmodule Vibe.Schemas.AuditEvent do
   @moduledoc """
-  One row per security-relevant action (login, logout, profile edit, device
-  revoke, ...). Append-only — see `Vibe.Audit`. Integer id (not uuid) on
-  purpose: this table is insert-heavy and has no cross-service identity need.
+  One row per security-relevant action (login, logout, profile edit, device revoke, ...).
   """
 
   use Ecto.Schema

@@ -2,7 +2,7 @@ defmodule VibeContracts.SafeURLTest do
   use ExUnit.Case, async: true
   alias VibeContracts.SafeURL
 
-  # Host literals resolve locally (no DNS/network needed), so these are deterministic.
+  # Host literals resolve locally (no DNS/network needed).
   @blocked_urls [
     {"loopback v4", "http://127.0.0.1/"},
     {"loopback v6", "http://[::1]/"},

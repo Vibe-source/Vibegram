@@ -1,8 +1,6 @@
 defmodule VibeAgents.Voice.FakeProvider do
   @moduledoc false
-  # Scriptable VibeAgents.Voice.Provider double. Records every call (read back with
-  # get_calls/1) and can push {:voice_provider, event} to its owner on demand via emit/2.
-  # Not under test/support/ (owned by another worker) — required explicitly per test file.
+  # Scriptable VibeAgents.Voice.Provider double.
   @behaviour VibeAgents.Voice.Provider
 
   use GenServer

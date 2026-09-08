@@ -10,7 +10,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NAME="${1:-vibe-logs}"
 GF="http://127.0.0.1:3000"
 
-pw="$(grep -m1 '^GF_SECURITY_ADMIN_PASSWORD=' "${REPO_ROOT}/deploy/env/monitoring.env" | cut -d= -f2-)"
+# The deployed env file is the runtime copy; the repo one only exists pre-deploy.
+ENV_FILE=/run/vibe/env/monitoring.env
+[ -r "$ENV_FILE" ] || ENV_FILE="${REPO_ROOT}/deploy/env/monitoring.env"
+pw=""
+while IFS='=' read -r k v; do [ "$k" = GF_SECURITY_ADMIN_PASSWORD ] && pw="$v"; done <"$ENV_FILE"
 [ -n "$pw" ] || { echo "mint-logs-token: GF_SECURITY_ADMIN_PASSWORD empty" >&2; exit 1; }
 auth="admin:${pw}"
 

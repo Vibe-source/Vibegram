@@ -67,7 +67,6 @@ defmodule VibeContracts.AskQuestion do
 
   defp normalize_option(_option), do: nil
 
-  # `key` is always one of our own literal strings above, never caller data, so this is safe.
   defp fetch(map, key), do: Map.get(map, key) || Map.get(map, String.to_atom(key))
 
   defp display_string(value, max_length) when is_binary(value) do

@@ -51,10 +51,6 @@ defmodule Vibe.Chat.GroupAgentMemory do
     acting_user_id = Keyword.get(opts, :acting_user_id)
 
     RepoRLS.with_user(acting_user_id, fn ->
-      # Team workers commonly settle at the same time. A read/append/update without
-      # a row lock lets both read the same messages array and the last commit erase
-      # its sibling's result. Ensure the row exists, then serialize appends so every
-      # worker completion reaches shared memory.
       case ensure_memory_row(chat_id, acting_user_id) do
         :ok ->
           Repo.transaction(fn ->
@@ -93,8 +89,6 @@ defmodule Vibe.Chat.GroupAgentMemory do
       {:ok, _memory} ->
         :ok
 
-      # A concurrent creator can win the unique(chat_id) race. The row now exists,
-      # so continue to the locked read instead of losing this append.
       {:error, %Ecto.Changeset{}} ->
         if Repo.exists?(from m in __MODULE__, where: m.chat_id == ^chat_id),
           do: :ok,

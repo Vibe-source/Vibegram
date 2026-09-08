@@ -56,10 +56,6 @@ defmodule Vibe.AI.AgentRuntime do
     end
   end
 
-  # Depth exhaustion must NOT throw the answer away. The old clause returned
-  # {:error, depth_error}, discarding every chunk already streamed to the client — the user
-  # watched text arrive and then got "Something went wrong". Hand back what we have and let
-  # the caller finalize it; the state carries the reason so the UI can note it.
   defp do_run(
          _messages,
          %Config{max_depth: max_depth} = config,
@@ -111,11 +107,6 @@ defmodule Vibe.AI.AgentRuntime do
     end
   end
 
-  # Which model ACTUALLY answered — not which one was requested. Production ran for an
-  # unknown stretch with an out-of-credit Anthropic key, so every Claude selection was
-  # silently served by OpenAI and nothing said so: the picked model looked like the reason
-  # the agent behaved badly. The caller (and the diagnostics export) can now tell the
-  # difference between "this model is weak" and "this model never ran".
   defp served_by(%Config{} = config, provider_state) do
     {provider, model} =
       case Map.get(provider_state, :selected) do
@@ -131,15 +122,7 @@ defmodule Vibe.AI.AgentRuntime do
   end
 
   @doc """
-  One completion via the OpenAI Responses API, returned in Anthropic's *decoded response*
-  shape: `%{"content" => blocks, "stop_reason" => "tool_use" | "end_turn"}`.
-
-  `Vibe.AI.GroupAgent` has its own Anthropic-shaped tool loop and, unlike this module, no
-  provider fallback at all — a non-200 from Anthropic was simply `{:error, "API error:
-  400"}`. Measured 2026-08-05, the production Anthropic key was out of credit, which meant
-  every group and channel agent turn failed outright while the DM assistant kept working
-  through its fallback. Rather than duplicate provider handling there, that loop borrows
-  this and keeps parsing the one shape it already understands.
+  One completion via the OpenAI Responses API.
   """
   def anthropic_shaped_openai_completion(messages, %Config{} = config) do
     case System.get_env("OPENAI_API_KEY") do
@@ -234,16 +217,6 @@ defmodule Vibe.AI.AgentRuntime do
     end
   end
 
-  # Falling back must not silently demote the turn. Measured 2026-08-05 against production:
-  # the ANTHROPIC key was out of credit, so EVERY turn fell through to this path — and the
-  # fallback hardcoded `gpt-5.6-luna` at the default `medium` effort. A user who picked
-  # Fable at `max` was served the cheapest model at middling effort with nothing in the UI
-  # saying so, which is exactly how "the agent is not agentic on some models" happens.
-  #
-  # Map the requested Claude tier onto the closest OpenAI one and carry the effort across,
-  # clamped to what the substitute actually supports. An explicit
-  # OPENAI_AGENT_FALLBACK_MODEL still wins — that override exists to pin a model during an
-  # incident.
   defp preserve_effort_across_fallback(%Config{} = config) do
     model =
       case nonblank_environment("OPENAI_AGENT_FALLBACK_MODEL") do
@@ -320,9 +293,6 @@ defmodule Vibe.AI.AgentRuntime do
               Map.put(acc, :headers, resp_headers)
 
             {:data, data}, acc ->
-              # Keep the raw body when the request failed — otherwise a provider message as
-              # actionable as "Your credit balance is too low" is thrown away and all anyone
-              # ever sees is "API error: 400".
               acc = maybe_keep_error_body(acc, data)
               {events, buffer} = parse_sse_events((acc.buffer || "") <> data)
               acc = Map.put(acc, :buffer, buffer)
@@ -351,9 +321,6 @@ defmodule Vibe.AI.AgentRuntime do
                     |> Map.update(:tool_calls, [new_tool], &(&1 ++ [new_tool]))
                     |> Map.put(:current_tool_index, new_index)
 
-                  # ── extended thinking ─────────────────────────────────────────
-                  # The reducer used to drop every thinking event, so the native agent
-                  # could never show the "Thinking · N tokens" row the bridge agents show.
                   %{
                     "type" => "content_block_start",
                     "index" => index,
@@ -483,12 +450,6 @@ defmodule Vibe.AI.AgentRuntime do
 
         {:error, "AI request failed.", %{emitted_text?: emitted_text?}}
 
-      # Finch.stream/5 surfaces a mid-stream transport failure (e.g. a connection
-      # timeout after the request was accepted) as a 3-tuple {:error, reason, acc}
-      # carrying whatever was accumulated so far. This matched neither clause above
-      # and crashed the response Task with a CaseClauseError. Fold it into the same
-      # error contract as the caught case so the OpenAI fallback / clean error path
-      # can take over instead of the process dying.
       {:error, reason, _partial_acc} ->
         Logger.error(
           "[#{config.request_label}] Claude streaming request errored mid-stream: " <>
@@ -545,8 +506,6 @@ defmodule Vibe.AI.AgentRuntime do
                   callback.(%{type: :text, content: text_delta})
                 end
 
-                # Reasoning deltas ride on the accumulator (rather than the return tuple) so
-                # the reducer keeps its {acc, text_delta} contract.
                 drain_thinking(next_acc, callback)
               end)
           end
@@ -613,9 +572,6 @@ defmodule Vibe.AI.AgentRuntime do
     end
   end
 
-  # Registry-driven: a model supports adaptive thinking when it offers more than the single
-  # "medium" effort level (Haiku 4.5 does not, and rejects the fields). The static list stays
-  # as the answer for models the registry has not heard of yet.
   defp adaptive_thinking_model?(model) when is_binary(model) do
     case Vibe.AI.ModelRegistry.thinking_levels("anthropic", model) do
       levels when is_list(levels) and length(levels) > 1 -> true
@@ -626,10 +582,6 @@ defmodule Vibe.AI.AgentRuntime do
 
   defp adaptive_thinking_model?(_model), do: false
 
-  # ── Anthropic prompt caching ────────────────────────────────────────────────
-  # A turn re-sends system + tools + the whole transcript on every tool step, so
-  # one breakpoint on each turns those repeats into cache reads at 0.1x input.
-  # Three breakpoints, under Anthropic's limit of four.
 
   @cache_control %{"type" => "ephemeral"}
 
@@ -651,8 +603,6 @@ defmodule Vibe.AI.AgentRuntime do
 
   defp cache_tools(tools), do: tools
 
-  # The breakpoint rides the newest message, so each step reads the previous
-  # step's transcript back instead of re-paying for it.
   defp cache_messages(messages) when is_list(messages) and messages != [] do
     if prompt_cache?(), do: mark_last(messages, &mark_message/1), else: messages
   end
@@ -666,8 +616,6 @@ defmodule Vibe.AI.AgentRuntime do
     end
   end
 
-  # Messages carry string keys when rebuilt from storage and atom keys when
-  # freshly built, so both are handled; anything else is left alone.
   defp mark_message(message) do
     {key, content} =
       cond do
@@ -701,8 +649,6 @@ defmodule Vibe.AI.AgentRuntime do
       "input" => openai_input(messages),
       "tools" => openai_tools(config.tools),
       "max_output_tokens" => config.max_tokens,
-      # summary: "auto" is what makes the model stream its reasoning summary; without it the
-      # response carries reasoning but emits no summary events, so there is nothing to show.
       "reasoning" => %{"effort" => openai_reasoning_effort(config), "summary" => "auto"},
       "stream" => true,
       "store" => false
@@ -734,8 +680,6 @@ defmodule Vibe.AI.AgentRuntime do
       %{"type" => "response.output_text.delta", "delta" => delta} when is_binary(delta) ->
         {Map.update(acc, :text, delta, &(&1 <> delta)), delta}
 
-      # Reasoning summaries (verified live 2026-07-25: requires reasoning.summary = "auto";
-      # streams as response.reasoning_summary_text.delta, ~90 deltas for a medium-effort turn).
       %{"type" => "response.reasoning_summary_part.added"} ->
         {queue_thinking(acc, "", :running), nil}
 
@@ -1021,9 +965,6 @@ defmodule Vibe.AI.AgentRuntime do
   defp resolve_system_prompt(system_prompt, _state) when is_binary(system_prompt),
     do: system_prompt
 
-  # ── thinking helpers ─────────────────────────────────────────────────────────────
-  # Map.get/Map.put throughout so an accumulator built before these fields existed (or in a
-  # test) still works.
 
   defp queue_thinking(acc, chunk, status) do
     text = Map.get(acc, :thinking_text, "") <> chunk
@@ -1051,15 +992,10 @@ defmodule Vibe.AI.AgentRuntime do
     end
   end
 
-  # Providers do not report reasoning tokens per delta; ~4 chars/token is close enough for a
-  # live counter and never claims more precision than it has.
   defp estimated_tokens(text) do
     text |> to_string() |> String.length() |> div(4) |> max(0)
   end
 
-  # Text emitted before a tool call and text emitted after it are separate beats of the same
-  # answer. Concatenating them raw glued sentences together ("…and send it.The first result
-  # was a mashup…"), so separate them with a paragraph break unless the model already did.
   defp join_beats(accumulated, next) do
     left = to_string(accumulated)
     right = to_string(next)
@@ -1156,9 +1092,6 @@ defmodule Vibe.AI.AgentRuntime do
   end
 
   defp build_content_blocks(acc) do
-    # Thinking blocks must be handed back UNMODIFIED (with their signature) in the assistant
-    # turn that precedes the tool results, or the provider rejects the follow-up request when
-    # extended thinking is on.
     thinking_blocks =
       acc
       |> Map.get(:thinking_blocks, [])

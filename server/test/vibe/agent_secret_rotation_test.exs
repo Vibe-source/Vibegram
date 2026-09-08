@@ -1,8 +1,7 @@
 defmodule Vibe.AgentSecretRotationTest do
   @moduledoc """
-  Rotation has two jobs that pull in opposite directions: revoke a leaked key
-  NOW, and roll a planned key without breaking live integrations. Immediate is
-  the default so the safe behaviour is not the one you must remember to ask for.
+  Rotation has two jobs that pull in opposite directions: revoke a leaked key NOW, and roll a
+  planned key without breaking live integrations.
   """
 
   use ExUnit.Case, async: false
@@ -42,7 +41,6 @@ defmodule Vibe.AgentSecretRotationTest do
     assert Agents.verify_secret(agent, new)
     assert Agents.verify_secret(agent, old), "outgoing secret must survive its grace window"
 
-    # ساعت را جلو می‌بریم به‌جای انتظار: پنجره که بست، رمزِ قدیمی باید بمیرد.
     expired =
       Repo.update!(
         Ecto.Changeset.change(agent,
@@ -63,7 +61,6 @@ defmodule Vibe.AgentSecretRotationTest do
     {:ok, agent, _middle} = Agents.rotate_secret(agent, owner.id, grace_hours: 24)
     assert Agents.verify_secret(agent, oldest)
 
-    # واکنش به لو رفتنِ کلید: چرخشِ فوری باید هر رمزِ قدیمی‌تری را هم باطل کند.
     {:ok, agent, newest} = Agents.rotate_secret(agent, owner.id)
 
     refute Agents.verify_secret(agent, oldest)

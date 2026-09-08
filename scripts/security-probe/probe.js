@@ -121,14 +121,14 @@ async function multipartRequest(urlStr, { headers = {}, form } = {}) {
 }
 
 // ---------- vibe-internal-auth/v1 signing ----------
-// Mirrors contracts/lib/vibe_contracts/service_auth.ex compute_signature/6.
+// Mirrors contracts/lib/vibe_contracts/service_auth.ex compute_signature/7.
 
 function signInternal(key, method, pathWithQuery, bodyString, opts = {}) {
   const service = opts.service || "agent-runtime";
   const ts = opts.timestamp !== undefined ? String(opts.timestamp) : String(Math.floor(Date.now() / 1000));
   const nonce = opts.nonce || crypto.randomUUID();
   const bodyHash = crypto.createHash("sha256").update(bodyString || "", "utf8").digest("hex");
-  const signingString = `v1\n${method.toUpperCase()}\n${pathWithQuery}\n${ts}\n${nonce}\n${bodyHash}`;
+  const signingString = `v1\n${service}\n${method.toUpperCase()}\n${pathWithQuery}\n${ts}\n${nonce}\n${bodyHash}`;
   const sig = crypto.createHmac("sha256", Buffer.from(key, "utf8")).update(signingString, "utf8").digest("hex");
   return {
     headers: {

@@ -115,7 +115,6 @@ defmodule Vibe.AgentDecisionsTest do
                is_binary(a["token"]) and String.starts_with?(a["token"], "vat_")
              end)
 
-      # Hashes only in the DB — never the raw token.
       for action <- task.decision_actions do
         refute Enum.any?(actions, fn a ->
                  hash =
@@ -146,7 +145,6 @@ defmodule Vibe.AgentDecisionsTest do
       assert get_in(service, ["decision", "actions"]) == []
       assert get_in(service, ["decision", "chosen", "actionId"]) == "approve"
 
-      # Signed outbound delivery queued to the owner-configured callback only.
       delivery =
         Repo.one(
           from(d in AgentDeliveryEvent,
@@ -160,7 +158,6 @@ defmodule Vibe.AgentDecisionsTest do
       assert delivery.target_url == ctx.agent.callback_url
       assert delivery.request_body["actionId"] == "approve"
       assert delivery.request_body["type"] == "decision.action"
-      # Original event payload is echoed so the integration can act without a re-fetch.
       assert delivery.request_body["data"]["service"] == "api-gateway"
       assert delivery.request_body["data"]["version"] == "v2.4.1"
       assert delivery.request_body["sourceEventId"]
@@ -177,7 +174,6 @@ defmodule Vibe.AgentDecisionsTest do
       tasks =
         for i <- 1..2 do
           Task.async(fn ->
-            # Share the checked-out connection with the parent sandbox.
             Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
             result = AgentDecisions.respond(ctx.owner.id, token)
             {i, result}
@@ -223,8 +219,6 @@ defmodule Vibe.AgentDecisionsTest do
 
       assert {:ok, _} = AgentDecisions.respond(ctx.owner.id, tokens1["approve"])
 
-      # Second decision still pending; first decision's reject token must not
-      # claim anything on the second task.
       assert {:error, :already_decided} = AgentDecisions.respond(ctx.owner.id, tokens1["reject"])
       assert {:ok, claim} = AgentDecisions.respond(ctx.owner.id, tokens2["approve"])
       assert claim.task.id == second.approvalTaskId
@@ -257,7 +251,6 @@ defmodule Vibe.AgentDecisionsTest do
     end
   end
 
-  # ── helpers ────────────────────────────────────────────────────────────────
 
   defp ingest_decision(ctx, opts \\ []) do
     event_id = Keyword.get(opts, :event_id, "evt-#{System.unique_integer([:positive])}")

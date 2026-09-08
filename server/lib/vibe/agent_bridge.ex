@@ -1,20 +1,6 @@
 defmodule Vibe.AgentBridge do
   @moduledoc """
-  Pairing + token management for the **agent bridge** — the small daemon a user
-  runs on their OWN computer so `@claude` / `@codex` execute locally (using their
-  own subscription) and stream results back into Vibe chats.
-
-  Two credentials, modelled on the OAuth 2.0 Device Authorization Grant (RFC 8628):
-
-    * `pairing_code` — short-lived (10 min), single-use. Minted by the
-      authenticated phone and shown as a QR / one-line install command. Held in
-      ETS only.
-    * `bridge_token` — long-lived, minted when the daemon redeems a `pairing_code`.
-      Bound to the user, stored **hashed** in `agent_bridge_connections`, and
-      revocable from the app.
-
-  Online status (is a paired computer connected right now?) is tracked via
-  `VibeWeb.Presence` on the `bridge:<user_id>` topic — see `online?/1`.
+  Pairing + token management for the **agent bridge**.
   """
 
   require Logger
@@ -33,11 +19,7 @@ defmodule Vibe.AgentBridge do
   # ── Scan-to-pair (daemon-initiated; the phone scans the desktop QR) ──
 
   @doc """
-  Create a pairing request initiated by the daemon (desktop). Returns a public
-  `request_id` (encoded into the QR the desktop shows) plus a private
-  `device_secret` the daemon keeps to later claim its token. The authenticated
-  phone scans the QR and calls `authorize_request/2`; the daemon then redeems
-  the parked token with `claim_request/2`.
+  Create a pairing request initiated by the daemon (desktop).
   """
   def create_request(device_label \\ "computer") do
     ensure_table(@request_table)
@@ -66,9 +48,8 @@ defmodule Vibe.AgentBridge do
   end
 
   @doc """
-  Authorize a pending request for `user_id` — called by the authenticated phone
-  right after it scans the QR. Mints the bridge token now and parks it (in ETS)
-  for the daemon to claim.
+  Authorize a pending request for `user_id` — called by the authenticated phone right after it
+  scans the QR.
   """
   def authorize_request(request_id, user_id)
       when is_binary(request_id) and is_binary(user_id) and user_id != "" do
@@ -149,20 +130,10 @@ defmodule Vibe.AgentBridge do
 
   def claim_request(_, _), do: {:error, :invalid_request}
 
-  # ── Pending asks (ephemeral, ETS) ───────────────────────────────────
-  #
-  # An ask (plan approval / question) is relayed to the chat as a one-shot
-  # `agent-bridge-ask` broadcast. If the phone's socket is mid-reconnect at that
-  # instant the broadcast is silently dropped — and unlike streams (re-watched)
-  # or results (re-delivered) there was no second chance, so the run stalls for
-  # the full ASK timeout. We buffer the latest unanswered ask per chat here and
-  # replay it when the phone (re)joins `chat:<id>`; it's cleared when the phone
-  # answers or the bridge explicitly cancels it.
 
   @doc """
-  Remember the latest unanswered ask for `chat_id` so it can be replayed to a
-  phone that joins `chat:<id>` after missing the live broadcast. Keyed by chat
-  (the bridge serializes asks, so at most one is outstanding per chat).
+  Remember the latest unanswered ask for `chat_id` so it can be replayed to a phone that joins
+  `chat:<id>` after missing the live broadcast.
   """
   def remember_pending_ask(chat_id, request_id, payload)
       when is_binary(chat_id) and chat_id != "" and is_binary(request_id) and is_map(payload) do
@@ -195,9 +166,7 @@ defmodule Vibe.AgentBridge do
   def pending_ask(_), do: nil
 
   @doc """
-  Clear the buffered ask for `chat_id` once it has been answered. Only clears
-  when `request_id` matches the buffered one (a stale response must not clobber
-  a newer outstanding ask); pass `nil` to clear unconditionally.
+  Clear the buffered ask for `chat_id` once it has been answered.
   """
   def clear_pending_ask(chat_id, request_id) when is_binary(chat_id) and chat_id != "" do
     ensure_table(@pending_ask_table)
@@ -218,7 +187,6 @@ defmodule Vibe.AgentBridge do
 
   def clear_pending_ask(_, _), do: :ok
 
-  # ── Pairing codes (ephemeral, ETS) ──────────────────────────────────
 
   @doc """
   Mint a single-use pairing code for `user_id`. Returns the code and its TTL; the
@@ -243,7 +211,6 @@ defmodule Vibe.AgentBridge do
 
     case :ets.lookup(@pairing_table, code) do
       [{^code, %{user_id: user_id, expires_at: expires_at}}] when expires_at > now ->
-        # Single use — delete immediately whether or not minting succeeds.
         :ets.delete(@pairing_table, code)
         mint_token(user_id, device_label)
 
@@ -256,7 +223,6 @@ defmodule Vibe.AgentBridge do
     end
   end
 
-  # ── Bridge tokens (persistent, hashed) ──────────────────────────────
 
   defp mint_token(user_id, device_label) do
     raw = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
@@ -334,11 +300,6 @@ defmodule Vibe.AgentBridge do
   def paired?(user_id) when is_binary(user_id) do
     Repo.exists?(from(c in Connection, where: c.user_id == ^user_id and is_nil(c.revoked_at)))
   rescue
-    # A malformed user id casts to nothing (`:binary_id`), and a DB blip raises.
-    # Neither is worth an exception: this is now reached from `UserChannel` on every
-    # bridge Presence change, where raising would take down the phone's channel and
-    # disconnect it. "Not provably paired" is the safe answer, and the surrounding
-    # `status` callers already treat it as a plain boolean.
     _ -> false
   end
 
@@ -354,7 +315,6 @@ defmodule Vibe.AgentBridge do
     _ -> :ok
   end
 
-  # ── Online status (Presence) ────────────────────────────────────────
 
   @doc "Is a paired computer connected to the bridge channel right now?"
   def online?(user_id) when is_binary(user_id) and user_id != "" do
@@ -366,18 +326,7 @@ defmodule Vibe.AgentBridge do
   def online?(_), do: false
 
   @doc """
-  Status payload for a live push to the phone, built without a DB round trip
-  whenever possible.
-
-  `UserChannel` calls this on every Presence change on the `bridge:<id>` topic,
-  which is what lets the phone stop polling `/api/agent-bridge/status`: a computer
-  coming online, changing repos, or starting/finishing a task all surface as a
-  Presence diff, and the phone is already joined to `user:<id>`.
-
-  While a computer is connected, `paired` is known to be true — a live bridge
-  channel only exists behind an accepted pairing — so the common case costs zero
-  queries. Only the rarer "went offline" edge falls back to the `paired?` lookup,
-  because the phone needs to tell "no computer running" apart from "unpaired".
+  Status payload for a live push to the phone, built without a DB round trip whenever possible.
   """
   def status_for_push(user_id) when is_binary(user_id) and user_id != "" do
     if online?(user_id) do
@@ -416,8 +365,6 @@ defmodule Vibe.AgentBridge do
       models: %{}
     }
 
-  # Presence-derived status. Split out of `status/1` so the broadcast path can
-  # supply `paired` from context instead of paying a DB query per status frame.
   defp presence_status(user_id, paired) do
     presence = VibeWeb.Presence.list(topic(user_id))
     devices = presence_devices(presence)
@@ -432,7 +379,6 @@ defmodule Vibe.AgentBridge do
       |> Enum.flat_map(fn device -> Map.get(device, "runningTasks", []) end)
       |> dedupe_running_tasks()
 
-    # Live model catalogs from the connected bridge (provider CLI/API discovery).
     models =
       devices
       |> Enum.map(fn device -> Map.get(device, "models") end)
@@ -481,10 +427,7 @@ defmodule Vibe.AgentBridge do
   def topic(user_id), do: "bridge:#{user_id}"
 
   @doc """
-  Push a task to a user's connected bridge daemon. Returns `:ok` if a bridge is
-  online and the task was dispatched. During a paired bridge's short Presence
-  flap, parks the task by taskId and returns `:ok`; the bridge channel flushes it
-  on rejoin. Repeated dispatches of the same taskId are idempotent.
+  Push a task to a user's connected bridge daemon.
   """
   def dispatch_task(user_id, payload) when is_binary(user_id) and is_map(payload) do
     case dispatch_to_computer(user_id, "run_task", payload) do
@@ -501,10 +444,6 @@ defmodule Vibe.AgentBridge do
 
   @doc """
   Flush queued run_task payloads eligible for a bridge that just joined.
-
-  Eligibility respects an explicit computerId. An unscoped task is claimed by
-  the first rejoining computer. `:ets.take/2` atomically removes the dedupe key,
-  so simultaneous joins cannot broadcast the same task twice.
   """
   def flush_pending_tasks(user_id, computer_id, device_label)
       when is_binary(user_id) and is_binary(computer_id) do
@@ -562,54 +501,42 @@ defmodule Vibe.AgentBridge do
 
   @doc """
   Push a control action to the connected bridge daemon for an in-flight task.
-
-  The chat channel verifies chat membership before calling this; the bridge daemon
-  still matches by task id/provider/chat id and refuses unknown tasks.
   """
   def dispatch_control(user_id, payload) when is_binary(user_id) and is_map(payload) do
     dispatch_to_computer(user_id, "control_task", payload)
   end
 
   @doc """
-  Ask a user's connected bridge daemon for the agent's local conversation
-  history (Claude Code / Codex session logs). The daemon reads its session
-  store read-only and replies with a `history_result` over the bridge channel,
-  which the channel relays back to the requesting phone.
+  Ask a user's connected bridge daemon for the agent's local conversation history (Claude Code
+  / Codex session logs).
   """
   def dispatch_history(user_id, payload) when is_binary(user_id) and is_map(payload) do
     dispatch_to_computer(user_id, "history_request", payload)
   end
 
   @doc """
-  Ask a user's connected bridge daemon for the full contents of a file the agent
-  touched. The daemon reads it only if the path is inside a linked repo, seals
-  the bytes with the runtime key (the server stays blind), and replies with a
-  `file_result` over the bridge channel, relayed back to the requesting phone.
+  Ask a user's connected bridge daemon for the full contents of a file the agent touched.
   """
   def dispatch_file(user_id, payload) when is_binary(user_id) and is_map(payload) do
     dispatch_to_computer(user_id, "file_request", payload)
   end
 
   @doc """
-  Ask a user's connected bridge daemon for a structured usage snapshot (Claude
-  subscription 5h/7-day limits + this chat's last-run tokens). The daemon replies
-  with a `usage_result` over the bridge channel, relayed back to the requesting
-  phone as `agent-bridge-usage`.
+  Ask a user's connected bridge daemon for a structured usage snapshot (Claude subscription
+  5h/7-day limits + this chat's last-run tokens).
   """
   def dispatch_usage(user_id, payload) when is_binary(user_id) and is_map(payload) do
     dispatch_to_computer(user_id, "usage_request", payload)
   end
 
   @doc """
-  Relay the phone's answer to a bridge-issued `ask_request` (plan approval or a
-  mid-run question) back to the user's connected bridge daemon. The `answerEnc`
-  blob is sealed with the pairing runtime key — the server never reads it.
+  Relay the phone's answer to a bridge-issued `ask_request` (plan approval or a mid-run
+  question) back to the user's connected bridge daemon.
   """
   def dispatch_ask_response(user_id, payload) when is_binary(user_id) and is_map(payload) do
     dispatch_to_computer(user_id, "ask_response", payload)
   end
 
-  # ── Helpers ─────────────────────────────────────────────────────────
 
   defp hash_token(token), do: :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
 
@@ -677,7 +604,6 @@ defmodule Vibe.AgentBridge do
 
   defp public_presence_meta(_), do: %{"repositories" => []}
 
-  # %{ "claude" => [ %{"id"=>…,"title"=>…}, … ], … }
   defp normalize_provider_models(models) when is_map(models) do
     models
     |> Enum.reduce(%{}, fn {provider, rows}, acc ->
@@ -718,8 +644,6 @@ defmodule Vibe.AgentBridge do
 
   defp normalize_model_choice(_), do: nil
 
-  # Provider effort/thinking ladders (e.g. Claude low…max). Pass through unknown
-  # levels so new provider vocabularies reach the phone without a server release.
   defp normalize_effort_levels(levels) when is_list(levels) do
     levels
     |> Enum.map(&normalize/1)

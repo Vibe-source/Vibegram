@@ -206,19 +206,26 @@ database unless re-run with `--swap`, which stops core/agent-runtime, terminates
 connections, and renames the scratch DB into place. Run this drill on a schedule (monthly,
 at minimum) — an untested backup is a hope, not a plan.
 
-**Logs:** `podman compose -f deploy/compose.yml logs -f <service>`. Caddy's JSON access
+**Logs:** no SSH needed — `deploy/scripts/vibe-logs.sh core -f` reads the journal over
+HTTPS through Grafana's Loki proxy. Full guide, including what is deliberately not shipped:
+[`vps-logs.md`](vps-logs.md). On the box itself,
+`podman compose -f deploy/compose.yml logs -f <service>` still works. Caddy's JSON access
 log is additionally written to `deploy/caddy-logs/access.log` on the host (fail2ban's
 caddy jail and host logrotate both read it from there — see `vps-bootstrap.sh`).
 
 **Health/metrics:** `deploy/scripts/status.sh` for a one-shot snapshot. `core:9568` and
 `agent-runtime:9568` expose Prometheus metrics on the `internal` network only; bring up
-`prometheus`/`grafana`/`node-exporter` with `podman compose --profile monitoring up -d` —
-both are bound to `127.0.0.1` on the host, reachable only over an SSH tunnel
-(`ssh -L 3000:localhost:3000 vibe@<vps>`), never published publicly.
+`prometheus`/`grafana`/`node-exporter`/`loki`/`promtail` with
+`podman compose --profile monitoring up -d`. Prometheus and Loki are never published —
+no host port, and Loki runs `auth_enabled: false`, so Grafana's proxy is their only door.
+Grafana binds `127.0.0.1:3000` and is also served at `logs.<domain>` behind its own login;
+reach it in a browser or over an SSH tunnel (`ssh -L 3000:localhost:3000 vibe@<vps>`).
 
 ## 7. Security notes
 
-**Public surface:** only Caddy, on 80/443. Everything else — postgres, pgbouncer, valkey,
+**Public surface:** only Caddy, on 80/443 — serving `api.`, `agents.`, `logs.`, `www.` and
+the apex. `logs.` fronts Grafana, which is the sole auth for the log stack (anonymous
+access and sign-up are both off; the read token is a Viewer service account). Everything else — postgres, pgbouncer, valkey,
 sandbox-gateway, egress-proxy, doc-renderer, backup — has no `ports:` mapping and is
 reachable only from other containers on the same compose network. `/internal/*` is blocked
 at the edge on all three Caddy site blocks (belt-and-suspenders: the routes underneath

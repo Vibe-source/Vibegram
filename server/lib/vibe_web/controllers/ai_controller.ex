@@ -1,11 +1,6 @@
 defmodule VibeWeb.AIController do
   @moduledoc """
   AI media editing endpoints.
-
-  Both actions take the user's media *before* it is sealed and sent, so the
-  bytes that reach here are plaintext by construction. That is a deliberate,
-  disclosed trade — the client is expected to have shown the provider
-  disclosure sheet before calling either of these.
   """
   use VibeWeb, :controller
 
@@ -15,23 +10,11 @@ defmodule VibeWeb.AIController do
   require Logger
 
   @max_image_bytes 40_000_000
-  # Must stay under the endpoint's Plug.Parsers `length` (MAX_REQUEST_BYTES,
-  # 120MB by default) — anything above it is rejected by the parser before this
-  # controller runs, so a larger number here would only mislead.
+  # Must stay under the endpoint's Plug.Parsers `length` (MAX_REQUEST_BYTES.
   @max_video_bytes 100_000_000
 
   @doc """
   Edit an image using AI.
-
-  `POST /api/ai/edit_image`
-
-  Multipart (preferred — required for region edits):
-    * `image` — the source image
-    * `mask` — optional PNG with an alpha channel, **same dimensions as
-      `image`**, where transparent pixels mark the region to replace
-    * `prompt`, and optionally `size` / `quality`
-
-  JSON (legacy, whole-image only): `{"image_url": "...", "prompt": "..."}`
   """
   def edit_image(conn, %{"image" => %Plug.Upload{} = upload, "prompt" => prompt} = params)
       when is_binary(prompt) and byte_size(prompt) > 0 do
@@ -76,15 +59,6 @@ defmodule VibeWeb.AIController do
 
   @doc """
   Edit a short video clip using AI (Gemini Omni Flash).
-
-  `POST /api/ai/edit_video` — multipart:
-    * `video` — the trimmed clip, **10 seconds or less**
-    * `prompt` — what to change
-    * `previous_interaction_id` — optional; refines the previous result instead
-      of re-editing the original
-    * `aspect_ratio` — `"9:16"` (default) or `"16:9"`
-
-  There is no mask parameter: the model does not support region edits.
   """
   def edit_video(conn, %{"video" => %Plug.Upload{} = upload, "prompt" => prompt} = params)
       when is_binary(prompt) and byte_size(prompt) > 0 do
@@ -171,9 +145,6 @@ defmodule VibeWeb.AIController do
     |> json(%{success: false, error: error, details: stringify(details)})
   end
 
-  # `to_string/1` raises for anything that does not implement String.Chars, which
-  # would turn a handled error into a 500 on the one path whose entire job is
-  # reporting the error. Fall back to inspect/1 rather than trusting the shape.
   defp stringify(details) when is_binary(details), do: details
   defp stringify(details) when is_atom(details) or is_number(details), do: to_string(details)
   defp stringify(details), do: inspect(details)

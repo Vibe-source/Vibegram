@@ -25,8 +25,6 @@ defmodule VibeAgents.Runs.ResumerTest do
 
     Resumer.run()
 
-    # Wait for the full run, not just the queued->running flip, so the async
-    # loop task finishes (and its DB writes land) before this test's sandbox exits.
     eventually(fn -> Repo.get(AgentRun, run.id).status == "completed" end)
   end
 end

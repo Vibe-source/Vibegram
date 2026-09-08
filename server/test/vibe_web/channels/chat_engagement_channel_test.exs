@@ -85,7 +85,6 @@ defmodule VibeWeb.ChatEngagementChannelTest do
       payload: %{chatId: ^chat_id, counts: ^counts}
     }
 
-    # The author's own view is not counted and produces no broadcast.
     assert {:reply, {:ok, %{counts: []}}, _socket} =
              ChatChannel.handle_in(
                "messages-viewed",

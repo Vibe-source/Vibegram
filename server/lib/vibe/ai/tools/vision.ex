@@ -1,14 +1,6 @@
 defmodule Vibe.AI.Tools.Vision do
   @moduledoc """
   Image analysis tool using Claude's vision capabilities.
-
-  Claude can:
-  - Describe images in detail
-  - Read text (OCR)
-  - Identify objects, people, places
-  - Answer questions about images
-
-  This is FREE - included with Claude API calls.
   """
 
   require Logger
@@ -49,7 +41,6 @@ defmodule Vibe.AI.Tools.Vision do
     unless api_key do
       %{error: "ANTHROPIC_API_KEY not configured"}
     else
-      # Download and convert image to base64 if needed
       case prepare_image(image_url) do
         {:ok, image_content} ->
           body = Jason.encode!(%{
@@ -102,7 +93,6 @@ defmodule Vibe.AI.Tools.Vision do
 
   defp prepare_image(url) when is_binary(url) do
     cond do
-      # Direct URL - Claude can handle these
       String.starts_with?(url, "http") ->
         {:ok, %{
           type: "image",
@@ -112,9 +102,7 @@ defmodule Vibe.AI.Tools.Vision do
           }
         }}
 
-      # Base64 data URL
       String.starts_with?(url, "data:image/") ->
-        # Extract media type and base64 data
         [header, data] = String.split(url, ",", parts: 2)
         media_type = header
           |> String.replace("data:", "")
